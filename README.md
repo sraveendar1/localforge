@@ -13,11 +13,21 @@ for `gpt-5` or a self-hosted model is a one-line config change.
 
 ## Quickstart
 
+**One-liner (no clone needed):**
+
 ```bash
+curl -fsSL https://raw.githubusercontent.com/sanjayraveendar/localforge/main/install.sh | bash
+```
+
+**Or, from a clone:**
+
+```bash
+git clone https://github.com/sanjayraveendar/localforge.git
+cd localforge
 ./install.sh
 ```
 
-That's it. This single command installs everything — Ollama, the local
+Either way, this single command installs everything — Ollama, the local
 models that fit your machine, and the `localforge` CLI itself — with no
 prompts to click through. The only thing it will ask you for is a frontier
 model API key (Anthropic, OpenAI, or Gemini — paste one when asked). Once it
@@ -41,11 +51,13 @@ localforge run "Build a todo REST API with docs"
 
 ## What `./install.sh` actually does
 
-1. Installs [uv](https://docs.astral.sh/uv/) if you don't have it.
-2. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
+1. If it's not already sitting inside a checkout of this repo (e.g. you ran
+   the curl one-liner), clones it into `~/.local/share/localforge/src`.
+2. Installs [uv](https://docs.astral.sh/uv/) if you don't have it.
+3. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
    virtualenv to activate, no `pip` to manage — uv even fetches a matching
    Python for you).
-3. Runs setup automatically: installs and starts
+4. Runs setup automatically: installs and starts
    [Ollama](https://ollama.com) if it isn't already, pulls the local models
    that best fit *your* hardware (per `localforge models`), and asks for
    your frontier model API key, saving it to
@@ -54,8 +66,8 @@ localforge run "Build a todo REST API with docs"
 After that, `localforge` just works in any terminal — no repeated setup, no
 manual model downloads, no re-exporting API keys.
 
-To upgrade after pulling new code: re-run `./install.sh` (or
-`uv tool install --reinstall .` on its own).
+To upgrade after a new release: just re-run the one-liner or `./install.sh`
+— it pulls the latest source and reinstalls.
 
 You can also run pieces individually:
 - `localforge wizard` — the same setup flow as a navigable terminal UI
