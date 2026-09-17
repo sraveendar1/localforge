@@ -25,18 +25,39 @@ for `gpt-5` or a self-hosted model is a one-line config change.
 
 ## Install
 
+localforge is packaged for [uv](https://docs.astral.sh/uv/). uv fetches a
+matching Python for you, so nothing else needs to be pre-installed.
+
 ```bash
-pip install -e ".[dev]"
+# install uv, if you don't have it
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# install localforge as a standalone CLI tool (from a local checkout)
+uv tool install .
 ```
+
+This installs a `localforge` command onto your `PATH` — no virtualenv to
+activate, no `pip` to manage. To upgrade after pulling changes:
+`uv tool install --reinstall .`
 
 You'll also need [Ollama](https://ollama.com) installed and running for
 local model execution, plus an API key for whichever frontier model you use
 (e.g. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in your environment — LiteLLM
-reads these automatically).
+reads these automatically). Run `localforge doctor` to check all of this at
+once.
+
+### Developing locally
+
+```bash
+uv sync --extra dev     # creates .venv and installs everything, incl. test deps
+uv run pytest -q
+uv run localforge scan
+```
 
 ## Usage
 
 ```bash
+localforge doctor                                # is everything set up correctly?
 localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
 localforge run "Build a todo REST API with docs" # do the thing
@@ -69,7 +90,7 @@ implementing `backends/comfyui.py`'s two methods and adding a tool entry in
 ## Running tests
 
 ```bash
-pytest
+uv run pytest
 ```
 
 ## License

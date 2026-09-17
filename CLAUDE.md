@@ -8,24 +8,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
+Packaged and dependency-managed with [uv](https://docs.astral.sh/uv/) (`uv.lock` is committed; `.python-version` pins 3.12 — uv fetches that Python automatically if it's not present, so a pre-installed Python is not required).
+
 ```bash
-# Setup (requires Python >= 3.10; this repo's venv was built with 3.12 via `brew install python@3.12`)
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+# Setup for development
+uv sync --extra dev
 
 # Run tests
-pytest -q
-pytest tests/test_catalog.py -q          # single file
-pytest tests/test_catalog.py::test_best_match_picks_highest_tier_that_fits -q  # single test
+uv run pytest -q
+uv run pytest tests/test_catalog.py -q          # single file
+uv run pytest tests/test_catalog.py::test_best_match_picks_highest_tier_that_fits -q  # single test
 
-# CLI (after editable install)
-localforge scan      # detect this machine's hardware
-localforge models     # best-fit local model per modality for this machine
-localforge catalog    # full model catalog, regardless of fit
+# CLI during development
+uv run localforge scan
+uv run localforge doctor    # checks Ollama + frontier API key + hardware fit
+
+# Install as a standalone end-user tool (no venv activation needed afterward)
+uv tool install .            # or --reinstall . after changing dependencies/entry points
+localforge scan
+localforge doctor      # checks Ollama installed/running + frontier API key set + hardware fit
+localforge models      # best-fit local model per modality for this machine
+localforge catalog     # full model catalog, regardless of fit
 localforge run "<task>" [--model gpt-5]   # run the orchestration loop
 ```
 
-Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. — read automatically by LiteLLM).
+Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. — read automatically by LiteLLM). `localforge doctor` checks all of this.
 
 ## Architecture
 
@@ -36,7 +43,7 @@ The pipeline is: **hardware detection → catalog matching → tool dispatch →
 - `backends/` — one module per serving runtime, behind the `Backend` protocol (`ensure_available`, `generate`) in `base.py`. `ollama.py` is implemented (REST calls to `localhost:11434`). `comfyui.py` is an intentional stub: image/video generation is job-based (submit → poll → fetch a file) rather than single-shot request/response like text, and returns `BackendResult(type="file", ...)` instead of `type="text"` — the orchestrator and tool layer already branch on this.
 - `tools.py` — the `Dispatcher` class is the glue: given a tool name the frontier model called, it maps tool → modality → `catalog.best_match()` → backend, resolves the model once per modality per run (cached in `_resolved_models`), and runs it. `TASK_MODALITIES` is the single source of truth mapping a modality to its tool name/description; adding a new delegable modality means adding an entry here plus a backend, not touching the orchestrator loop.
 - `orchestrator.py` — the actual plan→delegate→collect loop, built directly on `litellm.completion()` rather than a multi-agent framework (LangGraph/AutoGen/CrewAI were considered; rejected for v1 because the project's real complexity is in the catalog-matching/dispatch logic, not conversation/turn-taking, and those frameworks' native "agents talking to agents" abstraction doesn't fit job-based image/video subagents any better than a plain tool function does). The loop is intentionally simple and inspectable: send messages + tool schemas to the frontier model, execute whatever tool calls come back via `Dispatcher`, feed results back as `role: tool` messages, repeat until the frontier model stops calling tools or `MAX_ROUNDS` is hit.
-- `cli.py` — Typer entry point (`localforge` console script defined in `pyproject.toml`). The `run` command wraps the orchestrator call in a try/except to print a clean error instead of a raw traceback (LiteLLM raises rich exception types like `AuthenticationError` for missing API keys — surface `exc` directly, that's already a good user-facing message).
+- `cli.py` — Typer entry point (`localforge` console script defined in `pyproject.toml`). The `run` command wraps the orchestrator call in a try/except to print a clean error instead of a raw traceback (LiteLLM raises rich exception types like `AuthenticationError` for missing API keys — surface `exc` directly, that's already a good user-facing message). `doctor` is the first-run diagnostic (Ollama installed/running, frontier API key present, hardware fits every modality) — extend `FRONTIER_API_KEY_ENV_VARS` there when adding support for a new provider.
 
 ### Extending to a new modality (e.g. real image generation)
 
