@@ -1,0 +1,36 @@
+"""Persists user setup choices (API keys, default frontier model) to
+~/.config/localforge/config.env so `localforge setup` only has to run once.
+"""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+CONFIG_DIR = Path(os.environ.get("LOCALFORGE_CONFIG_DIR", Path.home() / ".config" / "localforge"))
+CONFIG_FILE = CONFIG_DIR / "config.env"
+
+
+def load() -> None:
+    """Load saved config into the environment, without overriding vars the
+    user already set for this shell session.
+    """
+    if CONFIG_FILE.exists():
+        load_dotenv(CONFIG_FILE, override=False)
+
+
+def save(values: dict[str, str]) -> None:
+    """Merge `values` into the saved config file, creating it if needed."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    existing: dict[str, str] = {}
+    if CONFIG_FILE.exists():
+        for line in CONFIG_FILE.read_text().splitlines():
+            if "=" in line and not line.startswith("#"):
+                key, _, val = line.partition("=")
+                existing[key] = val
+
+    existing.update(values)
+    CONFIG_FILE.write_text("".join(f"{k}={v}\n" for k, v in existing.items()))
+    CONFIG_FILE.chmod(0o600)  # contains API keys

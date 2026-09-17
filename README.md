@@ -25,26 +25,30 @@ for `gpt-5` or a self-hosted model is a one-line config change.
 
 ## Install
 
-localforge is packaged for [uv](https://docs.astral.sh/uv/). uv fetches a
-matching Python for you, so nothing else needs to be pre-installed.
+From a local checkout:
 
 ```bash
-# install uv, if you don't have it
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# install localforge as a standalone CLI tool (from a local checkout)
-uv tool install .
+./install.sh
 ```
 
-This installs a `localforge` command onto your `PATH` — no virtualenv to
-activate, no `pip` to manage. To upgrade after pulling changes:
-`uv tool install --reinstall .`
+This one command: installs [uv](https://docs.astral.sh/uv/) if you don't
+have it, installs `localforge` as a standalone CLI tool onto your `PATH`
+(no virtualenv to activate, no `pip` to manage — uv even fetches a matching
+Python for you), and then runs the interactive setup wizard, which:
 
-You'll also need [Ollama](https://ollama.com) installed and running for
-local model execution, plus an API key for whichever frontier model you use
-(e.g. `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in your environment — LiteLLM
-reads these automatically). Run `localforge doctor` to check all of this at
-once.
+- installs and starts [Ollama](https://ollama.com) if it isn't already,
+- pulls the local models that best fit *your* hardware (per `localforge models`),
+- prompts for your frontier model API key (Anthropic/OpenAI/Gemini) and saves
+  it to `~/.config/localforge/config.env` so you only enter it once.
+
+After that, `localforge` just works in any terminal, no setup steps repeated.
+
+To upgrade after pulling new code: `uv tool install --reinstall .`, or just
+re-run `./install.sh`.
+
+You can also run pieces individually — `localforge setup` re-runs the wizard
+on its own, and `localforge doctor` checks everything's still in place
+without changing anything.
 
 ### Developing locally
 
@@ -57,6 +61,7 @@ uv run localforge scan
 ## Usage
 
 ```bash
+localforge setup                                 # one-time interactive setup
 localforge doctor                                # is everything set up correctly?
 localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
@@ -81,7 +86,13 @@ localforge run "..." --model gpt-5               # use a different frontier mode
 - `orchestrator.py` — the plan → delegate → collect loop, built directly on
   LiteLLM rather than a multi-agent framework, so the delegation logic stays
   simple, provider-agnostic, and easy to step through.
-- `cli.py` — the `localforge` command-line entry point (Typer).
+- `config.py` — persists setup choices (API keys) to
+  `~/.config/localforge/config.env`, loaded automatically on every CLI
+  invocation without overriding variables already set in the shell.
+- `cli.py` — the `localforge` command-line entry point (Typer), including
+  the `setup` wizard and `doctor` diagnostic.
+- `install.sh` — the one-command bootstrap: installs uv, installs the CLI
+  tool, runs `localforge setup`.
 
 Adding a new modality (e.g. wiring up real image generation) means
 implementing `backends/comfyui.py`'s two methods and adding a tool entry in

@@ -24,15 +24,17 @@ uv run localforge scan
 uv run localforge doctor    # checks Ollama + frontier API key + hardware fit
 
 # Install as a standalone end-user tool (no venv activation needed afterward)
-uv tool install .            # or --reinstall . after changing dependencies/entry points
+./install.sh                 # bootstraps uv, installs the tool, runs the setup wizard
+uv tool install --reinstall . # re-run manually after changing dependencies/entry points
 localforge scan
+localforge setup       # interactive: installs Ollama, pulls recommended models, saves API key
 localforge doctor      # checks Ollama installed/running + frontier API key set + hardware fit
 localforge models      # best-fit local model per modality for this machine
 localforge catalog     # full model catalog, regardless of fit
 localforge run "<task>" [--model gpt-5]   # run the orchestration loop
 ```
 
-Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc. — read automatically by LiteLLM). `localforge doctor` checks all of this.
+Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). `localforge setup` handles both interactively and saves the key to `~/.config/localforge/config.env` (loaded automatically thereafter via `config.py`); `localforge doctor` checks all of this without changing anything.
 
 ## Architecture
 
