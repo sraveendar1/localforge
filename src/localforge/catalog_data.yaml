@@ -1,0 +1,92 @@
+# Curated catalog of open-weight models, tagged by task/modality and hardware needs.
+# min_vram_gb: 0 means the model can run CPU-only (via RAM) if no GPU is present.
+# runtime: which backend in localforge/backends/ knows how to serve this model.
+
+models:
+  - name: qwen2.5-coder:32b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 20
+    min_ram_gb: 32
+    quality_tier: 3
+
+  - name: qwen2.5-coder:14b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 10
+    min_ram_gb: 16
+    quality_tier: 2
+
+  - name: qwen2.5-coder:7b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 6
+    min_ram_gb: 8
+    quality_tier: 1
+
+  - name: gemma3:27b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 18
+    min_ram_gb: 24
+    quality_tier: 2
+
+  - name: gemma3:4b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 8
+    quality_tier: 1
+
+  - name: kimi-k2:latest
+    modality: docs
+    runtime: ollama
+    min_vram_gb: 24
+    min_ram_gb: 32
+    quality_tier: 3
+
+  - name: llama3.1:8b
+    modality: docs
+    runtime: ollama
+    min_vram_gb: 6
+    min_ram_gb: 8
+    quality_tier: 1
+
+  - name: mistral-nemo:12b
+    modality: docs
+    runtime: ollama
+    min_vram_gb: 8
+    min_ram_gb: 12
+    quality_tier: 2
+
+  - name: qwen2.5:3b
+    modality: general
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 4
+    quality_tier: 1
+
+  # Image/video entries are placeholders: the runtimes below are not yet
+  # implemented (see backends/image.py, backends/video.py) but the catalog
+  # and matching logic are already modality-aware so wiring in ComfyUI /
+  # diffusers backends later does not require touching the orchestrator.
+  - name: stable-diffusion-xl
+    modality: image
+    runtime: comfyui
+    min_vram_gb: 8
+    min_ram_gb: 16
+    quality_tier: 2
+
+  - name: flux.1-schnell
+    modality: image
+    runtime: comfyui
+    min_vram_gb: 12
+    min_ram_gb: 16
+    quality_tier: 3
+
+  - name: stable-video-diffusion
+    modality: video
+    runtime: comfyui
+    min_vram_gb: 16
+    min_ram_gb: 32
+    quality_tier: 2

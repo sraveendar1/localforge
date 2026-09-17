@@ -1,0 +1,33 @@
+[project]
+name = "localforge"
+version = "0.1.0"
+description = "Hardware-aware orchestration: a frontier model delegates coding, docs, and media-generation subtasks to open-weight models running locally on your machine."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Sanjay Raveendar" }]
+requires-python = ">=3.10"
+dependencies = [
+    "litellm>=1.50.0",
+    "psutil>=6.0.0",
+    "typer>=0.12.0",
+    "rich>=13.7.0",
+    "pyyaml>=6.0.0",
+    "httpx>=0.27.0",
+    "pydantic>=2.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[project.scripts]
+localforge = "localforge.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/localforge"]
