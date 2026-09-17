@@ -13,15 +13,9 @@ from rich.table import Table
 from localforge import config
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
+from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
 from localforge.orchestrator import run as run_orchestrator
-
-FRONTIER_PROVIDERS = {
-    "anthropic": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "gemini": "GEMINI_API_KEY",
-}
-FRONTIER_API_KEY_ENV_VARS = list(FRONTIER_PROVIDERS.values()) + ["AWS_ACCESS_KEY_ID"]  # Bedrock
 
 app = typer.Typer(
     name="localforge",
@@ -87,6 +81,16 @@ def catalog() -> None:
             str(entry.min_vram_gb), str(entry.min_ram_gb), str(entry.quality_tier),
         )
     console.print(table)
+
+
+@app.command()
+def wizard() -> None:
+    """Launch the interactive terminal getting-started wizard (same steps as
+    `setup`, but as a navigable screen-by-screen UI).
+    """
+    from localforge.tui import LocalforgeWizard
+
+    LocalforgeWizard().run()
 
 
 @app.command()

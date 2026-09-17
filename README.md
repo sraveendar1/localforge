@@ -46,9 +46,13 @@ After that, `localforge` just works in any terminal, no setup steps repeated.
 To upgrade after pulling new code: `uv tool install --reinstall .`, or just
 re-run `./install.sh`.
 
-You can also run pieces individually — `localforge setup` re-runs the wizard
-on its own, and `localforge doctor` checks everything's still in place
-without changing anything.
+You can also run pieces individually:
+- `localforge wizard` — the same setup flow as a navigable terminal UI
+  (screens, checkboxes, a live pull log) instead of `y/n` prompts.
+- `localforge setup` — the plain-prompt version of the same flow (useful
+  over a dumb terminal or in scripts).
+- `localforge doctor` — checks everything's still in place without changing
+  anything.
 
 ### Developing locally
 
@@ -61,7 +65,8 @@ uv run localforge scan
 ## Usage
 
 ```bash
-localforge setup                                 # one-time interactive setup
+localforge wizard                                # one-time interactive setup (terminal UI)
+localforge setup                                 # one-time interactive setup (plain prompts)
 localforge doctor                                # is everything set up correctly?
 localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
@@ -89,8 +94,10 @@ localforge run "..." --model gpt-5               # use a different frontier mode
 - `config.py` — persists setup choices (API keys) to
   `~/.config/localforge/config.env`, loaded automatically on every CLI
   invocation without overriding variables already set in the shell.
+- `tui.py` — the `localforge wizard` terminal UI ([Textual](https://textual.textualize.io/)):
+  the same setup steps as `setup`, as navigable screens instead of prompts.
 - `cli.py` — the `localforge` command-line entry point (Typer), including
-  the `setup` wizard and `doctor` diagnostic.
+  the `setup`/`wizard` onboarding flows and `doctor` diagnostic.
 - `install.sh` — the one-command bootstrap: installs uv, installs the CLI
   tool, runs `localforge setup`.
 

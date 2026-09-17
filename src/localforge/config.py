@@ -12,6 +12,13 @@ from dotenv import load_dotenv
 CONFIG_DIR = Path(os.environ.get("LOCALFORGE_CONFIG_DIR", Path.home() / ".config" / "localforge"))
 CONFIG_FILE = CONFIG_DIR / "config.env"
 
+FRONTIER_PROVIDERS = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+FRONTIER_API_KEY_ENV_VARS = list(FRONTIER_PROVIDERS.values()) + ["AWS_ACCESS_KEY_ID"]  # Bedrock
+
 
 def load() -> None:
     """Load saved config into the environment, without overriding vars the
