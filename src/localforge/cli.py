@@ -99,16 +99,18 @@ def setup() -> None:
     and saves your frontier model API key so future runs just work.
     """
     console.print("[bold]localforge setup[/bold]\n")
+    console.print("This installs everything localforge needs automatically; the only")
+    console.print("thing you'll need to provide is a frontier model API key.\n")
 
     # 1. Ollama
     if shutil.which("ollama") is None:
         if platform.system() == "Darwin" and shutil.which("brew"):
-            if typer.confirm("Ollama isn't installed. Install it now via Homebrew?", default=True):
-                subprocess.run(["brew", "install", "ollama"], check=True)
+            console.print("Installing Ollama via Homebrew...")
+            subprocess.run(["brew", "install", "ollama"], check=True)
         else:
             console.print(
-                "[yellow]Ollama isn't installed.[/yellow] Install it from "
-                "https://ollama.com, then re-run `localforge setup`."
+                "[yellow]Ollama isn't installed and can't be auto-installed on this OS.[/yellow] "
+                "Install it from https://ollama.com, then re-run `localforge setup`."
             )
             raise typer.Exit(code=1)
 
@@ -133,10 +135,9 @@ def setup() -> None:
     hw = detect_hardware()
     recs = recommendations(hw)
     to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
-    if to_pull and typer.confirm(f"Pull recommended local models ({', '.join(sorted(to_pull))})?", default=True):
-        for model_name in sorted(to_pull):
-            console.print(f"Pulling {model_name} (this can take a while)...")
-            ollama.ensure_available(model_name)
+    for model_name in sorted(to_pull):
+        console.print(f"Pulling {model_name} (this can take a while, only happens once)...")
+        ollama.ensure_available(model_name)
     console.print("[green]✓[/green] Local models ready\n")
 
     # 3. Frontier model API key

@@ -11,6 +11,22 @@ No vendor lock-in: the orchestrator is called through
 [LiteLLM](https://github.com/BerriAI/litellm), so swapping `claude-opus-5`
 for `gpt-5` or a self-hosted model is a one-line config change.
 
+## Quickstart
+
+```bash
+./install.sh
+```
+
+That's it. This single command installs everything — Ollama, the local
+models that fit your machine, and the `localforge` CLI itself — with no
+prompts to click through. The only thing it will ask you for is a frontier
+model API key (Anthropic, OpenAI, or Gemini — paste one when asked). Once it
+finishes:
+
+```bash
+localforge run "Build a todo REST API with docs"
+```
+
 ## How it works
 
 1. **`localforge scan`** — detects OS, CPU, RAM, and GPU/VRAM.
@@ -23,34 +39,29 @@ for `gpt-5` or a self-hosted model is a one-line config change.
    flow back into the frontier model's context until it produces a final
    answer.
 
-## Install
+## What `./install.sh` actually does
 
-From a local checkout:
+1. Installs [uv](https://docs.astral.sh/uv/) if you don't have it.
+2. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
+   virtualenv to activate, no `pip` to manage — uv even fetches a matching
+   Python for you).
+3. Runs setup automatically: installs and starts
+   [Ollama](https://ollama.com) if it isn't already, pulls the local models
+   that best fit *your* hardware (per `localforge models`), and asks for
+   your frontier model API key, saving it to
+   `~/.config/localforge/config.env` so you only enter it once.
 
-```bash
-./install.sh
-```
+After that, `localforge` just works in any terminal — no repeated setup, no
+manual model downloads, no re-exporting API keys.
 
-This one command: installs [uv](https://docs.astral.sh/uv/) if you don't
-have it, installs `localforge` as a standalone CLI tool onto your `PATH`
-(no virtualenv to activate, no `pip` to manage — uv even fetches a matching
-Python for you), and then runs the interactive setup wizard, which:
-
-- installs and starts [Ollama](https://ollama.com) if it isn't already,
-- pulls the local models that best fit *your* hardware (per `localforge models`),
-- prompts for your frontier model API key (Anthropic/OpenAI/Gemini) and saves
-  it to `~/.config/localforge/config.env` so you only enter it once.
-
-After that, `localforge` just works in any terminal, no setup steps repeated.
-
-To upgrade after pulling new code: `uv tool install --reinstall .`, or just
-re-run `./install.sh`.
+To upgrade after pulling new code: re-run `./install.sh` (or
+`uv tool install --reinstall .` on its own).
 
 You can also run pieces individually:
 - `localforge wizard` — the same setup flow as a navigable terminal UI
-  (screens, checkboxes, a live pull log) instead of `y/n` prompts.
-- `localforge setup` — the plain-prompt version of the same flow (useful
-  over a dumb terminal or in scripts).
+  (screens, checkboxes, a live pull log) instead of console output.
+- `localforge setup` — the automated, non-interactive-except-for-the-API-key
+  flow that `install.sh` calls; useful to re-run on its own.
 - `localforge doctor` — checks everything's still in place without changing
   anything.
 
