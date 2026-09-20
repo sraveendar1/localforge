@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import json
+from typing import Callable
+
 import httpx
 
 from localforge.backends.base import BackendResult
+
+# Called with each raw progress event Ollama streams back while pulling, e.g.
+# {"status": "pulling manifest"} or
+# {"status": "downloading", "digest": "...", "total": 123, "completed": 45}.
+ProgressCallback = Callable[[dict], None]
 
 OLLAMA_BASE_URL = "http://localhost:11434"
 
@@ -34,7 +42,7 @@ class OllamaBackend:
         resp.raise_for_status()
         return {m["name"] for m in resp.json().get("models", [])}
 
-    def ensure_available(self, model_name: str) -> None:
+    def ensure_available(self, model_name: str, on_progress: ProgressCallback | None = None) -> None:
         if not self.is_running():
             raise OllamaNotRunningError(
                 "Ollama is not running. Install it from https://ollama.com and start it, "
@@ -45,8 +53,13 @@ class OllamaBackend:
                 return
             with client.stream("POST", "/api/pull", json={"name": model_name}) as resp:
                 resp.raise_for_status()
-                for _ in resp.iter_lines():
-                    pass  # drain the pull progress stream; CLI reports progress separately
+                for line in resp.iter_lines():
+                    if not line or on_progress is None:
+                        continue
+                    try:
+                        on_progress(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
 
     def generate(self, model_name: str, prompt: str, **kwargs) -> BackendResult:
         with self._client() as client:

@@ -9,6 +9,7 @@ import time
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
 from localforge import config
@@ -196,13 +197,32 @@ def setup() -> None:
 
     to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
     failed: list[str] = []
-    for model_name in sorted(to_pull):
-        console.print(f"Pulling {model_name} (this can take a while, only happens once)...")
-        try:
-            ollama.ensure_available(model_name)
-        except Exception as exc:  # noqa: BLE001 - one failed pull shouldn't abort the rest of setup
-            failed.append(model_name)
-            console.print(f"[red]  failed: {model_name}: {exc}[/red]")
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+        DownloadColumn(),
+        TransferSpeedColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    ) as progress:
+        for model_name in sorted(to_pull):
+            task_id = progress.add_task(model_name, total=None)
+
+            def _on_progress(event: dict, task_id=task_id, model_name=model_name) -> None:
+                total = event.get("total")
+                completed = event.get("completed")
+                if total and completed is not None:
+                    progress.update(task_id, total=total, completed=completed)
+                else:
+                    progress.update(task_id, description=f"{model_name}: {event.get('status', '')}")
+
+            try:
+                ollama.ensure_available(model_name, on_progress=_on_progress)
+                progress.update(task_id, description=f"{model_name} (done)", completed=progress.tasks[task_id].total or 1)
+            except Exception as exc:  # noqa: BLE001 - one failed pull shouldn't abort the rest of setup
+                failed.append(model_name)
+                progress.update(task_id, description=f"[red]{model_name} (failed: {exc})[/red]")
 
     if failed:
         console.print(

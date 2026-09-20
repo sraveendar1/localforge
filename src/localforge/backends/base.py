@@ -11,8 +11,11 @@ class BackendResult(TypedDict):
 class Backend(Protocol):
     """A runtime capable of serving one or more models for a given modality."""
 
-    def ensure_available(self, model_name: str) -> None:
-        """Make sure `model_name` is pulled/loaded and ready to serve."""
+    def ensure_available(self, model_name: str, on_progress: object = None) -> None:
+        """Make sure `model_name` is pulled/loaded and ready to serve.
+        `on_progress`, if given, is called with each raw progress event the
+        backend emits while downloading (shape is backend-specific).
+        """
         ...
 
     def generate(self, model_name: str, prompt: str, **kwargs) -> BackendResult:

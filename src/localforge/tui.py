@@ -208,8 +208,23 @@ class ModelsScreen(Screen):
         backend = OllamaBackend()
         for name in models:
             self.app.call_from_thread(log.write_line, f"Pulling {name}...")
+            last_reported = -1
+
+            def _on_progress(event: dict, name=name) -> None:
+                nonlocal last_reported
+                total, completed = event.get("total"), event.get("completed")
+                if total and completed is not None:
+                    pct = int(completed * 100 / total)
+                    if pct >= last_reported + 10 or pct == 100:  # throttle to avoid flooding the log
+                        last_reported = pct
+                        self.app.call_from_thread(log.write_line, f"  {name}: {pct}%")
+                else:
+                    status = event.get("status", "")
+                    if status:
+                        self.app.call_from_thread(log.write_line, f"  {name}: {status}")
+
             try:
-                backend.ensure_available(name)
+                backend.ensure_available(name, on_progress=_on_progress)
                 self.app.call_from_thread(log.write_line, f"  done: {name}")
             except Exception as exc:  # noqa: BLE001 - shown in the log, not fatal to the wizard
                 self.app.call_from_thread(log.write_line, f"  failed: {name}: {exc}")

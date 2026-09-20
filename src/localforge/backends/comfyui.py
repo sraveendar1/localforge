@@ -15,7 +15,7 @@ from localforge.backends.base import BackendResult
 
 
 class ComfyUIBackend:
-    def ensure_available(self, model_name: str) -> None:
+    def ensure_available(self, model_name: str, on_progress: object = None) -> None:
         raise NotImplementedError(
             f"Image/video generation ({model_name}) is not implemented yet. "
             "Set up ComfyUI and wire it in here."

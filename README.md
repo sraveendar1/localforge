@@ -143,10 +143,12 @@ localforge run "..." --model gpt-5               # use a different frontier mode
   modality (via a tool call constrained with a JSON-schema `enum`, so it
   can't hallucinate a model outside the catalog), falling back to
   `best_match()` on any failure.
-- `backends/` — one module per serving runtime. `ollama.py` is implemented;
-  `comfyui.py` is a stub reserved for image/video generation, since those
-  are job-based (submit → poll → fetch file) rather than a single
-  request/response like text.
+- `backends/` — one module per serving runtime. `ollama.py` is implemented,
+  including a real progress callback fed by Ollama's streaming pull
+  response (used to drive an actual download progress bar in `setup` and a
+  live percentage in `wizard`, not just a spinner). `comfyui.py` is a stub
+  reserved for image/video generation, since those are job-based (submit →
+  poll → fetch file) rather than a single request/response like text.
 - `tools.py` — turns catalog + backends into tool schemas the frontier model
   can call, and dispatches each call to the right local model.
 - `orchestrator.py` — the plan → delegate → collect loop, built directly on
