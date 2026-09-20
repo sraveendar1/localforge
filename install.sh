@@ -7,7 +7,7 @@
 # into ~/.local/share/localforge/src first.
 set -euo pipefail
 
-REPO_URL="https://github.com/sanjayraveendar/localforge.git"
+REPO_URL="https://github.com/sraveendar1/localforge.git"
 CLONE_DIR="$HOME/.local/share/localforge/src"
 
 echo "localforge installer — this will set up the following on this machine:"

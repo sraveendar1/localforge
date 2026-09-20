@@ -27,13 +27,13 @@ terminal to wait on).
 **One-liner (no clone needed):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sanjayraveendar/localforge/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/sraveendar1/localforge/main/install.sh | bash
 ```
 
 **Or, from a clone:**
 
 ```bash
-git clone https://github.com/sanjayraveendar/localforge.git
+git clone https://github.com/sraveendar1/localforge.git
 cd localforge
 ./install.sh
 ```
@@ -54,7 +54,7 @@ the script's content at the moment you run it. If you'd rather see exactly
 what will run first, download and read it before executing:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/sanjayraveendar/localforge/main/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/sraveendar1/localforge/main/install.sh -o install.sh
 less install.sh   # inspect it
 bash install.sh
 ```
