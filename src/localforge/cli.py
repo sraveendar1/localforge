@@ -13,7 +13,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import config
+from localforge import config, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
@@ -31,9 +31,31 @@ console = Console()
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context) -> None:
     config.load()
+    console.push_theme(theme.get_theme(os.environ.get(config.THEME_ENV_VAR, theme.DEFAULT_THEME)))
     if ctx.invoked_subcommand is None:
         _print_getting_started()
         raise typer.Exit()
+
+
+@app.command(name="theme")
+def theme_command(
+    name: str = typer.Argument(None, help=f"Theme to switch to: {', '.join(theme.THEMES)}. Omit to show the current theme."),
+) -> None:
+    """Show or change the CLI color theme (matrix, dark, light)."""
+    current = os.environ.get(config.THEME_ENV_VAR, theme.DEFAULT_THEME)
+    if name is None:
+        console.print(f"Current theme: [accent]{current}[/accent]")
+        console.print(f"Available: {', '.join(theme.THEMES)}")
+        console.print("Switch with: localforge theme <name>")
+        return
+
+    if name not in theme.THEMES:
+        console.print(f"[error]Unknown theme {name!r}.[/error] Available: {', '.join(theme.THEMES)}")
+        raise typer.Exit(code=1)
+
+    config.save({config.THEME_ENV_VAR: name})
+    console.push_theme(theme.get_theme(name))
+    console.print(f"[success]✓[/success] Theme set to [accent]{name}[/accent].")
 
 
 @app.command()
@@ -51,7 +73,7 @@ def _usage_bar(local_tokens: int, frontier_tokens: int, width: int = 40) -> str:
         return f"[dim]{'░' * width}[/dim] no tokens used"
     local_width = round(width * local_tokens / total)
     frontier_width = width - local_width
-    bar = f"[green]{'█' * local_width}[/green][yellow]{'█' * frontier_width}[/yellow]"
+    bar = f"[success]{'█' * local_width}[/success][warning]{'█' * frontier_width}[/warning]"
     pct_local = round(100 * local_tokens / total)
     return f"{bar}  {pct_local}% local / {100 - pct_local}% frontier"
 
@@ -61,16 +83,16 @@ def _print_getting_started() -> None:
     if ready:
         body = (
             "[bold]You're set up.[/bold] Try:\n\n"
-            '  [cyan]localforge run "Build a todo REST API with docs"[/cyan]\n\n'
+            '  [accent]localforge run "Build a todo REST API with docs"[/accent]\n\n'
             "Other commands: [bold]scan[/bold] · [bold]models[/bold] · [bold]doctor[/bold] · [bold]wizard[/bold]"
         )
     else:
         body = (
             "[bold]Get started in one step:[/bold]\n\n"
-            "  [cyan]localforge setup[/cyan]   (or [cyan]localforge wizard[/cyan] for a terminal UI)\n\n"
+            "  [accent]localforge setup[/accent]   (or [accent]localforge wizard[/accent] for a terminal UI)\n\n"
             "That installs Ollama, has a frontier model pick local models for your\n"
             "hardware, and saves your API key — then you're ready for:\n\n"
-            '  [cyan]localforge run "Build a todo REST API with docs"[/cyan]'
+            '  [accent]localforge run "Build a todo REST API with docs"[/accent]'
         )
     console.print(Panel(body, title="localforge", expand=False))
 
@@ -104,7 +126,7 @@ def models() -> None:
 
     for modality, entry in recs.items():
         if entry is None:
-            table.add_row(modality, "[red]none fit this hardware[/red]", "-", "-")
+            table.add_row(modality, "[error]none fit this hardware[/error]", "-", "-")
         else:
             table.add_row(modality, entry.name, entry.runtime, str(entry.quality_tier))
 
@@ -114,7 +136,7 @@ def models() -> None:
 def _installed_ollama_models() -> list[dict]:
     ollama = OllamaBackend()
     if not ollama.is_running():
-        console.print("[red]Ollama is not running.[/red] Start it, then retry.")
+        console.print("[error]Ollama is not running.[/error] Start it, then retry.")
         raise typer.Exit(code=1)
     return ollama.list_installed()
 
@@ -160,7 +182,7 @@ def delete(
             if requested in names:
                 queue.append(requested)
             else:
-                console.print(f"[yellow]Skipping — not installed: {requested}[/yellow]")
+                console.print(f"[warning]Skipping — not installed: {requested}[/warning]")
     else:
         table = Table(title="Installed local models")
         table.add_column("#")
@@ -178,7 +200,7 @@ def delete(
             elif part in names:
                 queue.append(part)
             else:
-                console.print(f"[yellow]Skipping unknown selection: {part!r}[/yellow]")
+                console.print(f"[warning]Skipping unknown selection: {part!r}[/warning]")
 
     queue = sorted(set(queue))
     if not queue:
@@ -197,9 +219,9 @@ def delete(
     for name in queue:
         try:
             ollama.delete(name)
-            console.print(f"[green]✓[/green] Deleted {name}")
+            console.print(f"[success]✓[/success] Deleted {name}")
         except Exception as exc:  # noqa: BLE001 - one failed delete shouldn't abort the rest of the queue
-            console.print(f"[red]✗[/red] Failed to delete {name}: {exc}")
+            console.print(f"[error]✗[/error] Failed to delete {name}: {exc}")
 
 
 @app.command()
@@ -247,6 +269,8 @@ def _prompt_for_model(provider: str) -> str:
         console.print(f"  {i}) {model_id}")
     other_idx = len(choices) + 1
     console.print(f"  {other_idx}) Other (type a model id)")
+    if provider == "local":
+        console.print("     (any Ollama model works, but must be prefixed \"ollama/\", e.g. ollama/llama3.1:8b)")
 
     raw = typer.prompt("Choose a model", default="1").strip()
     if raw.isdigit():
@@ -274,7 +298,7 @@ def setup() -> None:
             subprocess.run(["brew", "install", "ollama"], check=True)
         else:
             console.print(
-                "[yellow]Ollama isn't installed and can't be auto-installed on this OS.[/yellow] "
+                "[warning]Ollama isn't installed and can't be auto-installed on this OS.[/warning] "
                 "Install it from https://ollama.com, then re-run `localforge setup`."
             )
             raise typer.Exit(code=1)
@@ -292,9 +316,9 @@ def setup() -> None:
                 break
             time.sleep(1)
         else:
-            console.print("[red]Could not confirm Ollama started.[/red] Start it manually and re-run setup.")
+            console.print("[error]Could not confirm Ollama started.[/error] Start it manually and re-run setup.")
             raise typer.Exit(code=1)
-    console.print("[green]✓[/green] Ollama is installed and running\n")
+    console.print("[success]✓[/success] Ollama is installed and running\n")
 
     # 2. Frontier model provider -- always asked explicitly, even if a key
     # for some provider already happens to be sitting in the environment.
@@ -303,20 +327,37 @@ def setup() -> None:
         f"Which frontier model provider should localforge use? ({'/'.join(FRONTIER_PROVIDERS)})",
         default="anthropic",
     ).strip().lower()
-    env_var = FRONTIER_PROVIDERS.get(provider)
+
     frontier_model: str | None = None
-    if env_var is None:
-        console.print(f"[red]Unknown provider {provider!r}.[/red] Skipping — configure a frontier model manually later.")
+    if provider not in FRONTIER_PROVIDERS:
+        console.print(f"[error]Unknown provider {provider!r}.[/error] Skipping — configure a frontier model manually later.")
     else:
+        env_var = FRONTIER_PROVIDERS[provider]
         frontier_model = _prompt_for_model(provider)
-        if os.environ.get(env_var):
-            console.print(f"[green]✓[/green] Using existing {env_var} from your environment.\n")
+        if env_var is None:
+            # An open-weight model as the orchestrator itself: no API key
+            # needed, but if it's served via Ollama, make sure it's pulled.
+            console.print(
+                f"[success]✓[/success] Using {frontier_model} as the frontier orchestrator "
+                "(self-hosted, no API key needed).\n"
+            )
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            if frontier_model.startswith("ollama/"):
+                orchestrator_model_name = frontier_model.removeprefix("ollama/")
+                console.print(f"Pulling {orchestrator_model_name} for orchestration (this can take a while)...")
+                try:
+                    ollama.ensure_available(orchestrator_model_name)
+                    console.print(f"[success]✓[/success] {orchestrator_model_name} ready\n")
+                except Exception as exc:  # noqa: BLE001 - reported, doesn't abort the rest of setup
+                    console.print(f"[error]Failed to pull {orchestrator_model_name}: {exc}[/error]\n")
+        elif os.environ.get(env_var):
+            console.print(f"[success]✓[/success] Using existing {env_var} from your environment.\n")
             config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
         else:
             api_key = typer.prompt(f"Paste your {env_var}", hide_input=True)
             config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
             os.environ[env_var] = api_key
-            console.print(f"[green]✓[/green] Saved {env_var} to {config.CONFIG_FILE}\n")
+            console.print(f"[success]✓[/success] Saved {env_var} to {config.CONFIG_FILE}\n")
 
     # 3. Hardware scan, then let the frontier model pick which local models
     # to download (constrained to catalog entries that already fit this
@@ -330,7 +371,7 @@ def setup() -> None:
         console.print(f"Asking {frontier_model} to pick the best local models for this machine...")
         recs = recommend_models(hw, frontier_model)
     else:
-        console.print("[yellow]No usable frontier model id — falling back to the built-in heuristic.[/yellow]")
+        console.print("[warning]No usable frontier model id — falling back to the built-in heuristic.[/warning]")
         recs = recommendations(hw)
 
     to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
@@ -360,17 +401,17 @@ def setup() -> None:
                 progress.update(task_id, description=f"{model_name} (done)", completed=progress.tasks[task_id].total or 1)
             except Exception as exc:  # noqa: BLE001 - one failed pull shouldn't abort the rest of setup
                 failed.append(model_name)
-                progress.update(task_id, description=f"[red]{model_name} (failed: {exc})[/red]")
+                progress.update(task_id, description=f"[error]{model_name} (failed: {exc})[/error]")
 
     if failed:
         console.print(
-            f"\n[yellow]![/yellow] {len(failed)} model(s) failed to pull: {', '.join(failed)}. "
+            f"\n[warning]![/warning] {len(failed)} model(s) failed to pull: {', '.join(failed)}. "
             "Re-run `localforge setup` to retry, or pull manually with `ollama pull <name>`.\n"
         )
     else:
-        console.print("[green]✓[/green] Local models ready\n")
+        console.print("[success]✓[/success] Local models ready\n")
 
-    console.print("[bold green]Setup complete.[/bold green] Try: localforge run \"...\"")
+    console.print("[bold success]Setup complete.[/bold success] Try: localforge run \"...\"")
 
 
 @app.command()
@@ -379,46 +420,49 @@ def doctor() -> None:
     ok = True
 
     if shutil.which("ollama") is not None:
-        console.print("[green]✓[/green] Ollama is installed")
+        console.print("[success]✓[/success] Ollama is installed")
     else:
         ok = False
-        console.print("[red]✗[/red] Ollama is not installed — get it from https://ollama.com")
+        console.print("[error]✗[/error] Ollama is not installed — get it from https://ollama.com")
 
     if OllamaBackend().is_running():
-        console.print("[green]✓[/green] Ollama is running")
+        console.print("[success]✓[/success] Ollama is running")
     else:
         ok = False
-        console.print("[red]✗[/red] Ollama is not running — start it (e.g. `ollama serve` or `brew services start ollama`)")
+        console.print("[error]✗[/error] Ollama is not running — start it (e.g. `ollama serve` or `brew services start ollama`)")
 
     found_keys = [var for var in FRONTIER_API_KEY_ENV_VARS if os.environ.get(var)]
     chosen_model = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
-    if found_keys and chosen_model:
-        console.print(f"[green]✓[/green] Frontier model configured: {chosen_model} (via {', '.join(found_keys)})")
+    is_local_frontier = bool(chosen_model) and chosen_model.startswith("ollama/")
+    if chosen_model and (found_keys or is_local_frontier):
+        via = "self-hosted, no API key needed" if is_local_frontier else f"via {', '.join(found_keys)}"
+        console.print(f"[success]✓[/success] Frontier model configured: {chosen_model} ({via})")
     elif found_keys:
         console.print(
-            f"[yellow]![/yellow] API key(s) found ({', '.join(found_keys)}) but no frontier model "
+            f"[warning]![/warning] API key(s) found ({', '.join(found_keys)}) but no frontier model "
             "chosen — run `localforge setup` to pick one explicitly."
         )
         ok = False
     else:
         ok = False
         console.print(
-            "[red]✗[/red] No frontier model configured — run `localforge setup`, "
-            "or export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS)
+            "[error]✗[/error] No frontier model configured — run `localforge setup`, "
+            "export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS) + ", or pick an open-weight "
+            "model as the orchestrator (`localforge setup`, provider \"local\")"
         )
 
     hw = detect_hardware()
     recs = recommendations(hw)
     missing = [modality for modality, entry in recs.items() if entry is None]
     if not missing:
-        console.print("[green]✓[/green] A local model fits every known modality")
+        console.print("[success]✓[/success] A local model fits every known modality")
     else:
-        console.print(f"[yellow]![/yellow] No fitting model for: {', '.join(missing)} (hardware too limited)")
+        console.print(f"[warning]![/warning] No fitting model for: {', '.join(missing)} (hardware too limited)")
 
     if ok:
-        console.print("\n[bold green]Ready to go.[/bold green] Try: localforge run \"...\"")
+        console.print("\n[bold success]Ready to go.[/bold success] Try: localforge run \"...\"")
     else:
-        console.print("\n[bold red]Fix the items above before running `localforge run`.[/bold red]")
+        console.print("\n[bold error]Fix the items above before running `localforge run`.[/bold error]")
         raise typer.Exit(code=1)
 
 
@@ -437,13 +481,13 @@ def run(
     frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
 
     def _on_delegate(modality: str, entry) -> None:
-        console.print(f"  → delegating [bold]{modality}[/bold] to [cyan]{entry.name}[/cyan] (local, via {entry.runtime})")
+        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (local, via {entry.runtime})")
 
     try:
-        with console.status(f"[bold green]Orchestrating with {frontier_model}..."):
+        with console.status(f"[bold success]Orchestrating with {frontier_model}..."):
             result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate)
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
-        console.print(f"[bold red]Error:[/bold red] {exc}")
+        console.print(f"[bold error]Error:[/bold error] {exc}")
         raise typer.Exit(code=1) from None
 
     console.print(result.answer)
@@ -452,9 +496,9 @@ def run(
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
         "",
-        f"[green]■[/green] Local models: {stats.local_tokens_generated} tokens — "
+        f"[success]■[/success] Local models: {stats.local_tokens_generated} tokens — "
         "never sent to or billed by the frontier API",
-        f"[yellow]■[/yellow] Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
+        f"[warning]■[/warning] Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + (f" (${stats.frontier_cost_usd:.4f})" if stats.frontier_cost_usd else ""),
     ]
@@ -487,7 +531,7 @@ def uninstall(
     total_model_bytes = sum(m.get("size", 0) for m in models_on_disk)
     ollama_via_brew = _ollama_installed_via_brew()
 
-    lines = ["[bold red]This will remove:[/bold red]"]
+    lines = ["[bold error]This will remove:[/bold error]"]
     if models_on_disk:
         lines.append(f"  - {len(models_on_disk)} local model(s) — {total_model_bytes / (1024**3):.2f} GB")
     if config.CONFIG_FILE.exists():
@@ -515,9 +559,9 @@ def uninstall(
     for m in models_on_disk:
         try:
             ollama.delete(m["name"])
-            console.print(f"[green]✓[/green] Deleted model {m['name']}")
+            console.print(f"[success]✓[/success] Deleted model {m['name']}")
         except Exception as exc:  # noqa: BLE001 - one failed delete shouldn't abort the rest of uninstall
-            console.print(f"[red]✗[/red] Failed to delete {m['name']}: {exc}")
+            console.print(f"[error]✗[/error] Failed to delete {m['name']}: {exc}")
 
     if purge_ollama:
         if ollama_via_brew:
@@ -525,15 +569,15 @@ def uninstall(
         ollama_data_dir = Path.home() / ".ollama"
         if ollama_data_dir.exists():
             shutil.rmtree(ollama_data_dir, ignore_errors=True)
-        console.print("[green]✓[/green] Removed Ollama and its data")
+        console.print("[success]✓[/success] Removed Ollama and its data")
 
     if config.CONFIG_DIR.exists():
         shutil.rmtree(config.CONFIG_DIR, ignore_errors=True)
-        console.print(f"[green]✓[/green] Removed {config.CONFIG_DIR}")
+        console.print(f"[success]✓[/success] Removed {config.CONFIG_DIR}")
 
     console.print("\nUninstalling the localforge CLI tool itself...")
     subprocess.run(["uv", "tool", "uninstall", "localforge"], check=False)
-    console.print("[bold green]Done.[/bold green] localforge has been fully removed.")
+    console.print("[bold success]Done.[/bold success] localforge has been fully removed.")
 
 
 if __name__ == "__main__":

@@ -2,9 +2,9 @@ from localforge.cli import _usage_bar
 
 
 def _block_counts(rendered: str) -> tuple[int, int]:
-    green = rendered.split("[green]")[1].split("[/green]")[0]
-    yellow = rendered.split("[yellow]")[1].split("[/yellow]")[0]
-    return len(green), len(yellow)
+    local = rendered.split("[success]")[1].split("[/success]")[0]
+    frontier = rendered.split("[warning]")[1].split("[/warning]")[0]
+    return len(local), len(frontier)
 
 
 def test_usage_bar_splits_blocks_proportionally():

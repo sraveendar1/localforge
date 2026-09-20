@@ -158,14 +158,25 @@ into a single "yes to everything."
 ### Choosing a frontier model
 
 `setup`/`wizard` always ask explicitly which frontier provider
-(Anthropic/OpenAI/Gemini) to use — localforge never silently guesses this
-from whatever API key happens to already be in your environment (if you
-have multiple keys set for unrelated tools, that ambiguity gets surfaced,
-not resolved for you). If a key for the provider you pick is already
-present, you're offered the option to reuse it instead of re-entering it.
-The choice is saved to `LOCALFORGE_FRONTIER_MODEL` in
+(Anthropic/OpenAI/Gemini, **or `local`**) to use — localforge never
+silently guesses this from whatever API key happens to already be in your
+environment (if you have multiple keys set for unrelated tools, that
+ambiguity gets surfaced, not resolved for you). If a key for the provider
+you pick is already present, you're offered the option to reuse it instead
+of re-entering it. The choice is saved to `LOCALFORGE_FRONTIER_MODEL` in
 `~/.config/localforge/config.env`, which `localforge run` uses by default
 (overridable per-run with `--model`).
+
+**The frontier/orchestrator model doesn't have to be a proprietary API at
+all.** Picking provider `local` lets an open-weight model served by Ollama
+be the orchestrator itself — no API key, no per-token cost, fully
+self-hosted. Model ids for this provider use LiteLLM's `ollama/<model>`
+convention (e.g. `ollama/llama3.1:70b`); `setup` pulls it via Ollama just
+like any delegated model. Trade-off to know: the orchestrator role plans
+the task and makes tool-calling decisions, which most *small* open-weight
+models handle unreliably — the curated choices here favor larger models
+for that reason, and you can always point `--model` at anything else
+LiteLLM/Ollama supports via the "Other" option.
 
 ### Hardware-aware model selection
 
@@ -240,7 +251,21 @@ localforge delete                                # pick installed model(s) to de
 localforge delete qwen2.5-coder:14b --yes        # delete a specific model without prompting
 localforge uninstall                             # remove models, config, and the CLI tool (asks first)
 localforge uninstall --purge-ollama              # also uninstall Ollama itself and wipe ~/.ollama
+localforge theme                                 # show current theme + available options
+localforge theme dark                            # switch theme (matrix / dark / light)
 ```
+
+### Themes
+
+`localforge theme` switches the CLI's color scheme between three standard
+options — `matrix` (bright green, hacker-terminal aesthetic, the default),
+`dark` (a calmer cyan/green scheme for typical dark terminals), and `light`
+(deeper/darker color tones that stay readable on a light terminal
+background). Every message in the CLI uses semantic style names
+(success/error/warning/accent) rather than hardcoded colors, so switching
+themes actually changes what you see everywhere, not just in one place.
+The choice is saved to `LOCALFORGE_THEME` in `~/.config/localforge/config.env`
+and applies immediately to the running command as well as every future one.
 
 ## Architecture
 
@@ -266,9 +291,15 @@ localforge uninstall --purge-ollama              # also uninstall Ollama itself 
 - `orchestrator.py` — the plan → delegate → collect loop, built directly on
   LiteLLM rather than a multi-agent framework, so the delegation logic stays
   simple, provider-agnostic, and easy to step through.
-- `config.py` — persists setup choices (API keys) to
-  `~/.config/localforge/config.env`, loaded automatically on every CLI
-  invocation without overriding variables already set in the shell.
+- `config.py` — persists setup choices (API keys, chosen frontier model,
+  theme) to `~/.config/localforge/config.env`, loaded automatically on
+  every CLI invocation without overriding variables already set in the
+  shell. `FRONTIER_PROVIDERS["local"]` maps to `None` (no API key) for the
+  open-weight-orchestrator option.
+- `theme.py` — the three `rich.theme.Theme` definitions (`matrix`/`dark`/`light`)
+  behind `localforge theme`, keyed by semantic style names
+  (`success`/`error`/`warning`/`accent`) that `cli.py` uses everywhere
+  instead of literal color words.
 - `tui.py` — the `localforge wizard` terminal UI ([Textual](https://textual.textualize.io/)):
   the same setup steps as `setup`, as navigable screens instead of prompts.
 - `cli.py` — the `localforge` command-line entry point (Typer), including

@@ -140,10 +140,16 @@ class ApiKeyScreen(Screen):
         provider = event.pressed.id.removeprefix("radio-")
         env_var = FRONTIER_PROVIDERS[provider]
         hint = self.query_one("#api-key-hint", Static)
-        if os.environ.get(env_var):
-            hint.update(f"[green]{env_var} already set — leave the field below empty to reuse it.[/green]")
+        key_input = self.query_one("#api-key-input", Input)
+        if env_var is None:
+            hint.update("[green]Open-weight model, self-hosted via Ollama — no API key needed.[/green]")
+            key_input.display = False
         else:
-            hint.update(f"Paste your {env_var}:")
+            key_input.display = True
+            if os.environ.get(env_var):
+                hint.update(f"[green]{env_var} already set — leave the field below empty to reuse it.[/green]")
+            else:
+                hint.update(f"Paste your {env_var}:")
         self._populate_models(provider)
 
     def on_select_changed(self, event: Select.Changed) -> None:
@@ -171,7 +177,9 @@ class ApiKeyScreen(Screen):
         else:
             frontier_model = model_choice
 
-        if api_key:
+        if env_var is None:
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+        elif api_key:
             config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
             os.environ[env_var] = api_key
         elif os.environ.get(env_var):
