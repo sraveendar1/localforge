@@ -78,15 +78,20 @@ deterministic highest-quality-tier pick `localforge models` uses on its own.
 
 1. If it's not already sitting inside a checkout of this repo (e.g. you ran
    the curl one-liner), clones it into `~/.local/share/localforge/src`.
-2. Installs [uv](https://docs.astral.sh/uv/) if you don't have it.
-3. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
+2. On macOS, installs [Homebrew](https://brew.sh) if you don't have it —
+   needed so Ollama can be auto-installed in the next step. (This can
+   prompt for your password once, since Homebrew needs elevated
+   permissions to set up its directories on a first-time install — that's
+   normal and only happens the first time Homebrew itself is installed.)
+3. Installs [uv](https://docs.astral.sh/uv/) if you don't have it.
+4. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
    virtualenv to activate, no `pip` to manage — uv even fetches a matching
    Python for you).
-4. Asks for your frontier model API key (saving it to
-   `~/.config/localforge/config.env` so you only enter it once), then
-   installs and starts [Ollama](https://ollama.com) if it isn't already, and
-   has the frontier model itself pick which local models to pull — see
-   "Hardware-aware model selection" below.
+5. Asks which frontier model provider to use and for its API key (saving
+   both to `~/.config/localforge/config.env` so you only enter it once),
+   then installs and starts [Ollama](https://ollama.com) if it isn't
+   already, and has the frontier model itself pick which local models to
+   pull — see "Hardware-aware model selection" below.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
 manual model downloads, no re-exporting API keys. Just running `localforge`

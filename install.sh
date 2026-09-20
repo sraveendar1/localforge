@@ -28,6 +28,16 @@ else
     PROJECT_DIR="$CLONE_DIR"
 fi
 
+if [ "$(uname -s)" = "Darwin" ] && ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew not found — installing it (needed to auto-install Ollama)..."
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if [ -x /opt/homebrew/bin/brew ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [ -x /usr/local/bin/brew ]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
+fi
+
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv not found — installing it..."
     curl -LsSf https://astral.sh/uv/install.sh | sh

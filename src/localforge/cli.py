@@ -195,10 +195,22 @@ def setup() -> None:
         recs = recommendations(hw)
 
     to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
+    failed: list[str] = []
     for model_name in sorted(to_pull):
         console.print(f"Pulling {model_name} (this can take a while, only happens once)...")
-        ollama.ensure_available(model_name)
-    console.print("[green]✓[/green] Local models ready\n")
+        try:
+            ollama.ensure_available(model_name)
+        except Exception as exc:  # noqa: BLE001 - one failed pull shouldn't abort the rest of setup
+            failed.append(model_name)
+            console.print(f"[red]  failed: {model_name}: {exc}[/red]")
+
+    if failed:
+        console.print(
+            f"\n[yellow]![/yellow] {len(failed)} model(s) failed to pull: {', '.join(failed)}. "
+            "Re-run `localforge setup` to retry, or pull manually with `ollama pull <name>`.\n"
+        )
+    else:
+        console.print("[green]✓[/green] Local models ready\n")
 
     console.print("[bold green]Setup complete.[/bold green] Try: localforge run \"...\"")
 
