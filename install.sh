@@ -42,4 +42,4 @@ echo "Running setup (you'll only be asked for a frontier model API key)..."
 "$HOME/.local/bin/localforge" setup
 
 echo
-echo "Done. Try: localforge run \"Build a todo REST API with docs\""
+"$HOME/.local/bin/localforge"

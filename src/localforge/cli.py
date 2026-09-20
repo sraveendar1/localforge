@@ -8,6 +8,7 @@ import time
 
 import typer
 from rich.console import Console
+from rich.panel import Panel
 from rich.table import Table
 
 from localforge import config
@@ -25,9 +26,31 @@ app = typer.Typer(
 console = Console()
 
 
-@app.callback()
-def _load_saved_config() -> None:
+@app.callback(invoke_without_command=True)
+def _main(ctx: typer.Context) -> None:
     config.load()
+    if ctx.invoked_subcommand is None:
+        _print_getting_started()
+        raise typer.Exit()
+
+
+def _print_getting_started() -> None:
+    ready = any(os.environ.get(v) for v in FRONTIER_API_KEY_ENV_VARS)
+    if ready:
+        body = (
+            "[bold]You're set up.[/bold] Try:\n\n"
+            '  [cyan]localforge run "Build a todo REST API with docs"[/cyan]\n\n'
+            "Other commands: [bold]scan[/bold] · [bold]models[/bold] · [bold]doctor[/bold] · [bold]wizard[/bold]"
+        )
+    else:
+        body = (
+            "[bold]Get started in one step:[/bold]\n\n"
+            "  [cyan]localforge setup[/cyan]   (or [cyan]localforge wizard[/cyan] for a terminal UI)\n\n"
+            "That installs Ollama, has a frontier model pick local models for your\n"
+            "hardware, and saves your API key — then you're ready for:\n\n"
+            '  [cyan]localforge run "Build a todo REST API with docs"[/cyan]'
+        )
+    console.print(Panel(body, title="localforge", expand=False))
 
 
 @app.command()

@@ -35,7 +35,7 @@ localforge catalog     # full model catalog, regardless of fit
 localforge run "<task>" [--model gpt-5]   # run the orchestration loop
 ```
 
-Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). `localforge setup` handles both interactively and saves the key to `~/.config/localforge/config.env` (loaded automatically thereafter via `config.py`); `localforge doctor` checks all of this without changing anything.
+Requires [Ollama](https://ollama.com) running locally for actual model execution, and an API key for whichever frontier model is used (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, etc.). `localforge setup` handles both interactively and saves the key to `~/.config/localforge/config.env` (loaded automatically thereafter via `config.py`); `localforge doctor` checks all of this without changing anything. Running bare `localforge` (no subcommand) prints a short getting-started panel via the `invoke_without_command=True` callback in `cli.py` — the message branches on whether a `FRONTIER_API_KEY_ENV_VARS` entry is already set, so don't remove that check when touching the callback.
 
 ## Architecture
 

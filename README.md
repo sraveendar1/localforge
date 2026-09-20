@@ -77,7 +77,10 @@ deterministic highest-quality-tier pick `localforge models` uses on its own.
    "Hardware-aware model selection" below.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
-manual model downloads, no re-exporting API keys.
+manual model downloads, no re-exporting API keys. Just running `localforge`
+with no arguments always shows a short "what to do next" panel — one set of
+instructions if you haven't set an API key yet, another (pointing straight
+at `localforge run`) once you have.
 
 To upgrade after a new release: just re-run the one-liner or `./install.sh`
 — it pulls the latest source and reinstalls.
