@@ -7,11 +7,36 @@ the frontier model stops requesting tools.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass, field
 
+import litellm
 from litellm import completion
 
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import DelegateCallback, Dispatcher, build_tool_schemas
+
+
+@dataclass
+class RunStats:
+    """Usage metrics for one `run()` call, to show what delegating to local
+    models actually saved versus sending everything through the frontier
+    model's API.
+    """
+
+    frontier_prompt_tokens: int = 0
+    frontier_completion_tokens: int = 0
+    frontier_cost_usd: float = 0.0
+    local_tokens_generated: int = 0
+
+    @property
+    def frontier_total_tokens(self) -> int:
+        return self.frontier_prompt_tokens + self.frontier_completion_tokens
+
+
+@dataclass
+class RunResult:
+    answer: str
+    stats: RunStats = field(default_factory=RunStats)
 
 MAX_ROUNDS = 25
 
@@ -38,12 +63,24 @@ def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[
         )
 
 
+def _record_frontier_usage(response, stats: RunStats) -> None:
+    usage = getattr(response, "usage", None)
+    if usage is not None:
+        stats.frontier_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+        stats.frontier_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+    try:
+        cost = litellm.completion_cost(completion_response=response)
+    except Exception:  # noqa: BLE001 - cost is a nice-to-have metric, never worth failing the run over
+        cost = 0.0
+    stats.frontier_cost_usd += cost or 0.0
+
+
 def run(
     task: str,
     frontier_model: str,
     hardware: HardwareProfile | None = None,
     on_delegate: DelegateCallback | None = None,
-) -> str:
+) -> RunResult:
     """Run `task` to completion, delegating subtasks to local models.
 
     `frontier_model` is any LiteLLM model string, e.g. "claude-opus-5",
@@ -51,10 +88,15 @@ def run(
     orchestrator too. `on_delegate`, if given, is called with
     (modality, ModelEntry) right before each subtask is handed to a local
     model, so the caller can show the user what's doing the work.
+
+    Returns a `RunResult` with the final answer and usage metrics (frontier
+    tokens/cost actually spent, and tokens local models generated instead --
+    the latter never touched the frontier API at all).
     """
     hardware = hardware if hardware is not None else detect_hardware()
     dispatcher = Dispatcher(hardware)
     tools = build_tool_schemas()
+    stats = RunStats()
 
     messages = [
         {
@@ -72,11 +114,13 @@ def run(
 
     for _ in range(MAX_ROUNDS):
         response = completion(model=frontier_model, messages=messages, tools=tools)
+        _record_frontier_usage(response, stats)
         message = response.choices[0].message
         messages.append(message.model_dump())
 
         if not message.tool_calls:
-            return message.content or ""
+            stats.local_tokens_generated = dispatcher.local_tokens_generated
+            return RunResult(answer=message.content or "", stats=stats)
 
         for call in message.tool_calls:
             args = json.loads(call.function.arguments)

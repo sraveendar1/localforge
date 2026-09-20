@@ -431,7 +431,18 @@ def run(
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
-    console.print(result)
+
+    console.print(result.answer)
+
+    stats = result.stats
+    usage_lines = [
+        f"Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
+        f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
+        + (f" (${stats.frontier_cost_usd:.4f})" if stats.frontier_cost_usd else ""),
+        f"Local models: {stats.local_tokens_generated} tokens generated on your machine — "
+        "never sent to or billed by the frontier API",
+    ]
+    console.print(Panel("\n".join(usage_lines), title="Usage", style="dim"))
 
 
 def _ollama_installed_via_brew() -> bool:

@@ -100,6 +100,30 @@ touched, only the old result content. This bounds both context size and
 per-round cost on long tasks without needing an extra summarization LLM
 call.
 
+### Usage metrics
+
+Every `localforge run` ends with a Usage panel showing exactly what
+delegation saved:
+
+```
+╭─────────────────────────────── Usage ───────────────────────────────╮
+│ Frontier (claude-opus-5): 280 in + 70 out = 350 tokens ($0.0200)    │
+│ Local models: 4200 tokens generated on your machine — never sent to │
+│ or billed by the frontier API                                       │
+╰───────────────────────────────────────────────────────────────────────╯
+```
+
+The frontier numbers are real: token counts come from the API response's
+own `usage` field, and the dollar cost is computed by LiteLLM's own pricing
+table (`litellm.completion_cost`) for whichever model you actually used —
+not a guess. The "local models" figure comes from Ollama's own `eval_count`
+for each generation, summed across every subtask delegated during the run;
+it's the clearest proxy for "how much work happened without touching the
+frontier API at all" (and therefore without frontier tokens/cost for it),
+even though we don't attach a speculative dollar figure to what it "would
+have cost" on the frontier side, since that depends on a model/pricing
+assumption we can't verify.
+
 ### Managing disk space
 
 `localforge models`/`catalog` describe the *catalog* (what could be

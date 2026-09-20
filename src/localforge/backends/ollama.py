@@ -84,4 +84,7 @@ class OllamaBackend:
                 json={"model": model_name, "prompt": prompt, "stream": False, **kwargs},
             )
             resp.raise_for_status()
-            return {"type": "text", "content": resp.json()["response"]}
+            data = resp.json()
+            # "eval_count" is Ollama's count of tokens it generated for this
+            # response -- used for usage metrics, not for the API call itself.
+            return {"type": "text", "content": data["response"], "tokens": data.get("eval_count", 0)}

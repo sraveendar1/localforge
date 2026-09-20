@@ -6,6 +6,7 @@ from typing import Literal, Protocol, TypedDict
 class BackendResult(TypedDict):
     type: Literal["text", "file"]
     content: str  # text content, or a filesystem path when type == "file"
+    tokens: int  # tokens the local model generated, for usage metrics; 0 if unknown
 
 
 class Backend(Protocol):

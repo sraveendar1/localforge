@@ -14,7 +14,7 @@ class StubBackend:
         pass
 
     def generate(self, model_name, prompt, **kwargs):
-        return {"type": "text", "content": f"handled by {model_name}"}
+        return {"type": "text", "content": f"handled by {model_name}", "tokens": 42}
 
 
 def _hw() -> HardwareProfile:
@@ -41,3 +41,11 @@ def test_dispatch_works_without_on_delegate():
     with patch.dict("localforge.tools.BACKENDS", {"stub": StubBackend()}):
         result = dispatcher.dispatch(TASK_MODALITIES["coding"]["tool_name"], "do the thing")
     assert result == "handled by small-coder"
+
+
+def test_dispatch_accumulates_local_tokens_across_calls():
+    dispatcher = Dispatcher(_hw(), catalog=CATALOG)
+    with patch.dict("localforge.tools.BACKENDS", {"stub": StubBackend()}):
+        dispatcher.dispatch(TASK_MODALITIES["coding"]["tool_name"], "first")
+        dispatcher.dispatch(TASK_MODALITIES["coding"]["tool_name"], "second")
+    assert dispatcher.local_tokens_generated == 84  # 42 tokens per call, twice

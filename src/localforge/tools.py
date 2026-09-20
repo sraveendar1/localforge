@@ -75,6 +75,7 @@ class Dispatcher:
         self.hardware = hardware
         self.catalog = catalog if catalog is not None else load_catalog()
         self._resolved_models: dict[str, ModelEntry] = {}
+        self.local_tokens_generated = 0  # running total, for usage metrics
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
         for modality, meta in TASK_MODALITIES.items():
@@ -95,6 +96,7 @@ class Dispatcher:
         backend = BACKENDS[entry.runtime]
         backend.ensure_available(entry.name)
         result = backend.generate(entry.name, _prompt_for(modality, instructions))
+        self.local_tokens_generated += result.get("tokens", 0)
         if result["type"] == "file":
             return f"[generated file: {result['content']}]"
         return result["content"]

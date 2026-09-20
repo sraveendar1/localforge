@@ -1,5 +1,7 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import localforge.orchestrator as orch_module
 from localforge.hardware import HardwareProfile
 from localforge.orchestrator import KEEP_RECENT_TOOL_RESULTS, _collapse_old_tool_results
@@ -35,10 +37,17 @@ def test_collapse_noop_under_threshold():
 
 class StubDispatcher:
     def __init__(self, hardware, catalog=None):
-        pass
+        self.local_tokens_generated = 321  # arbitrary fixed value to assert on
 
     def dispatch(self, tool_name, instructions, on_delegate=None):
         return "x" * 1000  # simulate a large result each round
+
+
+def _usage(prompt_tokens=10, completion_tokens=5):
+    usage = MagicMock()
+    usage.prompt_tokens = prompt_tokens
+    usage.completion_tokens = completion_tokens
+    return usage
 
 
 def _tool_call_response(call_id: str):
@@ -49,6 +58,7 @@ def _tool_call_response(call_id: str):
     msg.model_dump.return_value = {"role": "assistant", "content": None}
     resp = MagicMock()
     resp.choices = [MagicMock(message=msg)]
+    resp.usage = _usage()
     return resp
 
 
@@ -59,6 +69,7 @@ def _final_response():
     msg.model_dump.return_value = {"role": "assistant", "content": "done"}
     resp = MagicMock()
     resp.choices = [MagicMock(message=msg)]
+    resp.usage = _usage()
     return resp
 
 
@@ -77,11 +88,17 @@ def test_run_collapses_old_tool_results_over_a_long_task():
         patch.object(orch_module, "completion", side_effect=fake_completion),
         patch.object(orch_module, "Dispatcher", StubDispatcher),
         patch.object(orch_module, "build_tool_schemas", return_value=[]),
+        patch.object(orch_module.litellm, "completion_cost", return_value=0.002),
     ):
         result = orch_module.run("task", "claude-opus-5", hardware=_hw())
 
-    assert result == "done"
+    assert result.answer == "done"
     assert call_count["n"] == rounds_before_final + 1
+    # 7 completion() calls total (6 tool-call rounds + 1 final), each with usage(10, 5)
+    assert result.stats.frontier_prompt_tokens == 10 * (rounds_before_final + 1)
+    assert result.stats.frontier_completion_tokens == 5 * (rounds_before_final + 1)
+    assert result.stats.frontier_cost_usd == pytest.approx(0.002 * (rounds_before_final + 1))
+    assert result.stats.local_tokens_generated == 321
 
 
 def test_run_never_sends_unbounded_history_to_the_frontier_model():
