@@ -85,6 +85,33 @@ work there without extra auth setup.
    so you always know which local model is doing the actual work for a
    given task, not just that "something local" is running.
 
+### Catching bad local output
+
+Local models occasionally return something unusable: empty output, an
+outright refusal ("I'm sorry, but..."), or something absurdly short for
+what was asked. This is caught at two levels:
+
+1. **A cheap heuristic tripwire in the dispatcher.** Every delegated result
+   is checked for the obvious failure modes above before it's ever shown to
+   the frontier model. If flagged, `localforge` automatically retries once
+   — with a different model if this hardware fits more than one for that
+   modality, or the same model with reinforced instructions ("your previous
+   attempt was rejected: ...") otherwise. You'll see both delegation
+   attempts printed live. If the retry is still bad, the result is passed
+   through wrapped in an explicit `[WARNING: ...]` tag rather than silently
+   accepted.
+2. **The frontier model is explicitly instructed not to trust delegated
+   results at face value** — to check them against what it asked for,
+   treat `[WARNING: ...]`-tagged results with extra scrutiny, and delegate
+   a subtask again with clearer instructions rather than passing a bad
+   result through to its final answer.
+
+This is a heuristic floor, not a correctness checker — it can't tell if
+generated code actually *works*, only that it isn't obviously empty,
+refused, or truncated. Every retry attempt still costs local compute, so
+the Usage panel's local-token count reflects retries too, not just
+whichever attempt ultimately got used.
+
 ### Memory management
 
 Each `localforge run` is stateless — it starts a fresh conversation with no
