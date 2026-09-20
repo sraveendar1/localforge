@@ -42,6 +42,20 @@ def help(ctx: typer.Context) -> None:
     console.print(ctx.parent.get_help())
 
 
+def _usage_bar(local_tokens: int, frontier_tokens: int, width: int = 40) -> str:
+    """A Claude-Code-style horizontal bar showing the local/frontier token
+    split for one run, e.g. "██████████████░░░░░░ 70% local / 30% frontier".
+    """
+    total = local_tokens + frontier_tokens
+    if total == 0:
+        return f"[dim]{'░' * width}[/dim] no tokens used"
+    local_width = round(width * local_tokens / total)
+    frontier_width = width - local_width
+    bar = f"[green]{'█' * local_width}[/green][yellow]{'█' * frontier_width}[/yellow]"
+    pct_local = round(100 * local_tokens / total)
+    return f"{bar}  {pct_local}% local / {100 - pct_local}% frontier"
+
+
 def _print_getting_started() -> None:
     ready = bool(os.environ.get(config.FRONTIER_MODEL_ENV_VAR))
     if ready:
@@ -436,13 +450,15 @@ def run(
 
     stats = result.stats
     usage_lines = [
-        f"Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
+        _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
+        "",
+        f"[green]■[/green] Local models: {stats.local_tokens_generated} tokens — "
+        "never sent to or billed by the frontier API",
+        f"[yellow]■[/yellow] Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + (f" (${stats.frontier_cost_usd:.4f})" if stats.frontier_cost_usd else ""),
-        f"Local models: {stats.local_tokens_generated} tokens generated on your machine — "
-        "never sent to or billed by the frontier API",
     ]
-    console.print(Panel("\n".join(usage_lines), title="Usage", style="dim"))
+    console.print(Panel("\n".join(usage_lines), title="Usage"))
 
 
 def _ollama_installed_via_brew() -> bool:

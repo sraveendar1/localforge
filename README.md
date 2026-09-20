@@ -102,16 +102,21 @@ call.
 
 ### Usage metrics
 
-Every `localforge run` ends with a Usage panel showing exactly what
-delegation saved:
+Every `localforge run` ends with a Usage panel — a Claude-Code-style
+horizontal bar showing the local/frontier split at a glance, plus the exact
+numbers below it:
 
 ```
-╭─────────────────────────────── Usage ───────────────────────────────╮
-│ Frontier (claude-opus-5): 280 in + 70 out = 350 tokens ($0.0200)    │
-│ Local models: 4200 tokens generated on your machine — never sent to │
-│ or billed by the frontier API                                       │
-╰───────────────────────────────────────────────────────────────────────╯
+╭─────────────────────────────── Usage ────────────────────────────────╮
+│ ████████████████████████████████████░░░  92% local / 8% frontier    │
+│                                                                       │
+│ ■ Local models: 4200 tokens — never sent to or billed by the         │
+│   frontier API                                                       │
+│ ■ Frontier (claude-opus-5): 280 in + 70 out = 350 tokens ($0.0200)   │
+╰────────────────────────────────────────────────────────────────────────╯
 ```
+
+(green segment/marker = local, yellow = frontier)
 
 The frontier numbers are real: token counts come from the API response's
 own `usage` field, and the dollar cost is computed by LiteLLM's own pricing
