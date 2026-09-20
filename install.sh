@@ -10,6 +10,24 @@ set -euo pipefail
 REPO_URL="https://github.com/sanjayraveendar/localforge.git"
 CLONE_DIR="$HOME/.local/share/localforge/src"
 
+echo "localforge installer — this will set up the following on this machine:"
+if [ "$(uname -s)" = "Darwin" ] && ! command -v brew >/dev/null 2>&1; then
+    echo "  - Homebrew (macOS package manager — not currently installed)"
+fi
+if ! command -v ollama >/dev/null 2>&1; then
+    echo "  - Ollama (runs open-weight models locally — not currently installed)"
+fi
+echo "  - One or more open-weight models matched to this machine's hardware"
+echo "    (a real download, likely several GB — sizes shown before each pull)"
+echo "  - The localforge CLI tool itself"
+echo
+# Read from the controlling terminal explicitly, not stdin -- when this
+# script is run as `curl ... | bash`, stdin is the script itself, not the
+# keyboard. Falls through automatically if there's no tty (non-interactive
+# context) rather than hanging.
+read -r -p "Press Enter to continue, or Ctrl+C to cancel: " _ < /dev/tty || true
+echo
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
 
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/pyproject.toml" ]; then

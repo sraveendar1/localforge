@@ -13,6 +13,17 @@ for `gpt-5` or a self-hosted model is a one-line config change.
 
 ## Quickstart
 
+**Before you run it — what `install.sh` puts on your machine:**
+- [Homebrew](https://brew.sh) on macOS, if you don't already have it
+- [Ollama](https://ollama.com), if you don't already have it
+- One or more real open-weight models matched to your hardware (an actual
+  multi-GB download — sizes are shown before each pull)
+- The `localforge` CLI tool itself
+
+The script prints this same list and waits for you to press Enter before
+touching anything (falls through automatically if there's no interactive
+terminal to wait on).
+
 **One-liner (no clone needed):**
 
 ```bash
@@ -27,10 +38,9 @@ cd localforge
 ./install.sh
 ```
 
-Either way, this single command installs everything — Ollama, the local
-models that fit your machine, and the `localforge` CLI itself — with no
-prompts to click through. The only thing it will ask you for is a frontier
-model API key (Anthropic, OpenAI, or Gemini — paste one when asked). Once it
+Either way, after that one confirmation, everything else runs with no
+further prompts to click through except one: a frontier model API key
+(Anthropic, OpenAI, or Gemini — paste one when asked). Once it
 finishes:
 
 ```bash
@@ -67,7 +77,13 @@ work there without extra auth setup.
    tools like `delegate_coding_task` / `delegate_docs_task`, and those calls
    are dispatched to the matched local model running under Ollama. Results
    flow back into the frontier model's context until it produces a final
-   answer.
+   answer. Every delegation is printed as it happens, e.g.:
+   ```
+   → delegating coding to qwen2.5-coder:14b (local, via ollama)
+   → delegating docs to mistral-nemo:12b (local, via ollama)
+   ```
+   so you always know which local model is doing the actual work for a
+   given task, not just that "something local" is running.
 
 ### Managing disk space
 

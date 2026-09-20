@@ -11,17 +11,24 @@ import json
 from litellm import completion
 
 from localforge.hardware import HardwareProfile, detect_hardware
-from localforge.tools import Dispatcher, build_tool_schemas
+from localforge.tools import DelegateCallback, Dispatcher, build_tool_schemas
 
 MAX_ROUNDS = 25
 
 
-def run(task: str, frontier_model: str, hardware: HardwareProfile | None = None) -> str:
+def run(
+    task: str,
+    frontier_model: str,
+    hardware: HardwareProfile | None = None,
+    on_delegate: DelegateCallback | None = None,
+) -> str:
     """Run `task` to completion, delegating subtasks to local models.
 
     `frontier_model` is any LiteLLM model string, e.g. "claude-opus-5",
     "gpt-5", or "ollama/llama3.1:70b" if you want to self-host the
-    orchestrator too.
+    orchestrator too. `on_delegate`, if given, is called with
+    (modality, ModelEntry) right before each subtask is handed to a local
+    model, so the caller can show the user what's doing the work.
     """
     hardware = hardware if hardware is not None else detect_hardware()
     dispatcher = Dispatcher(hardware)
@@ -50,7 +57,7 @@ def run(task: str, frontier_model: str, hardware: HardwareProfile | None = None)
         for call in message.tool_calls:
             args = json.loads(call.function.arguments)
             try:
-                result = dispatcher.dispatch(call.function.name, args["instructions"])
+                result = dispatcher.dispatch(call.function.name, args["instructions"], on_delegate=on_delegate)
             except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
                 result = f"Error running {call.function.name}: {exc}"
             messages.append(

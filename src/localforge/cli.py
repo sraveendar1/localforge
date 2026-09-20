@@ -421,9 +421,13 @@ def run(
 ) -> None:
     """Run a task: the frontier model plans it and delegates subtasks to local models."""
     frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
+
+    def _on_delegate(modality: str, entry) -> None:
+        console.print(f"  → delegating [bold]{modality}[/bold] to [cyan]{entry.name}[/cyan] (local, via {entry.runtime})")
+
     try:
         with console.status(f"[bold green]Orchestrating with {frontier_model}..."):
-            result = run_orchestrator(task, frontier_model)
+            result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate)
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from None

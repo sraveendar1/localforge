@@ -4,9 +4,15 @@ each tool call to the best-fitting local model via the matching backend.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from localforge.backends import BACKENDS
 from localforge.catalog import ModelEntry, best_match, load_catalog
 from localforge.hardware import HardwareProfile
+
+# Called right before a subtask is handed to a local model, so callers (the
+# CLI, the wizard) can show the user what's actually doing the work and why.
+DelegateCallback = Callable[[str, ModelEntry], None]
 
 # Modality -> (tool name, description, prompt-building instructions)
 TASK_MODALITIES = {
@@ -81,9 +87,11 @@ class Dispatcher:
             self._resolved_models[modality] = best_match(modality, self.hardware, self.catalog)
         return self._resolved_models[modality]
 
-    def dispatch(self, tool_name: str, instructions: str) -> str:
+    def dispatch(self, tool_name: str, instructions: str, on_delegate: DelegateCallback | None = None) -> str:
         modality = self._tool_name_to_modality(tool_name)
         entry = self.resolve(modality)
+        if on_delegate is not None:
+            on_delegate(modality, entry)
         backend = BACKENDS[entry.runtime]
         backend.ensure_available(entry.name)
         result = backend.generate(entry.name, _prompt_for(modality, instructions))
