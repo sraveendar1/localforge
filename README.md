@@ -85,6 +85,21 @@ work there without extra auth setup.
    so you always know which local model is doing the actual work for a
    given task, not just that "something local" is running.
 
+### Memory management
+
+Each `localforge run` is stateless — it starts a fresh conversation with no
+memory of any previous invocation. *Within* one run, though, a long task
+can accumulate a lot of tool-result content (e.g. several rounds of
+generated code); left unchecked, that would grow the context sent to the
+frontier model — and the cost of every round — without bound. Once more
+than `KEEP_RECENT_TOOL_RESULTS` (currently 4) tool results have
+accumulated, older ones are collapsed in place to a short placeholder
+(`[superseded: earlier result, N chars -- no longer kept in full in
+context]`); the assistant's own record of having made that call is never
+touched, only the old result content. This bounds both context size and
+per-round cost on long tasks without needing an extra summarization LLM
+call.
+
 ### Managing disk space
 
 `localforge models`/`catalog` describe the *catalog* (what could be

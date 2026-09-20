@@ -15,6 +15,28 @@ from localforge.tools import DelegateCallback, Dispatcher, build_tool_schemas
 
 MAX_ROUNDS = 25
 
+# How many of the most recent tool results to keep in full. Once a task runs
+# long enough to accumulate more than this many, older ones are collapsed to
+# a short placeholder in place -- otherwise a long task's full history
+# (including large generated files) gets resent to the frontier model every
+# single round, growing context size and cost unboundedly. The frontier
+# model still sees that it made each call (the assistant's tool_calls
+# message is never touched), just not the full old result content.
+KEEP_RECENT_TOOL_RESULTS = 4
+
+
+def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[int]) -> None:
+    excess = len(tool_message_indices) - KEEP_RECENT_TOOL_RESULTS
+    if excess <= 0:
+        return
+    for idx in tool_message_indices[:excess]:
+        content = messages[idx]["content"]
+        if content.startswith("[superseded:"):
+            continue  # already collapsed on a previous round
+        messages[idx]["content"] = (
+            f"[superseded: earlier result, {len(content)} chars -- no longer kept in full in context]"
+        )
+
 
 def run(
     task: str,
@@ -46,6 +68,8 @@ def run(
         {"role": "user", "content": task},
     ]
 
+    tool_message_indices: list[int] = []
+
     for _ in range(MAX_ROUNDS):
         response = completion(model=frontier_model, messages=messages, tools=tools)
         message = response.choices[0].message
@@ -67,5 +91,8 @@ def run(
                     "content": result,
                 }
             )
+            tool_message_indices.append(len(messages) - 1)
+
+        _collapse_old_tool_results(messages, tool_message_indices)
 
     raise RuntimeError(f"Orchestration did not converge within {MAX_ROUNDS} rounds.")
