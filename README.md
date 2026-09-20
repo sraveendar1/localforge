@@ -39,15 +39,28 @@ localforge run "Build a todo REST API with docs"
 
 ## How it works
 
-1. **`localforge scan`** — detects OS, CPU, RAM, and GPU/VRAM.
+1. **`localforge scan`** — detects OS, CPU, RAM, GPU/VRAM, and free disk space.
 2. **`localforge models`** — matches your hardware against a curated catalog
    (`src/localforge/catalog_data.yaml`) to recommend the best local model per
-   task type.
+   task type, using the deterministic highest-quality-tier heuristic.
 3. **`localforge run "<task>"`** — the frontier model plans the task, calls
    tools like `delegate_coding_task` / `delegate_docs_task`, and those calls
    are dispatched to the matched local model running under Ollama. Results
    flow back into the frontier model's context until it produces a final
    answer.
+
+### Hardware-aware model selection
+
+During `setup`/`wizard`, model selection isn't purely rule-based: the
+catalog is first filtered down to only the models that actually fit this
+machine's RAM, VRAM, *and* free disk space (`catalog.candidates()`), and
+then the frontier model itself is asked to pick the best one per modality
+from that filtered list (`advisor.recommend_models()`), weighing quality
+against how much headroom each choice leaves. The frontier model can only
+choose from models that already passed the hardware/disk check — it can't
+invent one we have no backend for — and if the call fails for any reason
+(no network, bad key, malformed response), it falls back to the same
+deterministic highest-quality-tier pick `localforge models` uses on its own.
 
 ## What `./install.sh` actually does
 
@@ -57,11 +70,11 @@ localforge run "Build a todo REST API with docs"
 3. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
    virtualenv to activate, no `pip` to manage — uv even fetches a matching
    Python for you).
-4. Runs setup automatically: installs and starts
-   [Ollama](https://ollama.com) if it isn't already, pulls the local models
-   that best fit *your* hardware (per `localforge models`), and asks for
-   your frontier model API key, saving it to
-   `~/.config/localforge/config.env` so you only enter it once.
+4. Asks for your frontier model API key (saving it to
+   `~/.config/localforge/config.env` so you only enter it once), then
+   installs and starts [Ollama](https://ollama.com) if it isn't already, and
+   has the frontier model itself pick which local models to pull — see
+   "Hardware-aware model selection" below.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
 manual model downloads, no re-exporting API keys.
@@ -100,11 +113,16 @@ localforge run "..." --model gpt-5               # use a different frontier mode
 ## Architecture
 
 - `hardware.py` — hardware detection (RAM, CPU, GPU/VRAM via nvidia-smi or
-  Apple Silicon unified memory).
+  Apple Silicon unified memory, and free disk space).
 - `catalog.py` / `catalog_data.yaml` — static catalog of open-weight models
   tagged by modality (`coding`, `docs`, `general`, and reserved `image` /
-  `video` entries) and hardware requirements; `best_match()` picks the
-  highest-quality model that fits.
+  `video` entries), hardware requirements, and approximate download size;
+  `candidates()` filters to models that fit RAM/VRAM/disk, `best_match()`
+  picks the highest-quality one deterministically.
+- `advisor.py` — lets the frontier model pick among `candidates()` for each
+  modality (via a tool call constrained with a JSON-schema `enum`, so it
+  can't hallucinate a model outside the catalog), falling back to
+  `best_match()` on any failure.
 - `backends/` — one module per serving runtime. `ollama.py` is implemented;
   `comfyui.py` is a stub reserved for image/video generation, since those
   are job-based (submit → poll → fetch file) rather than a single

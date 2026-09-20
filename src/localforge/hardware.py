@@ -5,6 +5,7 @@ from __future__ import annotations
 import platform
 import shutil
 import subprocess
+from pathlib import Path
 
 import psutil
 from pydantic import BaseModel
@@ -21,6 +22,7 @@ class HardwareProfile(BaseModel):
     arch: str
     cpu_cores: int
     ram_gb: float
+    free_disk_gb: float
     gpus: list[GPU]
 
     @property
@@ -72,6 +74,12 @@ def _detect_apple_silicon_gpu(ram_gb: float) -> list[GPU]:
     return [GPU(name=brand or "Apple Silicon GPU", vram_gb=round(ram_gb * 0.75, 1), backend="metal")]
 
 
+def _detect_free_disk_gb() -> float:
+    # Where Ollama/model downloads actually land, not just wherever the CLI runs.
+    usage = shutil.disk_usage(Path.home())
+    return round(usage.free / (1024**3), 1)
+
+
 def detect_hardware() -> HardwareProfile:
     ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
     gpus = _detect_nvidia_gpus() or _detect_apple_silicon_gpu(ram_gb)
@@ -80,5 +88,6 @@ def detect_hardware() -> HardwareProfile:
         arch=platform.machine(),
         cpu_cores=psutil.cpu_count(logical=False) or psutil.cpu_count(logical=True) or 1,
         ram_gb=ram_gb,
+        free_disk_gb=_detect_free_disk_gb(),
         gpus=gpus,
     )

@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.table import Table
 
 from localforge import config
+from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
@@ -36,6 +37,7 @@ def scan() -> None:
     console.print(f"OS: {hw.os} ({hw.arch})")
     console.print(f"CPU cores: {hw.cpu_cores}")
     console.print(f"RAM: {hw.ram_gb} GB")
+    console.print(f"Free disk: {hw.free_disk_gb} GB")
     if hw.gpus:
         for gpu in hw.gpus:
             console.print(f"GPU: {gpu.name} — {gpu.vram_gb} GB VRAM ({gpu.backend})")
@@ -73,12 +75,13 @@ def catalog() -> None:
     table.add_column("Runtime")
     table.add_column("Min VRAM (GB)")
     table.add_column("Min RAM (GB)")
+    table.add_column("Disk (GB)")
     table.add_column("Quality tier")
 
     for entry in load_catalog():
         table.add_row(
             entry.name, entry.modality, entry.runtime,
-            str(entry.min_vram_gb), str(entry.min_ram_gb), str(entry.quality_tier),
+            str(entry.min_vram_gb), str(entry.min_ram_gb), str(entry.disk_gb), str(entry.quality_tier),
         )
     console.print(table)
 
@@ -131,19 +134,13 @@ def setup() -> None:
             raise typer.Exit(code=1)
     console.print("[green]✓[/green] Ollama is installed and running\n")
 
-    # 2. Pull recommended local models for this hardware
-    hw = detect_hardware()
-    recs = recommendations(hw)
-    to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
-    for model_name in sorted(to_pull):
-        console.print(f"Pulling {model_name} (this can take a while, only happens once)...")
-        ollama.ensure_available(model_name)
-    console.print("[green]✓[/green] Local models ready\n")
-
-    # 3. Frontier model API key
+    # 2. Frontier model API key -- needed now, before model selection, since
+    # the frontier model itself picks which local models to download.
     existing = [v for v in FRONTIER_API_KEY_ENV_VARS if os.environ.get(v)]
+    frontier_model: str | None = None
     if existing:
         console.print(f"[green]✓[/green] Frontier API key already set: {', '.join(existing)}\n")
+        frontier_model = next((config.frontier_model_for_env_var(v) for v in existing), None)
     else:
         provider = typer.prompt(
             f"Which frontier model provider will you orchestrate with? ({'/'.join(FRONTIER_PROVIDERS)})",
@@ -156,7 +153,29 @@ def setup() -> None:
             api_key = typer.prompt(f"Paste your {env_var}", hide_input=True)
             config.save({env_var: api_key})
             os.environ[env_var] = api_key
+            frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
             console.print(f"[green]✓[/green] Saved {env_var} to {config.CONFIG_FILE}\n")
+
+    # 3. Hardware scan, then let the frontier model pick which local models
+    # to download (constrained to catalog entries that already fit this
+    # machine's RAM/VRAM/disk space -- see advisor.recommend_models).
+    hw = detect_hardware()
+    console.print(
+        f"Hardware: {hw.ram_gb}GB RAM, {hw.total_vram_gb}GB VRAM, "
+        f"{hw.free_disk_gb}GB free disk\n"
+    )
+    if frontier_model:
+        console.print(f"Asking {frontier_model} to pick the best local models for this machine...")
+        recs = recommend_models(hw, frontier_model)
+    else:
+        console.print("[yellow]No usable frontier model id — falling back to the built-in heuristic.[/yellow]")
+        recs = recommendations(hw)
+
+    to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
+    for model_name in sorted(to_pull):
+        console.print(f"Pulling {model_name} (this can take a while, only happens once)...")
+        ollama.ensure_available(model_name)
+    console.print("[green]✓[/green] Local models ready\n")
 
     console.print("[bold green]Setup complete.[/bold green] Try: localforge run \"...\"")
 

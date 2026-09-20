@@ -19,6 +19,7 @@ class ModelEntry(BaseModel):
     runtime: str
     min_vram_gb: float
     min_ram_gb: float
+    disk_gb: float  # approximate download size
     quality_tier: int
 
 
@@ -34,22 +35,30 @@ def load_catalog() -> list[ModelEntry]:
 def _fits(entry: ModelEntry, hw: HardwareProfile) -> bool:
     if hw.ram_gb < entry.min_ram_gb:
         return False
+    if hw.free_disk_gb < entry.disk_gb:
+        return False
     if entry.min_vram_gb == 0:
         return True  # CPU-runnable
     return hw.total_vram_gb >= entry.min_vram_gb
 
 
+def candidates(modality: str, hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> list[ModelEntry]:
+    """All catalog models for `modality` that fit `hardware` (RAM/VRAM/disk)."""
+    catalog = catalog if catalog is not None else load_catalog()
+    return [m for m in catalog if m.modality == modality and _fits(m, hardware)]
+
+
 def best_match(modality: str, hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> ModelEntry:
     """Return the highest quality-tier model for `modality` that fits `hardware`."""
-    catalog = catalog if catalog is not None else load_catalog()
-    candidates = [m for m in catalog if m.modality == modality and _fits(m, hardware)]
-    if not candidates:
+    fitting = candidates(modality, hardware, catalog)
+    if not fitting:
         raise NoFittingModelError(
             f"No catalog model for modality={modality!r} fits this machine "
-            f"(RAM={hardware.ram_gb}GB, VRAM={hardware.total_vram_gb}GB). "
-            "Try a smaller quality tier or add more hardware."
+            f"(RAM={hardware.ram_gb}GB, VRAM={hardware.total_vram_gb}GB, "
+            f"free disk={hardware.free_disk_gb}GB). Try a smaller quality tier, "
+            "free up disk space, or add more hardware."
         )
-    return max(candidates, key=lambda m: m.quality_tier)
+    return max(fitting, key=lambda m: m.quality_tier)
 
 
 def recommendations(hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> dict[str, ModelEntry | None]:

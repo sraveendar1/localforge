@@ -5,12 +5,9 @@ Y/N prompts. Launched via `localforge wizard`.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
-
-
-def _safe_id(name: str) -> str:
-    return "cb-" + re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 from rich.table import Table
 from textual import work
@@ -20,10 +17,15 @@ from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Log, RadioButton, RadioSet, Static
 
 from localforge import config
+from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
-from localforge.catalog import recommendations
-from localforge.config import FRONTIER_PROVIDERS
+from localforge.catalog import ModelEntry, recommendations
+from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
+
+
+def _safe_id(name: str) -> str:
+    return "cb-" + re.sub(r"[^a-zA-Z0-9_-]", "_", name)
 
 
 class WelcomeScreen(Screen):
@@ -34,8 +36,9 @@ class WelcomeScreen(Screen):
                 "\n[bold]Welcome to localforge[/bold]\n\n"
                 "This wizard will:\n"
                 "  1. Check that Ollama is installed and running\n"
-                "  2. Recommend and pull local models that fit your hardware\n"
-                "  3. Save your frontier model API key\n\n"
+                "  2. Save your frontier model API key\n"
+                "  3. Have the frontier model pick and pull local models "
+                "that fit your hardware\n\n"
                 "Press [bold]Get Started[/bold] to begin.\n",
                 id="welcome-text",
             ),
@@ -85,58 +88,22 @@ class OllamaScreen(Screen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "next":
-            self.app.push_screen(ModelsScreen())
+            existing = next((v for v in FRONTIER_API_KEY_ENV_VARS if os.environ.get(v)), None)
+            frontier_model = config.frontier_model_for_env_var(existing) if existing else None
+            if frontier_model:
+                self.app.push_screen(ModelsScreen(frontier_model))
+            else:
+                self.app.push_screen(ApiKeyScreen())
         elif event.button.id == "retry":
             self.app.pop_screen()
             self.app.push_screen(OllamaScreen())
 
 
-class ModelsScreen(Screen):
-    def compose(self) -> ComposeResult:
-        yield Header()
-        hw = detect_hardware()
-        recs = recommendations(hw)
-        self.to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
-
-        table = Table(title="Recommended for this machine")
-        table.add_column("Modality")
-        table.add_column("Model")
-        for modality, entry in recs.items():
-            table.add_row(modality, entry.name if entry else "[red]none fit[/red]")
-
-        widgets = [Static(table, id="models-table")]
-        for name in sorted(self.to_pull):
-            widgets.append(Checkbox(name, value=True, id=_safe_id(name)))
-        widgets.append(Button("Pull selected", id="pull", variant="primary"))
-        widgets.append(Log(id="pull-log", highlight=True))
-        widgets.append(Button("Skip / Next", id="next"))
-        yield VerticalScroll(*widgets, id="models-body")
-        yield Footer()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "pull":
-            selected = [
-                name for name in sorted(self.to_pull) if self.query_one(f"#{_safe_id(name)}", Checkbox).value
-            ]
-            self._pull(selected)
-        elif event.button.id == "next":
-            self.app.push_screen(ApiKeyScreen())
-
-    @work(thread=True)
-    def _pull(self, models: list[str]) -> None:
-        log = self.query_one("#pull-log", Log)
-        backend = OllamaBackend()
-        for name in models:
-            self.app.call_from_thread(log.write_line, f"Pulling {name}...")
-            try:
-                backend.ensure_available(name)
-                self.app.call_from_thread(log.write_line, f"  done: {name}")
-            except Exception as exc:  # noqa: BLE001 - shown in the log, not fatal to the wizard
-                self.app.call_from_thread(log.write_line, f"  failed: {name}: {exc}")
-        self.app.call_from_thread(log.write_line, "All done.")
-
-
 class ApiKeyScreen(Screen):
+    """Collected before model selection: the frontier model needs an API key
+    to be the one picking which local models to download.
+    """
+
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
@@ -144,7 +111,7 @@ class ApiKeyScreen(Screen):
             RadioSet(*(RadioButton(name.capitalize(), id=f"radio-{name}") for name in FRONTIER_PROVIDERS)),
             Static("\nPaste your API key:\n"),
             Input(placeholder="sk-...", password=True, id="api-key-input"),
-            Button("Save & Finish", id="save", variant="primary"),
+            Button("Save & Continue", id="save", variant="primary"),
             Static("", id="api-key-status"),
             id="apikey-body",
         )
@@ -165,7 +132,78 @@ class ApiKeyScreen(Screen):
             status.update("[red]Enter an API key.[/red]")
             return
         config.save({env_var: api_key})
-        self.app.push_screen(DoneScreen())
+        os.environ[env_var] = api_key
+        frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
+        self.app.push_screen(ModelsScreen(frontier_model))
+
+
+class ModelsScreen(Screen):
+    """Asks the frontier model to pick the best local model per modality for
+    this machine (falling back to the deterministic heuristic if that call
+    fails or `frontier_model` is unavailable), then pulls them via Ollama.
+    """
+
+    def __init__(self, frontier_model: str | None) -> None:
+        super().__init__()
+        self.frontier_model = frontier_model
+        self.to_pull: set[str] = set()
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        status = "Asking the frontier model to pick local models..." if self.frontier_model else "Matching local models to your hardware..."
+        yield VerticalScroll(Static(status, id="models-status"), id="models-body")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        self._recommend()
+
+    @work(thread=True)
+    def _recommend(self) -> None:
+        hw = detect_hardware()
+        if self.frontier_model:
+            recs = recommend_models(hw, self.frontier_model)
+        else:
+            recs = recommendations(hw)
+        self.app.call_from_thread(self._show_recommendations, recs)
+
+    def _show_recommendations(self, recs: dict[str, ModelEntry | None]) -> None:
+        self.to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
+
+        table = Table(title="Recommended for this machine")
+        table.add_column("Modality")
+        table.add_column("Model")
+        for modality, entry in recs.items():
+            table.add_row(modality, entry.name if entry else "[red]none fit[/red]")
+
+        body = self.query_one("#models-body", VerticalScroll)
+        self.query_one("#models-status", Static).update(table)
+        for name in sorted(self.to_pull):
+            body.mount(Checkbox(name, value=True, id=_safe_id(name)))
+        body.mount(Button("Pull selected", id="pull", variant="primary"))
+        body.mount(Log(id="pull-log", highlight=True))
+        body.mount(Button("Skip / Next", id="next"))
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "pull":
+            selected = [
+                name for name in sorted(self.to_pull) if self.query_one(f"#{_safe_id(name)}", Checkbox).value
+            ]
+            self._pull(selected)
+        elif event.button.id == "next":
+            self.app.push_screen(DoneScreen())
+
+    @work(thread=True)
+    def _pull(self, models: list[str]) -> None:
+        log = self.query_one("#pull-log", Log)
+        backend = OllamaBackend()
+        for name in models:
+            self.app.call_from_thread(log.write_line, f"Pulling {name}...")
+            try:
+                backend.ensure_available(name)
+                self.app.call_from_thread(log.write_line, f"  done: {name}")
+            except Exception as exc:  # noqa: BLE001 - shown in the log, not fatal to the wizard
+                self.app.call_from_thread(log.write_line, f"  failed: {name}: {exc}")
+        self.app.call_from_thread(log.write_line, "All done.")
 
 
 class DoneScreen(Screen):

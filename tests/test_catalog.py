@@ -1,17 +1,19 @@
-from localforge.catalog import ModelEntry, NoFittingModelError, best_match, recommendations
+from localforge.catalog import ModelEntry, NoFittingModelError, best_match, candidates, recommendations
 from localforge.hardware import GPU, HardwareProfile
 
 CATALOG = [
-    ModelEntry(name="small-coder", modality="coding", runtime="ollama", min_vram_gb=0, min_ram_gb=8, quality_tier=1),
-    ModelEntry(name="big-coder", modality="coding", runtime="ollama", min_vram_gb=20, min_ram_gb=32, quality_tier=3),
-    ModelEntry(name="mid-coder", modality="coding", runtime="ollama", min_vram_gb=8, min_ram_gb=16, quality_tier=2),
-    ModelEntry(name="only-docs", modality="docs", runtime="ollama", min_vram_gb=6, min_ram_gb=8, quality_tier=1),
+    ModelEntry(name="small-coder", modality="coding", runtime="ollama", min_vram_gb=0, min_ram_gb=8, disk_gb=2, quality_tier=1),
+    ModelEntry(name="big-coder", modality="coding", runtime="ollama", min_vram_gb=20, min_ram_gb=32, disk_gb=20, quality_tier=3),
+    ModelEntry(name="mid-coder", modality="coding", runtime="ollama", min_vram_gb=8, min_ram_gb=16, disk_gb=9, quality_tier=2),
+    ModelEntry(name="only-docs", modality="docs", runtime="ollama", min_vram_gb=6, min_ram_gb=8, disk_gb=5, quality_tier=1),
 ]
 
 
-def _hw(ram_gb: float, vram_gb: float = 0) -> HardwareProfile:
+def _hw(ram_gb: float, vram_gb: float = 0, free_disk_gb: float = 100) -> HardwareProfile:
     gpus = [GPU(name="test-gpu", vram_gb=vram_gb, backend="cuda")] if vram_gb else []
-    return HardwareProfile(os="Linux", arch="x86_64", cpu_cores=8, ram_gb=ram_gb, gpus=gpus)
+    return HardwareProfile(
+        os="Linux", arch="x86_64", cpu_cores=8, ram_gb=ram_gb, free_disk_gb=free_disk_gb, gpus=gpus
+    )
 
 
 def test_best_match_picks_highest_tier_that_fits():
@@ -36,6 +38,17 @@ def test_best_match_raises_when_nothing_fits():
         assert False, "expected NoFittingModelError"
     except NoFittingModelError:
         pass
+
+
+def test_best_match_excludes_models_with_insufficient_disk():
+    hw = _hw(ram_gb=32, vram_gb=24, free_disk_gb=10)  # too little disk for big-coder (20GB)
+    assert best_match("coding", hw, CATALOG).name == "mid-coder"
+
+
+def test_candidates_returns_all_fitting_models_not_just_the_best():
+    hw = _hw(ram_gb=32, vram_gb=24)
+    names = {m.name for m in candidates("coding", hw, CATALOG)}
+    assert names == {"small-coder", "mid-coder", "big-coder"}
 
 
 def test_recommendations_covers_every_modality():
