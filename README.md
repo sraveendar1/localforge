@@ -49,6 +49,18 @@ localforge run "Build a todo REST API with docs"
    flow back into the frontier model's context until it produces a final
    answer.
 
+### Managing disk space
+
+`localforge models`/`catalog` describe the *catalog* (what could be
+pulled); `localforge installed` shows what's *actually on disk* right now,
+via Ollama, with sizes and a total. `localforge delete` lets you free space:
+run it with no arguments to see a numbered list, pick one or more
+(comma-separated, or `all`), review exactly what will be freed, and confirm
+once before anything is deleted — or pass model name(s) directly
+(`localforge delete qwen2.5-coder:14b --yes`) to skip the interactive list
+for scripting. A failed delete in a batch doesn't abort the rest of the
+queue.
+
 ### Choosing a frontier model
 
 `setup`/`wizard` always ask explicitly which frontier provider
@@ -128,6 +140,9 @@ localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
 localforge run "Build a todo REST API with docs" # do the thing
 localforge run "..." --model gpt-5               # use a different frontier model
+localforge installed                             # what local models are actually on disk, and how big
+localforge delete                                # pick installed model(s) to delete, review, then confirm
+localforge delete qwen2.5-coder:14b --yes        # delete a specific model without prompting
 ```
 
 ## Architecture

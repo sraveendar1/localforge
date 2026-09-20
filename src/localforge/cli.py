@@ -90,6 +90,97 @@ def models() -> None:
     console.print(table)
 
 
+def _installed_ollama_models() -> list[dict]:
+    ollama = OllamaBackend()
+    if not ollama.is_running():
+        console.print("[red]Ollama is not running.[/red] Start it, then retry.")
+        raise typer.Exit(code=1)
+    return ollama.list_installed()
+
+
+@app.command()
+def installed() -> None:
+    """List local models actually pulled via Ollama (not just the catalog)."""
+    models_on_disk = _installed_ollama_models()
+    if not models_on_disk:
+        console.print("No local models installed yet. Run `localforge setup` or `localforge wizard`.")
+        return
+
+    table = Table(title="Installed local models")
+    table.add_column("Name")
+    table.add_column("Size (GB)")
+    table.add_column("Modified")
+    total_bytes = 0
+    for m in models_on_disk:
+        total_bytes += m.get("size", 0)
+        table.add_row(m["name"], f"{m.get('size', 0) / (1024**3):.2f}", str(m.get("modified_at", ""))[:19])
+    console.print(table)
+    console.print(f"\nTotal: {total_bytes / (1024**3):.2f} GB across {len(models_on_disk)} model(s)")
+
+
+@app.command()
+def delete(
+    models_arg: list[str] = typer.Argument(
+        None, help="Model name(s) to delete, e.g. qwen2.5-coder:14b. Omit to choose interactively."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Delete locally installed model(s) to free disk space."""
+    models_on_disk = _installed_ollama_models()
+    if not models_on_disk:
+        console.print("No local models installed.")
+        return
+    names = [m["name"] for m in models_on_disk]
+    sizes = {m["name"]: m.get("size", 0) for m in models_on_disk}
+
+    queue: list[str] = []
+    if models_arg:
+        for requested in models_arg:
+            if requested in names:
+                queue.append(requested)
+            else:
+                console.print(f"[yellow]Skipping — not installed: {requested}[/yellow]")
+    else:
+        table = Table(title="Installed local models")
+        table.add_column("#")
+        table.add_column("Name")
+        table.add_column("Size (GB)")
+        for i, name in enumerate(names, start=1):
+            table.add_row(str(i), name, f"{sizes[name] / (1024**3):.2f}")
+        console.print(table)
+
+        selection = typer.prompt("Which to delete? (numbers or names, comma-separated, or 'all')")
+        parts = names if selection.strip().lower() == "all" else [p.strip() for p in selection.split(",")]
+        for part in parts:
+            if part.isdigit() and 1 <= int(part) <= len(names):
+                queue.append(names[int(part) - 1])
+            elif part in names:
+                queue.append(part)
+            else:
+                console.print(f"[yellow]Skipping unknown selection: {part!r}[/yellow]")
+
+    queue = sorted(set(queue))
+    if not queue:
+        console.print("Nothing queued for deletion.")
+        return
+
+    freed = sum(sizes[name] for name in queue)
+    console.print(f"\nQueued for deletion: {', '.join(queue)}")
+    console.print(f"This will free {freed / (1024**3):.2f} GB. You'll need to re-pull any of these to use them again.\n")
+
+    if not yes and not typer.confirm("Proceed?", default=False):
+        console.print("Cancelled — nothing was deleted.")
+        return
+
+    ollama = OllamaBackend()
+    for name in queue:
+        try:
+            ollama.delete(name)
+            console.print(f"[green]✓[/green] Deleted {name}")
+        except Exception as exc:  # noqa: BLE001 - one failed delete shouldn't abort the rest of the queue
+            console.print(f"[red]✗[/red] Failed to delete {name}: {exc}")
+
+
 @app.command()
 def catalog() -> None:
     """List every model in the catalog, regardless of hardware fit."""
@@ -118,6 +209,32 @@ def wizard() -> None:
     from localforge.tui import LocalforgeWizard
 
     LocalforgeWizard().run()
+
+
+def _prompt_for_model(provider: str) -> str:
+    """Ask which specific model to use within `provider` (e.g. Opus vs
+    Sonnet), rather than silently defaulting to one. Always offers a free-
+    text "Other" escape hatch so any LiteLLM-supported model id can be used,
+    not just the curated list.
+    """
+    choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+    if not choices:
+        return typer.prompt("Enter the exact frontier model id").strip()
+
+    console.print("\nAvailable models:")
+    for i, model_id in enumerate(choices, start=1):
+        console.print(f"  {i}) {model_id}")
+    other_idx = len(choices) + 1
+    console.print(f"  {other_idx}) Other (type a model id)")
+
+    raw = typer.prompt("Choose a model", default="1").strip()
+    if raw.isdigit():
+        idx = int(raw)
+        if 1 <= idx <= len(choices):
+            return choices[idx - 1]
+        if idx == other_idx:
+            return typer.prompt("Enter the exact model id").strip()
+    return raw  # let them type the model id directly instead of a number
 
 
 @app.command()
@@ -170,7 +287,7 @@ def setup() -> None:
     if env_var is None:
         console.print(f"[red]Unknown provider {provider!r}.[/red] Skipping — configure a frontier model manually later.")
     else:
-        frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
+        frontier_model = _prompt_for_model(provider)
         if os.environ.get(env_var):
             console.print(f"[green]✓[/green] Using existing {env_var} from your environment.\n")
             config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})

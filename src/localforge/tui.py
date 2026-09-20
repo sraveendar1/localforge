@@ -14,7 +14,7 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Checkbox, Footer, Header, Input, Log, RadioButton, RadioSet, Static
+from textual.widgets import Button, Checkbox, Footer, Header, Input, Log, RadioButton, RadioSet, Select, Static
 
 from localforge import config
 from localforge.advisor import recommend_models
@@ -102,11 +102,20 @@ class ApiKeyScreen(Screen):
     to be the one picking which local models to download.
     """
 
+    OTHER = "__other__"
+
     def compose(self) -> ComposeResult:
+        first_provider = next(iter(FRONTIER_PROVIDERS))
+        initial_choices = config.FRONTIER_MODEL_CHOICES.get(first_provider, [])
+        initial_options = [(m, m) for m in initial_choices] + [("Other (type a model id)", self.OTHER)]
+
         yield Header()
         yield Vertical(
             Static("\nWhich frontier model provider should localforge use?\n"),
             RadioSet(*(RadioButton(name.capitalize(), id=f"radio-{name}") for name in FRONTIER_PROVIDERS)),
+            Static("\nModel:\n"),
+            Select(initial_options, id="model-select", allow_blank=False),
+            Input(placeholder="exact model id, e.g. claude-opus-5", id="custom-model-input"),
             Static("", id="api-key-hint"),
             Input(placeholder="sk-...", password=True, id="api-key-input"),
             Button("Save & Continue", id="save", variant="primary"),
@@ -114,6 +123,18 @@ class ApiKeyScreen(Screen):
             id="apikey-body",
         )
         yield Footer()
+
+    def on_mount(self) -> None:
+        self.query_one("#custom-model-input", Input).display = False
+        first_provider = next(iter(FRONTIER_PROVIDERS))
+        self.query_one(f"#radio-{first_provider}", RadioButton).value = True
+
+    def _populate_models(self, provider: str) -> None:
+        choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+        select = self.query_one("#model-select", Select)
+        select.set_options([(model_id, model_id) for model_id in choices] + [("Other (type a model id)", self.OTHER)])
+        select.value = choices[0] if choices else self.OTHER
+        self.query_one("#custom-model-input", Input).display = select.value == self.OTHER
 
     def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
         provider = event.pressed.id.removeprefix("radio-")
@@ -123,6 +144,11 @@ class ApiKeyScreen(Screen):
             hint.update(f"[green]{env_var} already set — leave the field below empty to reuse it.[/green]")
         else:
             hint.update(f"Paste your {env_var}:")
+        self._populate_models(provider)
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "model-select":
+            self.query_one("#custom-model-input", Input).display = event.value == self.OTHER
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "save":
@@ -135,7 +161,16 @@ class ApiKeyScreen(Screen):
         provider = radio_set.pressed_button.id.removeprefix("radio-")
         env_var = FRONTIER_PROVIDERS[provider]
         api_key = self.query_one("#api-key-input", Input).value.strip()
-        frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
+
+        model_choice = self.query_one("#model-select", Select).value
+        if model_choice == self.OTHER:
+            frontier_model = self.query_one("#custom-model-input", Input).value.strip()
+            if not frontier_model:
+                status.update("[red]Enter a model id.[/red]")
+                return
+        else:
+            frontier_model = model_choice
+
         if api_key:
             config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
             os.environ[env_var] = api_key

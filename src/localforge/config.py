@@ -24,14 +24,19 @@ FRONTIER_API_KEY_ENV_VARS = list(FRONTIER_PROVIDERS.values()) + ["AWS_ACCESS_KEY
 # be in the environment.
 FRONTIER_MODEL_ENV_VAR = "LOCALFORGE_FRONTIER_MODEL"
 
-# Default LiteLLM model string to call for each provider, e.g. when the
-# orchestrator/advisor need a concrete model id and only a provider (or an
-# already-set API key) is known.
-FRONTIER_DEFAULT_MODELS = {
-    "anthropic": "claude-opus-5",
-    "openai": "gpt-5",
-    "gemini": "gemini-2.5-pro",
+# Curated model choices per provider, offered during setup so a user can
+# pick e.g. Sonnet or Fable instead of always getting the first entry. The
+# first entry in each list is the default. The Anthropic list is a full,
+# verified lineup; OpenAI/Gemini only get one entry each here because we
+# don't have an equally reliable/current lineup to offer without risking a
+# stale or invented model id -- "Other" (a free-text model id) is always
+# offered alongside these in the UI as the escape hatch.
+FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
+    "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1"],
+    "openai": ["gpt-5"],
+    "gemini": ["gemini-2.5-pro"],
 }
+FRONTIER_DEFAULT_MODELS = {provider: choices[0] for provider, choices in FRONTIER_MODEL_CHOICES.items()}
 
 
 def load() -> None:

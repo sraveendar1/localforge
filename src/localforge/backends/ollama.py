@@ -42,6 +42,22 @@ class OllamaBackend:
         resp.raise_for_status()
         return {m["name"] for m in resp.json().get("models", [])}
 
+    def list_installed(self) -> list[dict]:
+        """Models actually pulled and present on disk, per Ollama -- not the
+        static catalog. Each entry has at least "name", "size" (bytes), and
+        "modified_at".
+        """
+        with self._client() as client:
+            resp = client.get("/api/tags")
+            resp.raise_for_status()
+            return resp.json().get("models", [])
+
+    def delete(self, model_name: str) -> None:
+        """Remove a pulled model from disk, freeing its space."""
+        with self._client() as client:
+            resp = client.request("DELETE", "/api/delete", json={"name": model_name})
+            resp.raise_for_status()
+
     def ensure_available(self, model_name: str, on_progress: ProgressCallback | None = None) -> None:
         if not self.is_running():
             raise OllamaNotRunningError(
