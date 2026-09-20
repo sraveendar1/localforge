@@ -49,6 +49,18 @@ localforge run "Build a todo REST API with docs"
    flow back into the frontier model's context until it produces a final
    answer.
 
+### Choosing a frontier model
+
+`setup`/`wizard` always ask explicitly which frontier provider
+(Anthropic/OpenAI/Gemini) to use — localforge never silently guesses this
+from whatever API key happens to already be in your environment (if you
+have multiple keys set for unrelated tools, that ambiguity gets surfaced,
+not resolved for you). If a key for the provider you pick is already
+present, you're offered the option to reuse it instead of re-entering it.
+The choice is saved to `LOCALFORGE_FRONTIER_MODEL` in
+`~/.config/localforge/config.env`, which `localforge run` uses by default
+(overridable per-run with `--model`).
+
 ### Hardware-aware model selection
 
 During `setup`/`wizard`, model selection isn't purely rule-based: the

@@ -20,7 +20,7 @@ from localforge import config
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import ModelEntry, recommendations
-from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
+from localforge.config import FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
 
 
@@ -88,12 +88,10 @@ class OllamaScreen(Screen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "next":
-            existing = next((v for v in FRONTIER_API_KEY_ENV_VARS if os.environ.get(v)), None)
-            frontier_model = config.frontier_model_for_env_var(existing) if existing else None
-            if frontier_model:
-                self.app.push_screen(ModelsScreen(frontier_model))
-            else:
-                self.app.push_screen(ApiKeyScreen())
+            # Always ask which frontier model to use explicitly -- never
+            # silently pick one just because some API key happens to be
+            # sitting in the environment.
+            self.app.push_screen(ApiKeyScreen())
         elif event.button.id == "retry":
             self.app.pop_screen()
             self.app.push_screen(OllamaScreen())
@@ -107,15 +105,24 @@ class ApiKeyScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield Vertical(
-            Static("\nWhich frontier model provider will you orchestrate with?\n"),
+            Static("\nWhich frontier model provider should localforge use?\n"),
             RadioSet(*(RadioButton(name.capitalize(), id=f"radio-{name}") for name in FRONTIER_PROVIDERS)),
-            Static("\nPaste your API key:\n"),
+            Static("", id="api-key-hint"),
             Input(placeholder="sk-...", password=True, id="api-key-input"),
             Button("Save & Continue", id="save", variant="primary"),
             Static("", id="api-key-status"),
             id="apikey-body",
         )
         yield Footer()
+
+    def on_radio_set_changed(self, event: RadioSet.Changed) -> None:
+        provider = event.pressed.id.removeprefix("radio-")
+        env_var = FRONTIER_PROVIDERS[provider]
+        hint = self.query_one("#api-key-hint", Static)
+        if os.environ.get(env_var):
+            hint.update(f"[green]{env_var} already set — leave the field below empty to reuse it.[/green]")
+        else:
+            hint.update(f"Paste your {env_var}:")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id != "save":
@@ -128,12 +135,15 @@ class ApiKeyScreen(Screen):
         provider = radio_set.pressed_button.id.removeprefix("radio-")
         env_var = FRONTIER_PROVIDERS[provider]
         api_key = self.query_one("#api-key-input", Input).value.strip()
-        if not api_key:
-            status.update("[red]Enter an API key.[/red]")
-            return
-        config.save({env_var: api_key})
-        os.environ[env_var] = api_key
         frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
+        if api_key:
+            config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            os.environ[env_var] = api_key
+        elif os.environ.get(env_var):
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+        else:
+            status.update(f"[red]No {env_var} found — enter an API key.[/red]")
+            return
         self.app.push_screen(ModelsScreen(frontier_model))
 
 

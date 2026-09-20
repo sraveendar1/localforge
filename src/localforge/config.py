@@ -19,6 +19,11 @@ FRONTIER_PROVIDERS = {
 }
 FRONTIER_API_KEY_ENV_VARS = list(FRONTIER_PROVIDERS.values()) + ["AWS_ACCESS_KEY_ID"]  # Bedrock
 
+# Persists which frontier model localforge should use by default, so `run`
+# doesn't have to re-ask or silently guess from whatever API keys happen to
+# be in the environment.
+FRONTIER_MODEL_ENV_VAR = "LOCALFORGE_FRONTIER_MODEL"
+
 # Default LiteLLM model string to call for each provider, e.g. when the
 # orchestrator/advisor need a concrete model id and only a provider (or an
 # already-set API key) is known.
@@ -27,15 +32,6 @@ FRONTIER_DEFAULT_MODELS = {
     "openai": "gpt-5",
     "gemini": "gemini-2.5-pro",
 }
-
-
-def frontier_model_for_env_var(env_var: str) -> str | None:
-    """Map an already-set API key env var back to a default frontier model
-    id, e.g. "ANTHROPIC_API_KEY" -> "claude-opus-5". Returns None for
-    providers (like Bedrock) with no simple default mapping.
-    """
-    provider = next((p for p, v in FRONTIER_PROVIDERS.items() if v == env_var), None)
-    return FRONTIER_DEFAULT_MODELS.get(provider) if provider else None
 
 
 def load() -> None:

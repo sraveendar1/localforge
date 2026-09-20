@@ -35,7 +35,7 @@ def _main(ctx: typer.Context) -> None:
 
 
 def _print_getting_started() -> None:
-    ready = any(os.environ.get(v) for v in FRONTIER_API_KEY_ENV_VARS)
+    ready = bool(os.environ.get(config.FRONTIER_MODEL_ENV_VAR))
     if ready:
         body = (
             "[bold]You're set up.[/bold] Try:\n\n"
@@ -157,26 +157,26 @@ def setup() -> None:
             raise typer.Exit(code=1)
     console.print("[green]✓[/green] Ollama is installed and running\n")
 
-    # 2. Frontier model API key -- needed now, before model selection, since
-    # the frontier model itself picks which local models to download.
-    existing = [v for v in FRONTIER_API_KEY_ENV_VARS if os.environ.get(v)]
+    # 2. Frontier model provider -- always asked explicitly, even if a key
+    # for some provider already happens to be sitting in the environment.
+    # We never silently guess which one the user wants localforge to use.
+    provider = typer.prompt(
+        f"Which frontier model provider should localforge use? ({'/'.join(FRONTIER_PROVIDERS)})",
+        default="anthropic",
+    ).strip().lower()
+    env_var = FRONTIER_PROVIDERS.get(provider)
     frontier_model: str | None = None
-    if existing:
-        console.print(f"[green]✓[/green] Frontier API key already set: {', '.join(existing)}\n")
-        frontier_model = next((config.frontier_model_for_env_var(v) for v in existing), None)
+    if env_var is None:
+        console.print(f"[red]Unknown provider {provider!r}.[/red] Skipping — configure a frontier model manually later.")
     else:
-        provider = typer.prompt(
-            f"Which frontier model provider will you orchestrate with? ({'/'.join(FRONTIER_PROVIDERS)})",
-            default="anthropic",
-        ).strip().lower()
-        env_var = FRONTIER_PROVIDERS.get(provider)
-        if env_var is None:
-            console.print(f"[red]Unknown provider {provider!r}.[/red] Skipping — set an API key manually later.")
+        frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
+        if os.environ.get(env_var):
+            console.print(f"[green]✓[/green] Using existing {env_var} from your environment.\n")
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
         else:
             api_key = typer.prompt(f"Paste your {env_var}", hide_input=True)
-            config.save({env_var: api_key})
+            config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
             os.environ[env_var] = api_key
-            frontier_model = config.FRONTIER_DEFAULT_MODELS.get(provider)
             console.print(f"[green]✓[/green] Saved {env_var} to {config.CONFIG_FILE}\n")
 
     # 3. Hardware scan, then let the frontier model pick which local models
@@ -221,13 +221,20 @@ def doctor() -> None:
         console.print("[red]✗[/red] Ollama is not running — start it (e.g. `ollama serve` or `brew services start ollama`)")
 
     found_keys = [var for var in FRONTIER_API_KEY_ENV_VARS if os.environ.get(var)]
-    if found_keys:
-        console.print(f"[green]✓[/green] Frontier model API key found: {', '.join(found_keys)}")
+    chosen_model = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+    if found_keys and chosen_model:
+        console.print(f"[green]✓[/green] Frontier model configured: {chosen_model} (via {', '.join(found_keys)})")
+    elif found_keys:
+        console.print(
+            f"[yellow]![/yellow] API key(s) found ({', '.join(found_keys)}) but no frontier model "
+            "chosen — run `localforge setup` to pick one explicitly."
+        )
+        ok = False
     else:
         ok = False
         console.print(
-            "[red]✗[/red] No frontier model API key set — export one of: "
-            + ", ".join(FRONTIER_API_KEY_ENV_VARS)
+            "[red]✗[/red] No frontier model configured — run `localforge setup`, "
+            "or export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS)
         )
 
     hw = detect_hardware()
@@ -249,13 +256,15 @@ def doctor() -> None:
 def run(
     task: str = typer.Argument(..., help="What you want built, e.g. \"Build a todo REST API with docs\""),
     frontier_model: str = typer.Option(
-        "claude-opus-5",
+        None,
         "--model",
         "-m",
-        help="Frontier model to orchestrate with (any LiteLLM model string, e.g. claude-opus-5, gpt-5).",
+        help="Frontier model to orchestrate with (any LiteLLM model string, e.g. claude-opus-5, gpt-5). "
+        "Defaults to whatever `localforge setup` saved, or claude-opus-5 if setup was never run.",
     ),
 ) -> None:
     """Run a task: the frontier model plans it and delegates subtasks to local models."""
+    frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
     try:
         with console.status(f"[bold green]Orchestrating with {frontier_model}..."):
             result = run_orchestrator(task, frontier_model)
