@@ -20,6 +20,7 @@ from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
+from localforge.orchestrator import OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 
 app = typer.Typer(
@@ -95,7 +96,7 @@ def _print_getting_started() -> None:
             "hardware, and saves your API key — then you're ready for:\n\n"
             '  [accent]localforge run "Build a todo REST API with docs"[/accent]'
         )
-    console.print(Panel(body, title="localforge", expand=False))
+    console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
 
 @app.command()
@@ -491,13 +492,21 @@ def run(
     try:
         with console.status(f"[bold success]Orchestrating with {frontier_model}..."):
             result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate)
+    except OrchestrationError as exc:
+        # Even a non-convergent run spent real frontier tokens/cost and local
+        # compute along the way -- show that before reporting the failure.
+        console.print(f"[bold error]Error:[/bold error] {exc}")
+        _print_usage_panel(exc.stats, frontier_model)
+        raise typer.Exit(code=1) from None
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
         console.print(f"[bold error]Error:[/bold error] {exc}")
         raise typer.Exit(code=1) from None
 
     console.print(result.answer)
+    _print_usage_panel(result.stats, frontier_model)
 
-    stats = result.stats
+
+def _print_usage_panel(stats, frontier_model: str) -> None:
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
         "",
@@ -507,7 +516,7 @@ def run(
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + (f" (${stats.frontier_cost_usd:.4f})" if stats.frontier_cost_usd else ""),
     ]
-    console.print(Panel("\n".join(usage_lines), title="Usage"))
+    console.print(Panel("\n".join(usage_lines), title="Usage", border_style="panel.border"))
 
 
 def _ollama_installed_via_brew() -> bool:
@@ -548,7 +557,7 @@ def uninstall(
             lines.append("  - ~/.ollama data directory (Ollama wasn't installed via Homebrew, so the app itself is left alone)")
     lines.append("  - The localforge CLI tool")
     lines.append("\n[bold]This cannot be undone.[/bold]")
-    console.print(Panel("\n".join(lines), title="Uninstall localforge"))
+    console.print(Panel("\n".join(lines), title="Uninstall localforge", border_style="error"))
 
     if not yes and not typer.confirm("\nContinue?", default=False):
         console.print("Cancelled — nothing was removed.")

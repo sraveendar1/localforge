@@ -31,12 +31,16 @@ TASK_MODALITIES = {
 }
 
 
-def build_tool_schemas() -> list[dict]:
+def build_tool_schemas(hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> list[dict]:
     """OpenAI/LiteLLM-style tool schemas for every modality with an available
-    local model on this machine.
+    local model on this machine. A modality with no fitting catalog entry
+    (hardware too limited) is left out entirely, rather than exposing a tool
+    the frontier model could call only to get a NoFittingModelError back.
     """
     schemas = []
     for modality, meta in TASK_MODALITIES.items():
+        if not candidates(modality, hardware, catalog):
+            continue
         schemas.append(
             {
                 "type": "function",

@@ -146,6 +146,10 @@ class ApiKeyScreen(Screen):
         env_var = FRONTIER_PROVIDERS[provider]
         hint = self.query_one("#api-key-hint", Static)
         key_input = self.query_one("#api-key-input", Input)
+        # Clear anything typed for the previously selected provider -- otherwise
+        # a key typed for e.g. Anthropic stays in the (masked) field and would
+        # be saved under the newly picked provider's env var on Save.
+        key_input.value = ""
         if env_var is None:
             hint.update("[green]Open-weight model, self-hosted via Ollama — no API key needed.[/green]")
             key_input.display = False

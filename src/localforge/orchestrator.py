@@ -38,6 +38,20 @@ class RunResult:
     answer: str
     stats: RunStats = field(default_factory=RunStats)
 
+
+class OrchestrationError(RuntimeError):
+    """Raised when the loop doesn't converge within MAX_ROUNDS. Carries the
+    usage stats accumulated up to that point, so a caller can still show the
+    user what was actually spent instead of losing that entirely -- a
+    non-convergent task still burns real frontier tokens/cost and local
+    compute along the way.
+    """
+
+    def __init__(self, message: str, stats: RunStats):
+        super().__init__(message)
+        self.stats = stats
+
+
 MAX_ROUNDS = 25
 
 # How many of the most recent tool results to keep in full. Once a task runs
@@ -95,7 +109,7 @@ def run(
     """
     hardware = hardware if hardware is not None else detect_hardware()
     dispatcher = Dispatcher(hardware)
-    tools = build_tool_schemas()
+    tools = build_tool_schemas(hardware, dispatcher.catalog)
     stats = RunStats()
 
     messages = [
@@ -149,4 +163,5 @@ def run(
 
         _collapse_old_tool_results(messages, tool_message_indices)
 
-    raise RuntimeError(f"Orchestration did not converge within {MAX_ROUNDS} rounds.")
+    stats.local_tokens_generated = dispatcher.local_tokens_generated
+    raise OrchestrationError(f"Orchestration did not converge within {MAX_ROUNDS} rounds.", stats)

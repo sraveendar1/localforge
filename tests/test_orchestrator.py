@@ -37,6 +37,7 @@ def test_collapse_noop_under_threshold():
 
 class StubDispatcher:
     def __init__(self, hardware, catalog=None):
+        self.catalog = catalog or []
         self.local_tokens_generated = 321  # arbitrary fixed value to assert on
 
     def dispatch(self, tool_name, instructions, on_delegate=None):
