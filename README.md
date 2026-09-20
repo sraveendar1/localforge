@@ -37,6 +37,26 @@ finishes:
 localforge run "Build a todo REST API with docs"
 ```
 
+**About the one-liner:** `curl ... | bash` fetches and immediately executes
+whatever is currently on this repo's `main` branch — the standard pattern
+used by installers like `rustup`/`nvm`, but it does mean you're trusting
+the script's content at the moment you run it. If you'd rather see exactly
+what will run first, download and read it before executing:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/sanjayraveendar/localforge/main/install.sh -o install.sh
+less install.sh   # inspect it
+bash install.sh
+```
+
+The flags matter: `-f` fails silently instead of piping an HTML error page
+into `bash` if something's wrong, `-sS` keeps it quiet but still shows real
+errors, `-L` follows redirects. This URL form
+(`raw.githubusercontent.com/<user>/<repo>/<branch>/<path>`) only resolves
+once the file exists on that branch in a **public** repo — a private repo's
+raw URL returns 404 to an unauthenticated request, so the one-liner won't
+work there without extra auth setup.
+
 ## How it works
 
 1. **`localforge scan`** — detects OS, CPU, RAM, GPU/VRAM, and free disk space.
