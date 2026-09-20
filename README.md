@@ -194,6 +194,16 @@ of re-entering it. The choice is saved to `LOCALFORGE_FRONTIER_MODEL` in
 `~/.config/localforge/config.env`, which `localforge run` uses by default
 (overridable per-run with `--model`).
 
+**Getting an API key.** None of Anthropic, OpenAI, or Google expose a
+public OAuth/browser-login flow for third-party CLI tools to authenticate
+on your behalf (unlike, say, `gh auth login`'s device flow for GitHub) —
+so this is not a real "sign in" step, just a shortcut to the right page.
+When you pick a provider that needs a key and don't already have one set,
+`setup`/`wizard` automatically opens your browser straight to that
+provider's API key page (Anthropic's Console, OpenAI's Platform dashboard,
+or Google AI Studio) so you don't have to go find it, then you paste the
+key in as usual.
+
 **The frontier/orchestrator model doesn't have to be a proprietary API at
 all.** Picking provider `local` lets an open-weight model served by Ollama
 be the orchestrator itself — no API key, no per-token cost, fully

@@ -5,6 +5,7 @@ import platform
 import shutil
 import subprocess
 import time
+import webbrowser
 from pathlib import Path
 
 import typer
@@ -354,6 +355,10 @@ def setup() -> None:
             console.print(f"[success]✓[/success] Using existing {env_var} from your environment.\n")
             config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
         else:
+            console_url = config.FRONTIER_CONSOLE_URLS.get(provider)
+            if console_url:
+                console.print(f"Opening {console_url} in your browser to create an API key...")
+                webbrowser.open(console_url)
             api_key = typer.prompt(f"Paste your {env_var}", hide_input=True)
             config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
             os.environ[env_var] = api_key

@@ -51,6 +51,18 @@ FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
 }
 FRONTIER_DEFAULT_MODELS = {provider: choices[0] for provider, choices in FRONTIER_MODEL_CHOICES.items()}
 
+# Where to create an API key for each provider. There's no public OAuth/
+# browser-login flow any of these providers expose for third-party CLI
+# tools to authenticate on a user's behalf (unlike e.g. GitHub's device
+# flow) -- this is a plain convenience: opened automatically when a key is
+# needed and none is found yet, so the user lands on the right page instead
+# of navigating there manually, then still pastes the key themselves.
+FRONTIER_CONSOLE_URLS: dict[str, str] = {
+    "anthropic": "https://console.anthropic.com/settings/keys",
+    "openai": "https://platform.openai.com/api-keys",
+    "gemini": "https://aistudio.google.com/app/apikey",
+}
+
 
 def load() -> None:
     """Load saved config into the environment, without overriding vars the

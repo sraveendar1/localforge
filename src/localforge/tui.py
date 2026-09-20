@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import webbrowser
 
 from rich.table import Table
 from textual import work
@@ -104,6 +105,10 @@ class ApiKeyScreen(Screen):
 
     OTHER = "__other__"
 
+    def __init__(self) -> None:
+        super().__init__()
+        self._opened_console_for: set[str] = set()
+
     def compose(self) -> ComposeResult:
         first_provider = next(iter(FRONTIER_PROVIDERS))
         initial_choices = config.FRONTIER_MODEL_CHOICES.get(first_provider, [])
@@ -149,7 +154,14 @@ class ApiKeyScreen(Screen):
             if os.environ.get(env_var):
                 hint.update(f"[green]{env_var} already set — leave the field below empty to reuse it.[/green]")
             else:
-                hint.update(f"Paste your {env_var}:")
+                console_url = config.FRONTIER_CONSOLE_URLS.get(provider)
+                if console_url:
+                    hint.update(f"Paste your {env_var} (opening {console_url} in your browser):")
+                    if provider not in self._opened_console_for:
+                        webbrowser.open(console_url)
+                        self._opened_console_for.add(provider)
+                else:
+                    hint.update(f"Paste your {env_var}:")
         self._populate_models(provider)
 
     def on_select_changed(self, event: Select.Changed) -> None:
