@@ -3,7 +3,13 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+# Secrets. Keys normally live in ~/.config/localforge/config.env (outside the
+# repo entirely), but LOCALFORGE_CONFIG_DIR can point anywhere -- including
+# here -- so ignore every .env shape, not just a bare ".env".
 .env
+*.env
+.env.*
+config.env
 dist/
 build/
 .pytest_cache/
