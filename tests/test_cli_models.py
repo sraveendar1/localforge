@@ -94,3 +94,13 @@ def test_delete_interactive_queue_requires_confirmation(fake_ollama):
     assert result.exit_code == 0
     assert "Cancelled" in result.output
     assert len(fake_ollama) == 2  # declining the confirmation deletes nothing
+
+
+def test_help_command_matches_top_level_help():
+    runner = CliRunner()
+    help_flag = runner.invoke(cli_module.app, ["--help"])
+    help_command = runner.invoke(cli_module.app, ["help"])
+    assert help_command.exit_code == 0
+    assert "Usage: localforge" in help_command.output
+    assert "delete" in help_command.output and "wizard" in help_command.output
+    assert help_command.output == help_flag.output

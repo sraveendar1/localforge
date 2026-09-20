@@ -5,6 +5,7 @@ import platform
 import shutil
 import subprocess
 import time
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -33,6 +34,12 @@ def _main(ctx: typer.Context) -> None:
     if ctx.invoked_subcommand is None:
         _print_getting_started()
         raise typer.Exit()
+
+
+@app.command()
+def help(ctx: typer.Context) -> None:
+    """Show this help message (same as --help)."""
+    console.print(ctx.parent.get_help())
 
 
 def _print_getting_started() -> None:
@@ -421,6 +428,81 @@ def run(
         console.print(f"[bold red]Error:[/bold red] {exc}")
         raise typer.Exit(code=1) from None
     console.print(result)
+
+
+def _ollama_installed_via_brew() -> bool:
+    if shutil.which("brew") is None:
+        return False
+    return subprocess.run(
+        ["brew", "list", "--formula", "ollama"], capture_output=True, check=False
+    ).returncode == 0
+
+
+@app.command()
+def uninstall(
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the main confirmation prompt."),
+    purge_ollama: bool = typer.Option(
+        False,
+        "--purge-ollama",
+        help="Also uninstall Ollama itself (if installed via Homebrew) and delete ~/.ollama entirely, "
+        "not just the models localforge pulled. Off by default since Ollama may be used by other tools.",
+    ),
+) -> None:
+    """Remove everything localforge manages: installed models, saved config,
+    optionally Ollama itself, and finally the localforge CLI tool.
+    """
+    ollama = OllamaBackend()
+    models_on_disk = ollama.list_installed() if ollama.is_running() else []
+    total_model_bytes = sum(m.get("size", 0) for m in models_on_disk)
+    ollama_via_brew = _ollama_installed_via_brew()
+
+    lines = ["[bold red]This will remove:[/bold red]"]
+    if models_on_disk:
+        lines.append(f"  - {len(models_on_disk)} local model(s) — {total_model_bytes / (1024**3):.2f} GB")
+    if config.CONFIG_FILE.exists():
+        lines.append(f"  - Saved config/API key at {config.CONFIG_FILE}")
+    if purge_ollama:
+        if ollama_via_brew:
+            lines.append("  - Ollama itself (via Homebrew) and its entire ~/.ollama data directory")
+        else:
+            lines.append("  - ~/.ollama data directory (Ollama wasn't installed via Homebrew, so the app itself is left alone)")
+    lines.append("  - The localforge CLI tool")
+    lines.append("\n[bold]This cannot be undone.[/bold]")
+    console.print(Panel("\n".join(lines), title="Uninstall localforge"))
+
+    if not yes and not typer.confirm("\nContinue?", default=False):
+        console.print("Cancelled — nothing was removed.")
+        raise typer.Exit()
+
+    if not purge_ollama and not yes:
+        purge_ollama = typer.confirm(
+            "\nAlso uninstall Ollama itself and delete ~/.ollama? "
+            "Skip this if you use Ollama for anything besides localforge.",
+            default=False,
+        )
+
+    for m in models_on_disk:
+        try:
+            ollama.delete(m["name"])
+            console.print(f"[green]✓[/green] Deleted model {m['name']}")
+        except Exception as exc:  # noqa: BLE001 - one failed delete shouldn't abort the rest of uninstall
+            console.print(f"[red]✗[/red] Failed to delete {m['name']}: {exc}")
+
+    if purge_ollama:
+        if ollama_via_brew:
+            subprocess.run(["brew", "uninstall", "ollama"], check=False)
+        ollama_data_dir = Path.home() / ".ollama"
+        if ollama_data_dir.exists():
+            shutil.rmtree(ollama_data_dir, ignore_errors=True)
+        console.print("[green]✓[/green] Removed Ollama and its data")
+
+    if config.CONFIG_DIR.exists():
+        shutil.rmtree(config.CONFIG_DIR, ignore_errors=True)
+        console.print(f"[green]✓[/green] Removed {config.CONFIG_DIR}")
+
+    console.print("\nUninstalling the localforge CLI tool itself...")
+    subprocess.run(["uv", "tool", "uninstall", "localforge"], check=False)
+    console.print("[bold green]Done.[/bold green] localforge has been fully removed.")
 
 
 if __name__ == "__main__":

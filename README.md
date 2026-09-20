@@ -61,6 +61,20 @@ once before anything is deleted — or pass model name(s) directly
 for scripting. A failed delete in a batch doesn't abort the rest of the
 queue.
 
+### Uninstalling
+
+`localforge uninstall` removes what localforge manages: every locally
+pulled model, the saved config (`~/.config/localforge`), and finally the
+`localforge` CLI tool itself. It always shows an itemized list of exactly
+what it's about to remove before doing anything, and asks for confirmation
+(`--yes` skips that prompt, for scripting). Ollama itself is **left alone
+by default** — only its models are deleted, not the app — since Ollama
+might be something you use for other things besides localforge. Pass
+`--purge-ollama` to also uninstall Ollama (via Homebrew, if that's how it
+was installed) and wipe `~/.ollama` entirely, for a fully clean slate; this
+is asked about separately even without the flag, so it's never bundled
+into a single "yes to everything."
+
 ### Choosing a frontier model
 
 `setup`/`wizard` always ask explicitly which frontier provider
@@ -133,6 +147,7 @@ uv run localforge scan
 ## Usage
 
 ```bash
+localforge help                                  # list every command (same as --help)
 localforge wizard                                # one-time interactive setup (terminal UI)
 localforge setup                                 # one-time interactive setup (plain prompts)
 localforge doctor                                # is everything set up correctly?
@@ -143,6 +158,8 @@ localforge run "..." --model gpt-5               # use a different frontier mode
 localforge installed                             # what local models are actually on disk, and how big
 localforge delete                                # pick installed model(s) to delete, review, then confirm
 localforge delete qwen2.5-coder:14b --yes        # delete a specific model without prompting
+localforge uninstall                             # remove models, config, and the CLI tool (asks first)
+localforge uninstall --purge-ollama              # also uninstall Ollama itself and wipe ~/.ollama
 ```
 
 ## Architecture
