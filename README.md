@@ -11,6 +11,37 @@ No vendor lock-in: the orchestrator is called through
 [LiteLLM](https://github.com/BerriAI/litellm), so swapping `claude-opus-5`
 for `gpt-5` or a self-hosted model is a one-line config change.
 
+## Interactive session
+
+Run `localforge` with no arguments in a real terminal and you get a
+Claude-Code-style session instead of a one-shot command:
+
+```
+ _                 _  __
+| |               | |/ _|
+| | ___   ___ __ _| | |_ ___  _ __ __ _  ___
+| |/ _ \ / __/ _` | |  _/ _ \| '__/ _` |/ _ \
+| | (_) | (_| (_| | | || (_) | | | (_| |  __/
+|_|\___/ \___\__,_|_|_| \___/|_|  \__, |\___|
+                                   __/ |
+                                  |___/
+
+Type a task to build it, or /help for commands. /exit to leave.
+
+localforge>
+```
+
+Type a task directly and it runs (shorthand for `/run <task>`), or use a
+slash command for anything else — `/setup`, `/doctor`, `/scan`, `/theme
+dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every
+slash command reuses the exact same code as its `localforge <command>`
+equivalent — there's no second implementation to drift out of sync.
+
+Piped/scripted invocations (`localforge | cat`, CI, no real terminal
+attached) skip the session and keep the old print-and-exit behavior, so
+nothing that already scripts against a bare `localforge` call starts
+waiting on stdin.
+
 ## Quickstart
 
 **Before you run it — what `install.sh` puts on your machine:**

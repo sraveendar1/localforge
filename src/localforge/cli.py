@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, theme
+from localforge import cli_transport, config, repl, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
@@ -36,7 +36,15 @@ def _main(ctx: typer.Context) -> None:
     config.load()
     console.push_theme(theme.get_theme(os.environ.get(config.THEME_ENV_VAR, theme.DEFAULT_THEME)))
     if ctx.invoked_subcommand is None:
-        _print_getting_started()
+        # A real interactive terminal gets the Claude-Code-style session
+        # (banner + slash commands); a pipe/script/non-tty invocation (e.g.
+        # existing CI usage, or `localforge | cat`) keeps the old
+        # print-and-exit behavior so nothing that scripts against a bare
+        # `localforge` call starts waiting on stdin forever.
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            repl.run_repl(app, console)
+        else:
+            _print_getting_started()
         raise typer.Exit()
 
 
