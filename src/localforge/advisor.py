@@ -16,7 +16,15 @@ from localforge.catalog import ModelEntry, candidates, load_catalog
 from localforge.hardware import HardwareProfile
 
 
-def _best_quality(entries: list[ModelEntry]) -> ModelEntry:
+def _best_choice(entries: list[ModelEntry], installed: set[str] | None) -> ModelEntry:
+    """Deterministic fallback: an already-installed fitting model beats a
+    higher-tier one that would need a fresh download (same rule as
+    catalog.best_match).
+    """
+    if installed:
+        already_have = [e for e in entries if e.name in installed]
+        if already_have:
+            return max(already_have, key=lambda e: e.quality_tier)
     return max(entries, key=lambda e: e.quality_tier)
 
 
@@ -51,11 +59,18 @@ def recommend_models(
     frontier_model: str,
     catalog: list[ModelEntry] | None = None,
     cli_provider: str | None = None,
+    installed: set[str] | None = None,
 ) -> dict[str, ModelEntry | None]:
     """Ask `frontier_model` to pick the best local model per modality for
     `hardware`. Returns one entry per modality present in the catalog (None
     if nothing fits that modality at all).
+
+    `installed` is the set of Ollama tags already on disk. Each candidate is
+    labelled with it so the frontier model can weigh "no download needed"
+    against a quality bump, and the deterministic fallback prefers installed
+    models outright.
     """
+    installed = installed or set()
     catalog = catalog if catalog is not None else load_catalog()
     modalities = sorted({m.modality for m in catalog})
 
@@ -96,9 +111,15 @@ def recommend_models(
         "one per modality -- weigh quality_tier against how much RAM/VRAM/"
         "disk headroom each choice leaves for actually running it "
         "alongside everything else on the machine.\n\n"
+        "Candidates marked \"installed\": true are ALREADY on this machine and "
+        "need no download at all. Strongly prefer an installed model unless a "
+        "not-installed one is clearly better for the task -- a multi-GB "
+        "download for a marginal quality gain is a bad trade.\n\n"
         f"Hardware: {hardware.model_dump_json()}\n\n"
         "Candidates: "
-        + json.dumps({m: [e.model_dump() for e in es] for m, es in choosable.items()})
+        + json.dumps(
+            {m: [{**e.model_dump(), "installed": e.name in installed} for e in es] for m, es in choosable.items()}
+        )
     )
 
     try:
@@ -118,6 +139,6 @@ def recommend_models(
     for modality, entries in choosable.items():
         picked_name = args.get(modality)
         match = next((e for e in entries if e.name == picked_name), None)
-        result[modality] = match or _best_quality(entries)
+        result[modality] = match or _best_choice(entries, installed)
 
     return result

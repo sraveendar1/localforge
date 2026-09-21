@@ -216,6 +216,7 @@ class ModelsScreen(Screen):
         super().__init__()
         self.frontier_model = frontier_model
         self.to_pull: set[str] = set()
+        self.installed: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -229,20 +230,40 @@ class ModelsScreen(Screen):
     @work(thread=True)
     def _recommend(self) -> None:
         hw = detect_hardware()
+        # What's already on disk, so a re-run reuses suitable models rather
+        # than downloading new ones (same rule as `localforge setup`).
+        try:
+            self.installed = {m["name"] for m in OllamaBackend().list_installed()}
+        except Exception:  # noqa: BLE001 - best-effort; fall back to catalog-only
+            self.installed = set()
+
         if self.frontier_model:
-            recs = recommend_models(hw, self.frontier_model)
+            # Under CLI login there's no API key, so route the advisor through
+            # the provider's CLI rather than letting a litellm call fail.
+            cli_provider = None
+            if os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
+                cli_provider = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR)
+            recs = recommend_models(hw, self.frontier_model, cli_provider=cli_provider, installed=self.installed)
         else:
-            recs = recommendations(hw)
+            recs = recommendations(hw, installed=self.installed)
         self.app.call_from_thread(self._show_recommendations, recs)
 
     def _show_recommendations(self, recs: dict[str, ModelEntry | None]) -> None:
-        self.to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
+        # Only offer to pull what isn't already installed.
+        self.to_pull = {
+            e.name for e in recs.values() if e is not None and e.runtime == "ollama" and e.name not in self.installed
+        }
 
         table = Table(title="Recommended for this machine")
         table.add_column("Modality")
         table.add_column("Model")
         for modality, entry in recs.items():
-            table.add_row(modality, entry.name if entry else "[red]none fit[/red]")
+            if entry is None:
+                table.add_row(modality, "[red]none fit[/red]")
+            elif entry.name in self.installed:
+                table.add_row(modality, f"{entry.name} [green](already installed)[/green]")
+            else:
+                table.add_row(modality, f"{entry.name} [yellow](will download ~{entry.disk_gb:g} GB)[/yellow]")
 
         body = self.query_one("#models-body", VerticalScroll)
         self.query_one("#models-status", Static).update(table)

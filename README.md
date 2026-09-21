@@ -103,7 +103,8 @@ work there without extra auth setup.
 1. **`localforge scan`** — detects OS, CPU, RAM, GPU/VRAM, and free disk space.
 2. **`localforge models`** — matches your hardware against a curated catalog
    (`src/localforge/catalog_data.yaml`) to recommend the best local model per
-   task type, using the deterministic highest-quality-tier heuristic.
+   task type — preferring a model you already have installed over a
+   fresh download, and marking which ones are installed.
 3. **`localforge run "<task>"`** — the frontier model plans the task, calls
    tools like `delegate_coding_task` / `delegate_docs_task`, and those calls
    are dispatched to the matched local model running under Ollama. Results
@@ -280,6 +281,25 @@ the task and makes tool-calling decisions, which most *small* open-weight
 models handle unreliably — the curated choices here favor larger models
 for that reason, and you can always point `--model` at anything else
 LiteLLM/Ollama supports via the "Other" option.
+
+### Reusing what's already installed
+
+Before downloading anything, `setup` (and the wizard) checks which models
+Ollama already has on disk. If an installed model fits your hardware for a
+task type, it's reused instead of pulling a new one — re-running setup
+won't re-download models you already have. Setup prints the plan first:
+
+```
+✓ Reusing already-installed: qwen2.5-coder:7b (coding), mistral-nemo:12b (docs), qwen2.5:3b (general)
+✓ Nothing to download — every task type is covered by what you have.
+  note — coding: qwen2.5-coder:14b (higher tier, ~9 GB) also fits — `ollama pull qwen2.5-coder:14b` if you want the upgrade
+```
+
+When a better model would fit, it tells you rather than silently
+downloading it (or silently not) — you decide whether the upgrade is worth
+the download. An installed model still has to fit your hardware to be
+reused; being on disk isn't enough. `localforge models` shows the same
+picks with an **Installed** column.
 
 ### Hardware-aware model selection
 

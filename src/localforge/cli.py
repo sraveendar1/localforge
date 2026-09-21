@@ -18,7 +18,7 @@ from rich.table import Table
 from localforge import cli_transport, config, repl, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
-from localforge.catalog import load_catalog, recommendations
+from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
 from localforge.orchestrator import OrchestrationError
@@ -125,23 +125,75 @@ def scan() -> None:
 
 @app.command()
 def models() -> None:
-    """Show the best-fitting local model per task type for this machine."""
+    """Show the best-fitting local model per task type for this machine,
+    preferring what's already installed over a fresh download."""
     hw = detect_hardware()
-    recs = recommendations(hw)
+    installed = _installed_model_names(OllamaBackend())
+    recs = recommendations(hw, installed=installed)
 
     table = Table(title="Recommended local models for this machine")
     table.add_column("Modality")
     table.add_column("Model")
     table.add_column("Runtime")
     table.add_column("Quality tier")
+    table.add_column("Installed")
 
     for modality, entry in recs.items():
         if entry is None:
-            table.add_row(modality, "[error]none fit this hardware[/error]", "-", "-")
+            table.add_row(modality, "[error]none fit this hardware[/error]", "-", "-", "-")
         else:
-            table.add_row(modality, entry.name, entry.runtime, str(entry.quality_tier))
+            on_disk = "[success]yes[/success]" if entry.name in installed else "no"
+            table.add_row(modality, entry.name, entry.runtime, str(entry.quality_tier), on_disk)
 
     console.print(table)
+
+
+def _installed_model_names(ollama: OllamaBackend) -> set[str]:
+    """Exact Ollama tags currently on disk, or an empty set if Ollama can't
+    be reached -- in which case we simply fall back to recommending from
+    the catalog, never block setup on it.
+    """
+    try:
+        return {m["name"] for m in ollama.list_installed()}
+    except Exception:  # noqa: BLE001 - best-effort; setup continues without it
+        return set()
+
+
+def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
+    """Before pulling anything, say exactly what will be reused and what
+    will be downloaded, and when an installed model is being reused over a
+    higher-tier one that also fits, say that too -- so the user can judge
+    whether the upgrade is worth the download rather than it being decided
+    silently either way.
+    """
+    catalog = load_catalog()
+    reuse, download, notes = [], [], []
+    for modality, entry in recs.items():
+        if entry is None or entry.runtime != "ollama":
+            continue
+        if entry.name in installed:
+            reuse.append(f"{entry.name} ({modality})")
+            try:
+                ideal = best_match(modality, hw, catalog)  # ignoring what's installed
+            except NoFittingModelError:
+                continue
+            if ideal.name != entry.name and ideal.quality_tier > entry.quality_tier:
+                notes.append(
+                    f"{modality}: {ideal.name} (higher tier, ~{ideal.disk_gb:g} GB) also fits — "
+                    f"`ollama pull {ideal.name}` if you want the upgrade"
+                )
+        else:
+            download.append(f"{entry.name} ({modality}, ~{entry.disk_gb:g} GB)")
+
+    if reuse:
+        console.print(f"[success]✓[/success] Reusing already-installed: {', '.join(reuse)}")
+    if download:
+        console.print(f"[warning]↓[/warning] Will download: {', '.join(download)}")
+    if not download:
+        console.print("[success]✓[/success] Nothing to download — every task type is covered by what you have.")
+    for note in notes:
+        console.print(f"  [dim]note — {note}[/dim]")
+    console.print()
 
 
 def _installed_ollama_models() -> list[dict]:
@@ -541,6 +593,13 @@ def setup() -> None:
         f"Hardware: {hw.ram_gb}GB RAM, {hw.total_vram_gb}GB VRAM, "
         f"{hw.free_disk_gb}GB free disk\n"
     )
+
+    # Check what's already on disk *before* deciding what to download, so a
+    # re-run of setup reuses suitable models instead of pulling new ones.
+    installed = _installed_model_names(ollama)
+    if installed:
+        console.print(f"Already installed: {', '.join(sorted(installed))}\n")
+
     if frontier_model:
         # Route the advisor the same way the orchestrator will be routed --
         # under CLI login there's no API key, so a litellm call here would
@@ -548,12 +607,13 @@ def setup() -> None:
         advisor_cli = provider if auth_method == config.AUTH_CLI_LOGIN else None
         via = f"your `{config.FRONTIER_CLI_AUTH[provider]['command']}` login" if advisor_cli else frontier_model
         console.print(f"Asking {via} to pick the best local models for this machine...")
-        recs = recommend_models(hw, frontier_model, cli_provider=advisor_cli)
+        recs = recommend_models(hw, frontier_model, cli_provider=advisor_cli, installed=installed)
     else:
         console.print("[warning]No usable frontier model id — falling back to the built-in heuristic.[/warning]")
-        recs = recommendations(hw)
+        recs = recommendations(hw, installed=installed)
 
-    to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama"}
+    _print_model_plan(recs, installed, hw)
+    to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama" and e.name not in installed}
     failed: list[str] = []
     with Progress(
         TextColumn("[progress.description]{task.description}"),
