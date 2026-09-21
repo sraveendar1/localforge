@@ -65,37 +65,49 @@ AUTH_CLI_LOGIN = "cli_login"
 # Per-provider first-party CLI that supports account/subscription login.
 #   command       : executable to look for on PATH
 #   headless_args : args that make it take a prompt on argv and print a reply
-#   json_args     : args that additionally make it emit a JSON envelope
-#   result_key    : key in that envelope holding the reply text
-#   login_hint    : how the user authenticates that CLI
-# Only the Anthropic entry has been verified end to end; the others are
-# probed at runtime (see cli_transport.available/logged_in) rather than
-# assumed, so a wrong guess surfaces as "not installed / not logged in"
-# with install instructions instead of a cryptic failure.
+#   json_args     : args that additionally make it emit machine-readable output
+#   envelope      : "json"  -> stdout is one JSON object
+#                   "jsonl" -> stdout is newline-delimited JSON events
+#   result_key    : (json) key holding the reply text
+#   usage_key     : (json) key holding token counts
+#   Flags below were checked against each project's own published docs.
+#   Anthropic is additionally verified live end to end; the other two are
+#   probed at runtime (cli_transport.available/logged_in) rather than
+#   assumed, so a wrong guess surfaces as "not installed / not logged in"
+#   with install instructions instead of a cryptic failure.
 FRONTIER_CLI_AUTH: dict[str, dict] = {
     "anthropic": {
         "command": "claude",
         "headless_args": ["-p"],
         "json_args": ["--output-format", "json"],
+        "envelope": "json",
         "result_key": "result",
+        "usage_key": "usage",
         "install_hint": "https://claude.com/claude-code",
         "login_hint": "run `claude login`",
         "verified": True,
     },
     "openai": {
+        # `codex exec --json` emits JSON Lines; the reply arrives as an
+        # item.completed event whose item.type is "agent_message".
         "command": "codex",
         "headless_args": ["exec"],
         "json_args": ["--json"],
-        "result_key": "result",
+        "envelope": "jsonl",
+        "result_key": "text",
+        "usage_key": "usage",
         "install_hint": "https://developers.openai.com/codex/cli",
         "login_hint": "run `codex login` and sign in with your ChatGPT account",
         "verified": False,
     },
     "gemini": {
+        # Single JSON object: {"response": ..., "stats": {...}}
         "command": "gemini",
         "headless_args": ["-p"],
         "json_args": ["--output-format", "json"],
+        "envelope": "json",
         "result_key": "response",
+        "usage_key": "stats",
         "install_hint": "https://github.com/google-gemini/gemini-cli",
         "login_hint": "run `gemini` once and sign in with your Google account",
         "verified": False,

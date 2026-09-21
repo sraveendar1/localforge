@@ -1,5 +1,6 @@
 """Tests for orchestrating via a provider's own logged-in CLI."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -169,3 +170,62 @@ def test_advisor_falls_back_when_cli_names_a_model_not_in_the_catalog():
         recs = recommend_models(hw, "unused", catalog=catalog, cli_provider="anthropic")
 
     assert recs["coding"].name == "good-coder"  # fell back to the catalog pick
+
+
+# --- envelope shapes taken from each CLI's own published docs ---
+
+
+def test_codex_jsonl_envelope_is_parsed():
+    """`codex exec --json` emits JSON Lines; the reply is an agent_message
+    item, NOT a top-level key. Parsing it as one JSON object mangles it.
+    """
+    jsonl = "\n".join(
+        [
+            '{"type":"thread.started","thread_id":"t1"}',
+            '{"type":"turn.started"}',
+            '{"type":"item.completed","item":{"id":"item_0","type":"agent_message",'
+            '"text":"{\\"final_answer\\": \\"codex reply\\"}"}}',
+            '{"type":"turn.completed","usage":{"input_tokens":55,"output_tokens":12}}',
+        ]
+    )
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport.subprocess, "run", return_value=_proc(jsonl)
+    ):
+        resp = cli_transport.complete("openai", [], [])
+
+    assert resp.choices[0].message.content == "codex reply"
+    assert (resp.usage.prompt_tokens, resp.usage.completion_tokens) == (55, 12)
+
+
+def test_gemini_json_envelope_uses_response_and_stats():
+    """Gemini returns {"response": ..., "stats": {...}} -- usage lives under
+    `stats`, not `usage`.
+    """
+    envelope = json.dumps(
+        {
+            "response": '{"final_answer": "gemini reply"}',
+            "stats": {"tokens": {"input_tokens": 31, "output_tokens": 9}},
+        }
+    )
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport.subprocess, "run", return_value=_proc(envelope)
+    ):
+        resp = cli_transport.complete("gemini", [], [])
+
+    assert resp.choices[0].message.content == "gemini reply"
+    assert (resp.usage.prompt_tokens, resp.usage.completion_tokens) == (31, 9)
+
+
+def test_unknown_usage_shape_yields_zero_not_wrong_numbers():
+    envelope = json.dumps({"result": "hi", "usage": {"weird_field": 999}})
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport.subprocess, "run", return_value=_proc(envelope)
+    ):
+        resp = cli_transport.complete("anthropic", [], [])
+    assert (resp.usage.prompt_tokens, resp.usage.completion_tokens) == (0, 0)
+
+
+def test_every_provider_declares_a_known_envelope_shape():
+    for provider, spec in config.FRONTIER_CLI_AUTH.items():
+        assert spec.get("envelope") in {"json", "jsonl"}, provider
+        assert spec.get("result_key"), provider

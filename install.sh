@@ -21,11 +21,25 @@ echo "  - One or more open-weight models matched to this machine's hardware"
 echo "    (a real download, likely several GB — sizes shown before each pull)"
 echo "  - The localforge CLI tool itself"
 echo
+# Can we actually *open* the controlling terminal? `[ -e /dev/tty ]` is not
+# enough: the device node exists in CI/containers/nohup/cron but opening it
+# fails ("Device not configured"), and with `set -e` a failed redirect would
+# kill the script. Probe by really opening it.
+if { : < /dev/tty; } 2>/dev/null; then
+    HAVE_TTY=1
+else
+    HAVE_TTY=0
+fi
+
 # Read from the controlling terminal explicitly, not stdin -- when this
 # script is run as `curl ... | bash`, stdin is the script itself, not the
-# keyboard. Falls through automatically if there's no tty (non-interactive
-# context) rather than hanging.
-read -r -p "Press Enter to continue, or Ctrl+C to cancel: " _ < /dev/tty || true
+# keyboard. Skipped entirely when there's no usable tty, rather than hanging
+# or aborting.
+if [ "$HAVE_TTY" = "1" ]; then
+    read -r -p "Press Enter to continue, or Ctrl+C to cancel: " _ < /dev/tty || true
+else
+    echo "(non-interactive: continuing without confirmation)"
+fi
 echo
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-.}")" 2>/dev/null && pwd || true)"
@@ -71,7 +85,7 @@ echo "Running setup (you'll only be asked for a frontier model API key)..."
 # `curl ... | bash`, stdin is the script itself, so setup's interactive
 # prompts would hit EOF and abort. Falls back to inherited stdin when
 # there's no tty (non-interactive context).
-if [ -e /dev/tty ]; then
+if [ "$HAVE_TTY" = "1" ]; then
     "$HOME/.local/bin/localforge" setup < /dev/tty
 else
     "$HOME/.local/bin/localforge" setup

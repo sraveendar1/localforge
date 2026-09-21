@@ -167,6 +167,69 @@ def _extract_json(text: str) -> dict | None:
     return None
 
 
+def _read_usage(blob: dict | None) -> _Usage:
+    """Token counts, tolerant of each CLI's naming.
+
+    Claude reports input_tokens/output_tokens; Gemini nests its counts under
+    `stats`; others use prompt/completion naming. Unknown shapes yield zeros
+    rather than wrong numbers -- never invent usage we didn't actually read.
+    """
+    if not isinstance(blob, dict):
+        return _Usage()
+    # Gemini nests the real counters a level down (stats -> models/tokens).
+    for nested in ("tokens", "usage", "models"):
+        if isinstance(blob.get(nested), dict):
+            inner = blob[nested]
+            if any(k in inner for k in ("input_tokens", "prompt_tokens", "input", "prompt")):
+                blob = inner
+                break
+
+    def pick(*names: str) -> int:
+        for n in names:
+            v = blob.get(n)
+            if isinstance(v, (int, float)):
+                return int(v)
+        return 0
+
+    return _Usage(
+        prompt_tokens=pick("input_tokens", "prompt_tokens", "input", "prompt"),
+        completion_tokens=pick("output_tokens", "completion_tokens", "output", "candidates"),
+    )
+
+
+def _unwrap_envelope(stdout: str, spec: dict) -> tuple[str, _Usage, float]:
+    """Pull (reply text, usage, notional cost) out of a CLI's machine output.
+
+    Two shapes exist in the wild: a single JSON object (claude, gemini) and a
+    JSON Lines event stream (codex), where the reply is the last
+    `agent_message` item rather than a top-level key.
+    """
+    if spec.get("envelope") == "jsonl":
+        text, usage, cost = "", _Usage(), 0.0
+        for line in stdout.splitlines():
+            event = _extract_json(line)
+            if not isinstance(event, dict):
+                continue
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = str(item.get(spec["result_key"], "") or text)
+            if isinstance(event.get(spec.get("usage_key", "usage")), dict):
+                usage = _read_usage(event[spec.get("usage_key", "usage")])
+            if isinstance(event.get("total_cost_usd"), (int, float)):
+                cost = float(event["total_cost_usd"])
+        # No agent_message found -> fall back to the raw text.
+        return (text or stdout), usage, cost
+
+    envelope = _extract_json(stdout)
+    if isinstance(envelope, dict) and spec["result_key"] in envelope:
+        return (
+            str(envelope.get(spec["result_key"]) or ""),
+            _read_usage(envelope.get(spec.get("usage_key", "usage"))),
+            float(envelope.get("total_cost_usd", 0.0) or 0.0),
+        )
+    return stdout, _Usage(), 0.0
+
+
 def complete(provider: str, messages: list[dict], tools: list[dict], timeout: float = 600.0) -> CLIResponse:
     """Run one orchestration turn through the provider's logged-in CLI."""
     spec = _spec(provider)
@@ -186,20 +249,7 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
             f"{spec['command']} exited {proc.returncode}: {(proc.stderr or proc.stdout).strip()[:300]}"
         )
 
-    usage = _Usage()
-    notional_cost = 0.0
-    raw = proc.stdout.strip()
-
-    envelope = _extract_json(raw)
-    if envelope and spec["result_key"] in envelope:
-        # Structured envelope: pull real usage out, then parse the reply text.
-        u = envelope.get("usage") or {}
-        usage = _Usage(
-            prompt_tokens=int(u.get("input_tokens", 0) or 0),
-            completion_tokens=int(u.get("output_tokens", 0) or 0),
-        )
-        notional_cost = float(envelope.get("total_cost_usd", 0.0) or 0.0)
-        raw = str(envelope.get(spec["result_key"]) or "")
+    raw, usage, notional_cost = _unwrap_envelope(proc.stdout.strip(), spec)
 
     decision = _extract_json(raw)
     if decision is None:
