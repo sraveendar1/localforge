@@ -51,6 +51,58 @@ FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
 }
 FRONTIER_DEFAULT_MODELS = {provider: choices[0] for provider, choices in FRONTIER_MODEL_CHOICES.items()}
 
+# How localforge authenticates to the frontier provider. "api_key" is
+# pay-per-token billing against a key you paste in; "cli_login" shells out to
+# the provider's own already-logged-in CLI, drawing on whatever subscription
+# that account has instead of separate API charges.
+AUTH_METHOD_ENV_VAR = "LOCALFORGE_AUTH_METHOD"
+# Which provider the saved model/auth choice belongs to -- needed because CLI
+# login routes by provider, not by a LiteLLM model string.
+FRONTIER_PROVIDER_ENV_VAR = "LOCALFORGE_FRONTIER_PROVIDER"
+AUTH_API_KEY = "api_key"
+AUTH_CLI_LOGIN = "cli_login"
+
+# Per-provider first-party CLI that supports account/subscription login.
+#   command       : executable to look for on PATH
+#   headless_args : args that make it take a prompt on argv and print a reply
+#   json_args     : args that additionally make it emit a JSON envelope
+#   result_key    : key in that envelope holding the reply text
+#   login_hint    : how the user authenticates that CLI
+# Only the Anthropic entry has been verified end to end; the others are
+# probed at runtime (see cli_transport.available/logged_in) rather than
+# assumed, so a wrong guess surfaces as "not installed / not logged in"
+# with install instructions instead of a cryptic failure.
+FRONTIER_CLI_AUTH: dict[str, dict] = {
+    "anthropic": {
+        "command": "claude",
+        "headless_args": ["-p"],
+        "json_args": ["--output-format", "json"],
+        "result_key": "result",
+        "install_hint": "https://claude.com/claude-code",
+        "login_hint": "run `claude login`",
+        "verified": True,
+    },
+    "openai": {
+        "command": "codex",
+        "headless_args": ["exec"],
+        "json_args": ["--json"],
+        "result_key": "result",
+        "install_hint": "https://developers.openai.com/codex/cli",
+        "login_hint": "run `codex login` and sign in with your ChatGPT account",
+        "verified": False,
+    },
+    "gemini": {
+        "command": "gemini",
+        "headless_args": ["-p"],
+        "json_args": ["--output-format", "json"],
+        "result_key": "response",
+        "install_hint": "https://github.com/google-gemini/gemini-cli",
+        "login_hint": "run `gemini` once and sign in with your Google account",
+        "verified": False,
+    },
+}
+
+
 # Where to create an API key for each provider. There's no public OAuth/
 # browser-login flow any of these providers expose for third-party CLI
 # tools to authenticate on a user's behalf (unlike e.g. GitHub's device

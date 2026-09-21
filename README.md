@@ -194,6 +194,41 @@ of re-entering it. The choice is saved to `LOCALFORGE_FRONTIER_MODEL` in
 `~/.config/localforge/config.env`, which `localforge run` uses by default
 (overridable per-run with `--model`).
 
+### API key vs. CLI login
+
+For any provider that needs credentials, setup asks **how** to authenticate:
+
+```
+How should localforge authenticate to this provider?
+  1) API key     (pay-per-token, billed separately)
+  2) CLI login   (uses your `claude` subscription — no per-token API cost)
+```
+
+**CLI login** orchestrates by shelling out to that provider's own
+already-logged-in CLI (`claude`, `codex`, `gemini`) in headless mode, so the
+work draws on whatever subscription that account has instead of separate
+per-token API charges. localforge never sees or stores those credentials —
+the CLI holds its own (Claude Code keeps its token in the OS keychain), so
+nothing extra lands in `config.env`.
+
+Availability is **probed, not assumed**: if the CLI isn't installed, that
+option tells you so and links the install page rather than failing later.
+Only the Anthropic path is verified end to end; the OpenAI and Gemini entries
+are best-effort and flagged as untested until you install those CLIs.
+
+Two caveats worth knowing before you depend on it:
+- Anthropic's Agent SDK docs state third-party developers shouldn't offer
+  claude.ai login *in their own products* and should use API keys instead.
+  Invoking a CLI you installed and logged into yourself, on your own
+  machine, is a different thing from localforge offering you a login — but
+  it's your account and your call.
+- The billing arrangement for CLI/subscription usage has changed before and
+  may change again. Re-check before building anything durable on it.
+
+The usage panel is explicit about which mode you're in: under CLI login the
+dollar figure is labelled *"of subscription usage, not billed separately"*,
+because it's what pay-per-token *would* have cost — not money charged on top.
+
 **Getting an API key.** None of Anthropic, OpenAI, or Google expose a
 public OAuth/browser-login flow for third-party CLI tools to authenticate
 on your behalf (unlike, say, `gh auth login`'s device flow for GitHub) —

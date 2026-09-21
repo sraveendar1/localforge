@@ -97,7 +97,7 @@ def test_model_choice_has_no_default_either(setup_env):
 
 
 def test_model_menu_is_numbered(setup_env):
-    result = CliRunner().invoke(cli_module.app, ["setup"], input="1\n2\nsk-fake\n")
+    result = CliRunner().invoke(cli_module.app, ["setup"], input="1\n1\n2\nsk-fake\n")  # anthropic, api key auth, model 2, key
     assert result.exit_code == 0
     assert "1) claude-opus-5" in result.output
     assert "2) claude-sonnet-5" in result.output

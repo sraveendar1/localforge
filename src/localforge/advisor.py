@@ -20,10 +20,37 @@ def _best_quality(entries: list[ModelEntry]) -> ModelEntry:
     return max(entries, key=lambda e: e.quality_tier)
 
 
+def _ask_via_cli(cli_provider: str, prompt: str, choosable: dict[str, list[ModelEntry]]) -> dict:
+    """Same question, asked through a logged-in CLI instead of an API key.
+
+    The CLI has no native tool-calling/enum constraint, so we ask for plain
+    JSON and let the caller validate the names against `choosable` -- which
+    it already does anyway as a safety net against a hallucinated model.
+    """
+    from localforge import cli_transport
+
+    options = {m: [e.name for e in es] for m, es in choosable.items()}
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                prompt
+                + "\n\nReply with ONLY a JSON object mapping each modality to one "
+                "model name from its list, e.g. "
+                + json.dumps({m: names[0] for m, names in options.items()})
+            ),
+        }
+    ]
+    response = cli_transport.complete(cli_provider, messages, tools=[])
+    content = response.choices[0].message.content or ""
+    return cli_transport._extract_json(content) or {}
+
+
 def recommend_models(
     hardware: HardwareProfile,
     frontier_model: str,
     catalog: list[ModelEntry] | None = None,
+    cli_provider: str | None = None,
 ) -> dict[str, ModelEntry | None]:
     """Ask `frontier_model` to pick the best local model per modality for
     `hardware`. Returns one entry per modality present in the catalog (None
@@ -75,13 +102,16 @@ def recommend_models(
     )
 
     try:
-        response = completion(
-            model=frontier_model,
-            messages=[{"role": "user", "content": prompt}],
-            tools=[tool],
-            tool_choice={"type": "function", "function": {"name": "select_models"}},
-        )
-        args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
+        if cli_provider:
+            args = _ask_via_cli(cli_provider, prompt, choosable)
+        else:
+            response = completion(
+                model=frontier_model,
+                messages=[{"role": "user", "content": prompt}],
+                tools=[tool],
+                tool_choice={"type": "function", "function": {"name": "select_models"}},
+            )
+            args = json.loads(response.choices[0].message.tool_calls[0].function.arguments)
     except Exception:  # noqa: BLE001 - any failure here falls back to the deterministic heuristic
         args = {}
 

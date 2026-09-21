@@ -53,7 +53,7 @@ def test_setup_opens_the_right_console_url_when_no_key_is_present(isolated_setup
     result = CliRunner().invoke(
         cli_module.app,
         ["setup"],
-        input=f"{provider}\n1\nsk-fake-key\n",
+        input=f"{provider}\n1\n1\nsk-fake-key\n",  # provider, auth=api key, model 1, key
     )
     assert result.exit_code == 0
     isolated_setup_env.open.assert_called_once_with(expected_url)
@@ -77,7 +77,7 @@ def test_setup_does_not_open_browser_when_key_already_present(tmp_path, monkeypa
         patch.object(cli_module, "webbrowser") as mock_webbrowser,
     ):
         mock_shutil.which.return_value = "/usr/bin/ollama"
-        result = CliRunner().invoke(cli_module.app, ["setup"], input="anthropic\n1\n")
+        result = CliRunner().invoke(cli_module.app, ["setup"], input="anthropic\n1\n1\n")  # provider, auth=api key, model 1
 
     assert result.exit_code == 0
     mock_webbrowser.open.assert_not_called()

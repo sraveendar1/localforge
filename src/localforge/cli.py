@@ -15,7 +15,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import config, theme
+from localforge import cli_transport, config, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import load_catalog, recommendations
@@ -302,6 +302,43 @@ def _prompt_for_provider() -> str:
         console.print(f"[warning]'{raw}' isn't one of the options — pick 1-{len(providers)} or a name.[/warning]")
 
 
+def _prompt_for_auth_method(provider: str) -> str:
+    """API key vs the provider's own logged-in CLI. Numbered, no default.
+
+    CLI login reuses whatever subscription that account has instead of
+    separate per-token API charges. Availability is *probed*, never assumed:
+    if the CLI isn't installed, that option says so and explains how to get
+    it rather than being silently offered and then failing.
+    """
+    spec = config.FRONTIER_CLI_AUTH.get(provider)
+    if spec is None:
+        return config.AUTH_API_KEY  # no CLI path for this provider
+
+    cli_ready = cli_transport.available(provider)
+    cli_label = f"CLI login   (uses your `{spec['command']}` subscription — no per-token API cost)"
+    if not cli_ready:
+        cli_label += f"\n     ⚠ `{spec['command']}` not installed — {spec['install_hint']}"
+    elif not spec.get("verified", False):
+        cli_label += f"\n     ⚠ untested for {provider} — verify it works before relying on it"
+
+    console.print("\nHow should localforge authenticate to this provider?")
+    console.print("  1) API key     (pay-per-token, billed separately)")
+    console.print(f"  2) {cli_label}")
+
+    _drain_buffered_input()
+    while True:
+        raw = typer.prompt("Choose an auth method (1-2)").strip().lower()
+        if raw in {"1", "api", "api_key", "key"}:
+            return config.AUTH_API_KEY
+        if raw in {"2", "cli", "cli_login", "login"}:
+            if not cli_ready:
+                console.print(f"[warning]{cli_transport.requirements_message(provider)}[/warning]")
+                console.print("[warning]Install and log in first, or choose 1 for an API key.[/warning]")
+                continue
+            return config.AUTH_CLI_LOGIN
+        console.print("[warning]Pick 1 (API key) or 2 (CLI login).[/warning]")
+
+
 def _prompt_for_model(provider: str) -> str:
     """Ask which specific model to use within `provider` (e.g. Opus vs
     Sonnet), rather than silently defaulting to one. Always offers a free-
@@ -343,6 +380,17 @@ def _prompt_nonempty(message: str) -> str:
         if value:
             return value
         console.print("[warning]That can't be empty.[/warning]")
+
+
+def _prompt_nonempty_hidden(message: str) -> str:
+    """Same, for secrets: masked input, and an empty paste re-asks rather
+    than saving an empty key that would fail confusingly much later.
+    """
+    while True:
+        value = typer.prompt(message, hide_input=True).strip()
+        if value:
+            return value
+        console.print("[warning]That can't be empty — paste the key.[/warning]")
 
 
 @app.command()
@@ -389,10 +437,12 @@ def setup() -> None:
     provider = _prompt_for_provider()
 
     frontier_model: str | None = None
+    auth_method = config.AUTH_API_KEY
     if provider not in FRONTIER_PROVIDERS:
         console.print(f"[error]Unknown provider {provider!r}.[/error] Skipping — configure a frontier model manually later.")
     else:
         env_var = FRONTIER_PROVIDERS[provider]
+        auth_method = config.AUTH_API_KEY if env_var is None else _prompt_for_auth_method(provider)
         frontier_model = _prompt_for_model(provider)
         if env_var is None:
             # An open-weight model as the orchestrator itself: no API key
@@ -410,16 +460,52 @@ def setup() -> None:
                     console.print(f"[success]✓[/success] {orchestrator_model_name} ready\n")
                 except Exception as exc:  # noqa: BLE001 - reported, doesn't abort the rest of setup
                     console.print(f"[error]Failed to pull {orchestrator_model_name}: {exc}[/error]\n")
+        elif auth_method == config.AUTH_CLI_LOGIN:
+            # Orchestrate through the provider's own logged-in CLI: nothing
+            # to store here, the CLI holds its own credentials (for Claude
+            # Code, in the OS keychain -- never in localforge's config).
+            spec = config.FRONTIER_CLI_AUTH[provider]
+            config.save(
+                {
+                    config.FRONTIER_MODEL_ENV_VAR: frontier_model,
+                    config.AUTH_METHOD_ENV_VAR: config.AUTH_CLI_LOGIN,
+                    config.FRONTIER_PROVIDER_ENV_VAR: provider,
+                }
+            )
+            console.print(f"Checking that `{spec['command']}` is logged in...")
+            if cli_transport.logged_in(provider):
+                console.print(
+                    f"[success]✓[/success] Using your `{spec['command']}` login — "
+                    "drawn from that subscription, no per-token API charges.\n"
+                )
+            else:
+                console.print(
+                    f"[warning]![/warning] `{spec['command']}` is installed but didn't answer a test prompt. "
+                    f"To fix: {spec['login_hint']}.\n"
+                )
         elif os.environ.get(env_var):
             console.print(f"[success]✓[/success] Using existing {env_var} from your environment.\n")
-            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            config.save(
+                {
+                    config.FRONTIER_MODEL_ENV_VAR: frontier_model,
+                    config.AUTH_METHOD_ENV_VAR: config.AUTH_API_KEY,
+                    config.FRONTIER_PROVIDER_ENV_VAR: provider,
+                }
+            )
         else:
             console_url = config.FRONTIER_CONSOLE_URLS.get(provider)
             if console_url:
                 console.print(f"Opening {console_url} in your browser to create an API key...")
                 webbrowser.open(console_url)
-            api_key = typer.prompt(f"Paste your {env_var}", hide_input=True)
-            config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            api_key = _prompt_nonempty_hidden(f"Paste your {env_var}")
+            config.save(
+                {
+                    env_var: api_key,
+                    config.FRONTIER_MODEL_ENV_VAR: frontier_model,
+                    config.AUTH_METHOD_ENV_VAR: config.AUTH_API_KEY,
+                    config.FRONTIER_PROVIDER_ENV_VAR: provider,
+                }
+            )
             os.environ[env_var] = api_key
             console.print(f"[success]✓[/success] Saved {env_var} to {config.CONFIG_FILE}\n")
 
@@ -432,8 +518,13 @@ def setup() -> None:
         f"{hw.free_disk_gb}GB free disk\n"
     )
     if frontier_model:
-        console.print(f"Asking {frontier_model} to pick the best local models for this machine...")
-        recs = recommend_models(hw, frontier_model)
+        # Route the advisor the same way the orchestrator will be routed --
+        # under CLI login there's no API key, so a litellm call here would
+        # fail and silently degrade to the heuristic.
+        advisor_cli = provider if auth_method == config.AUTH_CLI_LOGIN else None
+        via = f"your `{config.FRONTIER_CLI_AUTH[provider]['command']}` login" if advisor_cli else frontier_model
+        console.print(f"Asking {via} to pick the best local models for this machine...")
+        recs = recommend_models(hw, frontier_model, cli_provider=advisor_cli)
     else:
         console.print("[warning]No usable frontier model id — falling back to the built-in heuristic.[/warning]")
         recs = recommendations(hw)
@@ -498,7 +589,28 @@ def doctor() -> None:
     found_keys = [var for var in FRONTIER_API_KEY_ENV_VARS if os.environ.get(var)]
     chosen_model = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
     is_local_frontier = bool(chosen_model) and chosen_model.startswith("ollama/")
-    if chosen_model and (found_keys or is_local_frontier):
+
+    # CLI login: no API key by design -- check the CLI instead.
+    if os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
+        cli_provider = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
+        spec = config.FRONTIER_CLI_AUTH.get(cli_provider)
+        if spec is None:
+            ok = False
+            console.print(f"[error]✗[/error] CLI login configured for unknown provider {cli_provider!r} — re-run `localforge setup`")
+        elif not cli_transport.available(cli_provider):
+            ok = False
+            console.print(f"[error]✗[/error] {cli_transport.requirements_message(cli_provider)}")
+        elif cli_transport.logged_in(cli_provider):
+            console.print(
+                f"[success]✓[/success] Frontier via `{spec['command']}` login "
+                f"({cli_provider} subscription — no API key, no per-token billing)"
+            )
+        else:
+            ok = False
+            console.print(
+                f"[error]✗[/error] `{spec['command']}` is installed but not logged in — {spec['login_hint']}"
+            )
+    elif chosen_model and (found_keys or is_local_frontier):
         via = "self-hosted, no API key needed" if is_local_frontier else f"via {', '.join(found_keys)}"
         console.print(f"[success]✓[/success] Frontier model configured: {chosen_model} ({via})")
     elif found_keys:
@@ -544,12 +656,24 @@ def run(
     """Run a task: the frontier model plans it and delegates subtasks to local models."""
     frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
 
+    # An explicit --model always means "use the API path for this model";
+    # only a saved cli_login choice routes through the provider's CLI.
+    cli_provider = None
+    if os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
+        cli_provider = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR)
+        if cli_provider and not cli_transport.available(cli_provider):
+            console.print(f"[error]Error:[/error] {cli_transport.requirements_message(cli_provider)}")
+            raise typer.Exit(code=1)
+        if cli_provider:
+            spec = config.FRONTIER_CLI_AUTH[cli_provider]
+            console.print(f"[dim]Orchestrating via your `{spec['command']}` login (subscription, not API billing)[/dim]")
+
     def _on_delegate(modality: str, entry) -> None:
         console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (local, via {entry.runtime})")
 
     try:
         with console.status(f"[bold success]Orchestrating with {frontier_model}..."):
-            result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate)
+            result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate, cli_provider=cli_provider)
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
         # compute along the way -- show that before reporting the failure.
@@ -564,6 +688,18 @@ def run(
     _print_usage_panel(result.stats, frontier_model)
 
 
+def _frontier_cost_note(stats) -> str:
+    """Never present subscription usage as money separately billed: under CLI
+    login the figure is what pay-per-token *would* have cost, and it came out
+    of the account's subscription instead.
+    """
+    if not stats.frontier_cost_usd:
+        return ""
+    if stats.frontier_via_subscription:
+        return f" (~${stats.frontier_cost_usd:.4f} of subscription usage, not billed separately)"
+    return f" (${stats.frontier_cost_usd:.4f})"
+
+
 def _print_usage_panel(stats, frontier_model: str) -> None:
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
@@ -572,7 +708,7 @@ def _print_usage_panel(stats, frontier_model: str) -> None:
         "never sent to or billed by the frontier API",
         f"[warning]■[/warning] Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
-        + (f" (${stats.frontier_cost_usd:.4f})" if stats.frontier_cost_usd else ""),
+        + _frontier_cost_note(stats),
     ]
     console.print(Panel("\n".join(usage_lines), title="Usage", border_style="panel.border"))
 

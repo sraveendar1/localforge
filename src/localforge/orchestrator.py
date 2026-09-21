@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
+from localforge import cli_transport
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import DelegateCallback, Dispatcher, build_tool_schemas
 
@@ -27,6 +28,10 @@ class RunStats:
     frontier_completion_tokens: int = 0
     frontier_cost_usd: float = 0.0
     local_tokens_generated: int = 0
+    # True when the frontier model ran through its own logged-in CLI, so
+    # frontier_cost_usd is what pay-per-token billing *would* have cost, not
+    # money charged separately -- it came out of the account's subscription.
+    frontier_via_subscription: bool = False
 
     @property
     def frontier_total_tokens(self) -> int:
@@ -82,6 +87,16 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
     if usage is not None:
         stats.frontier_prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
         stats.frontier_completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+
+    # A CLI-transport response reports what it *would* have cost; an API
+    # response has to be priced by LiteLLM. Checked by type, not by probing
+    # for an attribute -- duck-typing here misfires on anything that
+    # auto-creates attributes (mocks, proxies) and silently mis-bills.
+    if isinstance(response, cli_transport.CLIResponse):
+        stats.frontier_cost_usd += response.notional_cost_usd or 0.0
+        stats.frontier_via_subscription = True
+        return
+
     try:
         cost = litellm.completion_cost(completion_response=response)
     except Exception:  # noqa: BLE001 - cost is a nice-to-have metric, never worth failing the run over
@@ -94,6 +109,7 @@ def run(
     frontier_model: str,
     hardware: HardwareProfile | None = None,
     on_delegate: DelegateCallback | None = None,
+    cli_provider: str | None = None,
 ) -> RunResult:
     """Run `task` to completion, delegating subtasks to local models.
 
@@ -102,6 +118,11 @@ def run(
     orchestrator too. `on_delegate`, if given, is called with
     (modality, ModelEntry) right before each subtask is handed to a local
     model, so the caller can show the user what's doing the work.
+
+    `cli_provider`, if given (e.g. "anthropic"), routes the frontier turns
+    through that provider's own logged-in CLI instead of an API key -- see
+    cli_transport. The loop below is identical either way; only the call
+    that produces a response differs.
 
     Returns a `RunResult` with the final answer and usage metrics (frontier
     tokens/cost actually spent, and tokens local models generated instead --
@@ -137,7 +158,10 @@ def run(
     tool_message_indices: list[int] = []
 
     for _ in range(MAX_ROUNDS):
-        response = completion(model=frontier_model, messages=messages, tools=tools)
+        if cli_provider:
+            response = cli_transport.complete(cli_provider, messages, tools)
+        else:
+            response = completion(model=frontier_model, messages=messages, tools=tools)
         _record_frontier_usage(response, stats)
         message = response.choices[0].message
         messages.append(message.model_dump())
