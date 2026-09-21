@@ -335,7 +335,28 @@ def _prompt_for_auth_method(provider: str) -> str:
                 console.print(f"[warning]{cli_transport.requirements_message(provider)}[/warning]")
                 console.print("[warning]Install and log in first, or choose 1 for an API key.[/warning]")
                 continue
-            return config.AUTH_CLI_LOGIN
+            # Verify the login *now*, before spending the user's time on the
+            # model menu and before writing a config that can't actually run.
+            # "Check again" re-probes right here rather than bouncing back to
+            # the auth menu -- the user just logged in, don't make them re-pick.
+            while True:
+                console.print(f"Checking that `{spec['command']}` is logged in...")
+                if cli_transport.logged_in(provider):
+                    console.print(f"[success]✓[/success] `{spec['command']}` is logged in.")
+                    return config.AUTH_CLI_LOGIN
+                console.print(
+                    f"[warning]![/warning] `{spec['command']}` is installed but not logged in — {spec['login_hint']}."
+                )
+                console.print("  1) I've logged in now — check again")
+                console.print("  2) Use an API key instead")
+                while True:
+                    retry = typer.prompt("Choose (1-2)").strip()
+                    if retry in {"1", "2"}:
+                        break
+                    console.print("[warning]Pick 1 or 2.[/warning]")
+                if retry == "2":
+                    return config.AUTH_API_KEY
+                # "1" -> loop re-probes without re-asking the auth question
         console.print("[warning]Pick 1 (API key) or 2 (CLI login).[/warning]")
 
 
@@ -472,17 +493,12 @@ def setup() -> None:
                     config.FRONTIER_PROVIDER_ENV_VAR: provider,
                 }
             )
-            console.print(f"Checking that `{spec['command']}` is logged in...")
-            if cli_transport.logged_in(provider):
-                console.print(
-                    f"[success]✓[/success] Using your `{spec['command']}` login — "
-                    "drawn from that subscription, no per-token API charges.\n"
-                )
-            else:
-                console.print(
-                    f"[warning]![/warning] `{spec['command']}` is installed but didn't answer a test prompt. "
-                    f"To fix: {spec['login_hint']}.\n"
-                )
+            # Login was already verified in _prompt_for_auth_method(), which
+            # won't return AUTH_CLI_LOGIN unless the CLI answered a probe.
+            console.print(
+                f"[success]✓[/success] Using your `{spec['command']}` login — "
+                "drawn from that subscription, no per-token API charges.\n"
+            )
         elif os.environ.get(env_var):
             console.print(f"[success]✓[/success] Using existing {env_var} from your environment.\n")
             config.save(
@@ -674,6 +690,17 @@ def run(
     try:
         with console.status(f"[bold success]Orchestrating with {frontier_model}..."):
             result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate, cli_provider=cli_provider)
+    except cli_transport.CLINotAvailableError as exc:
+        # The provider CLI failed mid-run -- most often a session that expired
+        # since setup. Say how to fix it, in shell terms.
+        console.print(f"[bold error]Error:[/bold error] {exc}")
+        if cli_provider:
+            spec = config.FRONTIER_CLI_AUTH[cli_provider]
+            console.print(
+                f"[warning]Your `{spec['command']}` session may have expired — {spec['login_hint']}, "
+                "then try again. Or run `localforge setup` to switch to an API key.[/warning]"
+            )
+        raise typer.Exit(code=1) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
         # compute along the way -- show that before reporting the failure.

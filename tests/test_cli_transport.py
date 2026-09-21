@@ -229,3 +229,65 @@ def test_every_provider_declares_a_known_envelope_shape():
     for provider, spec in config.FRONTIER_CLI_AUTH.items():
         assert spec.get("envelope") in {"json", "jsonl"}, provider
         assert spec.get("result_key"), provider
+
+
+# --- behaviour when the provider CLI is installed but NOT logged in ---
+
+
+def test_auth_menu_verifies_login_before_accepting_cli_choice():
+    """Picking CLI login while logged out must not silently produce a config
+    that can't run -- it offers a recheck or a fallback to an API key.
+    """
+    from localforge.cli import _prompt_for_auth_method
+
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport, "logged_in", return_value=False
+    ), patch("localforge.cli.typer.prompt", side_effect=["2", "2"]):  # pick CLI, then fall back to API key
+        assert _prompt_for_auth_method("anthropic") == config.AUTH_API_KEY
+
+
+def test_auth_menu_rechecks_login_without_reasking_the_auth_question():
+    """'I've logged in now' re-probes directly; the user shouldn't have to
+    re-pick the auth method.
+    """
+    from localforge.cli import _prompt_for_auth_method
+
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport, "logged_in", side_effect=[False, True]
+    ) as probe, patch("localforge.cli.typer.prompt", side_effect=["2", "1"]):  # pick CLI, then "check again"
+        assert _prompt_for_auth_method("anthropic") == config.AUTH_CLI_LOGIN
+
+    assert probe.call_count == 2  # probed again rather than bouncing to the menu
+
+
+def test_auth_menu_returns_cli_login_when_already_logged_in():
+    from localforge.cli import _prompt_for_auth_method
+
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport, "logged_in", return_value=True
+    ), patch("localforge.cli.typer.prompt", side_effect=["2"]):
+        assert _prompt_for_auth_method("anthropic") == config.AUTH_CLI_LOGIN
+
+
+def test_run_explains_how_to_fix_an_expired_cli_session():
+    """A session that expires after setup should produce shell-level advice
+    (`claude login`), not just the CLI's own raw error.
+    """
+    import localforge.cli as cli_module
+    from typer.testing import CliRunner
+
+    with patch.dict(
+        "os.environ",
+        {
+            config.AUTH_METHOD_ENV_VAR: config.AUTH_CLI_LOGIN,
+            config.FRONTIER_PROVIDER_ENV_VAR: "anthropic",
+        },
+    ), patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_module, "run_orchestrator", side_effect=CLINotAvailableError("claude exited 1: Invalid API key")
+    ):
+        result = CliRunner().invoke(cli_module.app, ["run", "a task"])
+
+    assert result.exit_code == 1
+    normalized = " ".join(result.output.split())
+    assert "claude login" in normalized
+    assert "localforge setup" in normalized  # offers the API-key escape hatch
