@@ -66,18 +66,18 @@ def test_non_convergence_raises_error_carrying_the_usage_spent_so_far():
     assert stats.local_tokens_generated == 999  # carried over from the dispatcher
 
 
-def test_run_command_still_prints_usage_when_orchestration_does_not_converge():
+def test_run_usage_flag_still_prints_usage_when_orchestration_does_not_converge():
     stats = RunStats(
         frontier_prompt_tokens=100, frontier_completion_tokens=50, frontier_cost_usd=0.02, local_tokens_generated=700
     )
     with patch.object(
         cli_module, "run_orchestrator", side_effect=OrchestrationError("did not converge", stats)
     ):
-        result = CliRunner().invoke(cli_module.app, ["run", "task", "--model", "claude-opus-5"])
+        result = CliRunner().invoke(cli_module.app, ["run", "task", "--model", "claude-opus-5", "--usage"])
 
     assert result.exit_code == 1
     assert "did not converge" in result.output
-    assert "Usage" in result.output  # the panel is still shown
+    assert "Usage" in result.output  # asked for, so shown even on failure
     assert "700 tokens" in result.output
     assert "150 tokens" in result.output  # 100 in + 50 out
 

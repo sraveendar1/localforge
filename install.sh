@@ -92,4 +92,8 @@ else
 fi
 
 echo
-"$HOME/.local/bin/localforge"
+# Print the "you're set up" panel and exit. stdin comes from /dev/null on
+# purpose: a bare `localforge` opens the interactive session whenever stdin
+# is a terminal, which would leave the installer sitting in a prompt instead
+# of finishing. The panel tells the user to type `localforge` themselves.
+"$HOME/.local/bin/localforge" < /dev/null

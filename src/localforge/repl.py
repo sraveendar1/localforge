@@ -15,6 +15,7 @@ from localforge import banner
 
 SLASH_HELP = """[bold]Commands:[/bold]
   /run <task>       delegate a task to local models (or just type it directly)
+  /usage            token usage for the last task and this session
   /setup            one-time interactive setup
   /wizard           setup as a terminal UI
   /doctor           check everything's configured correctly

@@ -32,8 +32,8 @@ localforge>
 ```
 
 Type a task directly and it runs (shorthand for `/run <task>`), or use a
-slash command for anything else — `/setup`, `/doctor`, `/scan`, `/theme
-dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every
+slash command for anything else — `/usage`, `/setup`, `/doctor`, `/scan`,
+`/theme dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every
 slash command reuses the exact same code as its `localforge <command>`
 equivalent — there's no second implementation to drift out of sync.
 
@@ -72,11 +72,15 @@ cd localforge
 Either way, after that one confirmation, everything else runs with no
 further prompts to click through except one: a frontier model API key
 (Anthropic, OpenAI, or Gemini — paste one when asked). Once it
-finishes:
+finishes, type `localforge` to start a session, then type what you want
+built:
 
 ```bash
-localforge run "Build a todo REST API with docs"
+localforge
+localforge> Build a todo REST API with docs
 ```
+
+(For a one-off without a session: `localforge run "Build a todo REST API with docs"`.)
 
 **About the one-liner:** `curl ... | bash` fetches and immediately executes
 whatever is currently on this repo's `main` branch — the standard pattern
@@ -161,8 +165,12 @@ call.
 
 ### Usage metrics
 
-Every `localforge run` ends with a Usage panel — a Claude-Code-style
-horizontal bar showing the local/frontier split at a glance, plus the exact
+Token usage is shown only when you ask for it, so it doesn't clutter every
+answer. Inside a session, type `/usage`: you get the last task and, after two
+or more tasks, running totals for the whole session. For a one-off run, add
+`--usage` (`localforge run "..." --usage`). Failed runs still count toward
+`/usage`, because they spent real tokens too. The panel is a Claude-Code-style
+horizontal bar showing the local/frontier split at a glance, with the exact
 numbers below it:
 
 ```
@@ -334,10 +342,12 @@ deterministic highest-quality-tier pick `localforge models` uses on its own.
    pull — see "Hardware-aware model selection" below.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
-manual model downloads, no re-exporting API keys. Just running `localforge`
-with no arguments always shows a short "what to do next" panel — one set of
-instructions if you haven't set an API key yet, another (pointing straight
-at `localforge run`) once you have.
+manual model downloads, no re-exporting API keys. Setup, `doctor` and the
+wizard all end by telling you to type `localforge` to start a session. The
+installer then prints a short "what to do next" panel without opening the
+session itself, so the script actually finishes. You get the same panel
+whenever `localforge` runs without a real terminal attached: one version
+if nothing is configured yet, and one pointing at the session once it is.
 
 To upgrade after a new release: just re-run the one-liner or `./install.sh`
 — it pulls the latest source and reinstalls.
@@ -369,6 +379,7 @@ localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
 localforge run "Build a todo REST API with docs" # do the thing
 localforge run "..." --model gpt-5               # use a different frontier model
+localforge run "..." --usage                     # also print token usage (in a session: /usage)
 localforge installed                             # what local models are actually on disk, and how big
 localforge delete                                # pick installed model(s) to delete, review, then confirm
 localforge delete qwen2.5-coder:14b --yes        # delete a specific model without prompting

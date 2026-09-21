@@ -21,7 +21,7 @@ from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
-from localforge.orchestrator import OrchestrationError
+from localforge.orchestrator import OrchestrationError, RunStats
 from localforge.orchestrator import run as run_orchestrator
 
 app = typer.Typer(
@@ -89,21 +89,28 @@ def _usage_bar(local_tokens: int, frontier_tokens: int, width: int = 40) -> str:
     return f"{bar}  {pct_local}% local / {100 - pct_local}% frontier"
 
 
+START_SESSION_HINT = "Type [accent]localforge[/accent] to start a session."
+
+
 def _print_getting_started() -> None:
+    """Shown when bare `localforge` runs without a real terminal (pipe, script,
+    installer). The next step it points to is the interactive session --
+    just typing `localforge` -- not a one-shot `localforge run`.
+    """
     ready = bool(os.environ.get(config.FRONTIER_MODEL_ENV_VAR))
     if ready:
         body = (
-            "[bold]You're set up.[/bold] Try:\n\n"
-            '  [accent]localforge run "Build a todo REST API with docs"[/accent]\n\n'
-            "Other commands: [bold]scan[/bold] · [bold]models[/bold] · [bold]doctor[/bold] · [bold]wizard[/bold]"
+            "[bold]You're set up.[/bold] Start a session:\n\n"
+            "  [accent]localforge[/accent]\n\n"
+            "Then just type what you want built, or [accent]/help[/accent] for commands.\n"
+            'One-off without a session: [accent]localforge run "Build a todo REST API with docs"[/accent]'
         )
     else:
         body = (
             "[bold]Get started in one step:[/bold]\n\n"
             "  [accent]localforge setup[/accent]   (or [accent]localforge wizard[/accent] for a terminal UI)\n\n"
             "That installs Ollama, has a frontier model pick local models for your\n"
-            "hardware, and saves your API key — then you're ready for:\n\n"
-            '  [accent]localforge run "Build a todo REST API with docs"[/accent]'
+            "hardware, and saves your API key. Then type [accent]localforge[/accent] to start a session."
         )
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
@@ -650,7 +657,7 @@ def setup() -> None:
     else:
         console.print("[success]✓[/success] Local models ready\n")
 
-    console.print("[bold success]Setup complete.[/bold success] Try: localforge run \"...\"")
+    console.print(f"[bold success]Setup complete.[/bold success] {START_SESSION_HINT}", highlight=False)
 
 
 @app.command()
@@ -720,7 +727,7 @@ def doctor() -> None:
         console.print(f"[warning]![/warning] No fitting model for: {', '.join(missing)} (hardware too limited)")
 
     if ok:
-        console.print("\n[bold success]Ready to go.[/bold success] Try: localforge run \"...\"")
+        console.print(f"\n[bold success]Ready to go.[/bold success] {START_SESSION_HINT}", highlight=False)
     else:
         console.print("\n[bold error]Fix the items above before running `localforge run`.[/bold error]")
         raise typer.Exit(code=1)
@@ -735,6 +742,11 @@ def run(
         "-m",
         help="Frontier model to orchestrate with (any LiteLLM model string, e.g. claude-opus-5, gpt-5). "
         "Defaults to whatever `localforge setup` saved, or claude-opus-5 if setup was never run.",
+    ),
+    show_usage: bool = typer.Option(
+        False,
+        "--usage",
+        help="Print token usage after the task. Inside a session, use /usage instead.",
     ),
 ) -> None:
     """Run a task: the frontier model plans it and delegates subtasks to local models."""
@@ -771,16 +783,70 @@ def run(
         raise typer.Exit(code=1) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
-        # compute along the way -- show that before reporting the failure.
+        # compute along the way -- record it so /usage still accounts for it.
         console.print(f"[bold error]Error:[/bold error] {exc}")
-        _print_usage_panel(exc.stats, frontier_model)
+        _session_usage.append((frontier_model, exc.stats))
+        if show_usage:
+            _print_usage_panel(exc.stats, frontier_model)
         raise typer.Exit(code=1) from None
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
         console.print(f"[bold error]Error:[/bold error] {exc}")
         raise typer.Exit(code=1) from None
 
     console.print(result.answer)
-    _print_usage_panel(result.stats, frontier_model)
+    _session_usage.append((frontier_model, result.stats))
+    if show_usage:
+        _print_usage_panel(result.stats, frontier_model)
+
+
+# (frontier model, stats) for every task run in this process. Usage is only
+# shown on request, so inside a session this is what /usage reads; a one-off
+# `localforge run` process has nothing to show later (use `run --usage`).
+_session_usage: list[tuple[str, RunStats]] = []
+
+
+@app.command()
+def usage() -> None:
+    """Show token usage for the last task and this session so far."""
+    if not _session_usage:
+        console.print(
+            "No tasks run in this session yet. For a one-off run, use "
+            '[accent]localforge run --usage "..."[/accent].',
+            highlight=False,
+        )
+        return
+
+    last_model, last_stats = _session_usage[-1]
+    _print_usage_panel(last_stats, last_model, title="Usage — last task")
+    if len(_session_usage) > 1:
+        _print_session_usage_panel(_session_usage)
+
+
+def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
+    local = sum(s.local_tokens_generated for _, s in entries)
+    prompt = sum(s.frontier_prompt_tokens for _, s in entries)
+    completion = sum(s.frontier_completion_tokens for _, s in entries)
+    models = sorted({m for m, _ in entries})
+    # Tasks can mix transports (a --model run bills the API even when the
+    # saved choice is CLI login), so keep billed and subscription cost apart.
+    billed = sum(s.frontier_cost_usd for _, s in entries if not s.frontier_via_subscription)
+    subscription = sum(s.frontier_cost_usd for _, s in entries if s.frontier_via_subscription)
+    notes = []
+    if billed:
+        notes.append(f"${billed:.4f}")
+    if subscription:
+        notes.append(f"~${subscription:.4f} of subscription usage, not billed separately")
+    cost = f" ({'; '.join(notes)})" if notes else ""
+    lines = [
+        _usage_bar(local, prompt + completion),
+        "",
+        f"[success]■[/success] Local models: {local} tokens",
+        f"[warning]■[/warning] Frontier ({', '.join(models)}): {prompt} in + {completion} out = "
+        f"{prompt + completion} tokens" + cost,
+    ]
+    console.print(
+        Panel("\n".join(lines), title=f"Usage — session ({len(entries)} tasks)", border_style="panel.border")
+    )
 
 
 def _frontier_cost_note(stats) -> str:
@@ -795,7 +861,7 @@ def _frontier_cost_note(stats) -> str:
     return f" (${stats.frontier_cost_usd:.4f})"
 
 
-def _print_usage_panel(stats, frontier_model: str) -> None:
+def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None:
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
         "",
@@ -805,7 +871,7 @@ def _print_usage_panel(stats, frontier_model: str) -> None:
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + _frontier_cost_note(stats),
     ]
-    console.print(Panel("\n".join(usage_lines), title="Usage", border_style="panel.border"))
+    console.print(Panel("\n".join(usage_lines), title=title, border_style="panel.border"))
 
 
 def _ollama_installed_via_brew() -> bool:

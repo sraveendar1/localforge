@@ -317,7 +317,8 @@ class DoneScreen(Screen):
         yield Vertical(
             Static(
                 "\n[bold green]Setup complete.[/bold green]\n\n"
-                'Try: [bold]localforge run "Build a todo REST API with docs"[/bold]\n',
+                "Quit, then type [bold]localforge[/bold] in your terminal to start a session.\n"
+                "Inside it, just type what you want built, or /help for commands.\n",
             ),
             Button("Quit", id="quit", variant="primary"),
             id="done-body",
