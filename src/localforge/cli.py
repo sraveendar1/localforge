@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import subprocess
+import sys
 import time
 import webbrowser
 from pathlib import Path
@@ -256,6 +257,51 @@ def wizard() -> None:
     LocalforgeWizard().run()
 
 
+def _drain_buffered_input() -> None:
+    """Discard keystrokes already sitting in the terminal input buffer before
+    an interactive prompt. Without this, an extra Enter pressed earlier (e.g.
+    at install.sh's "Press Enter to continue") gets consumed by the *next*
+    prompt, silently accepting it -- which is how provider selection used to
+    get skipped. No-op when stdin isn't a real terminal.
+    """
+    try:
+        import termios
+
+        if sys.stdin.isatty():
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:  # noqa: BLE001 - best-effort only; never break a prompt over this
+        pass
+
+
+def _prompt_for_provider() -> str:
+    """Ask which frontier provider to use as an explicit numbered choice.
+
+    Deliberately has **no default**: an empty answer re-asks rather than
+    silently selecting one. A pre-filled default here meant a single stray
+    keystroke picked Anthropic without the user ever making a choice.
+    """
+    providers = list(FRONTIER_PROVIDERS)
+    labels = {
+        "anthropic": "Anthropic  (Claude — needs an API key)",
+        "openai": "OpenAI     (GPT — needs an API key)",
+        "gemini": "Gemini     (Google — needs an API key)",
+        "local": "Local      (open-weight model via Ollama — no API key, fully self-hosted)",
+    }
+
+    console.print("\nWhich frontier model should orchestrate your tasks?")
+    for i, name in enumerate(providers, start=1):
+        console.print(f"  {i}) {labels.get(name, name)}")
+
+    _drain_buffered_input()
+    while True:
+        raw = typer.prompt("Choose a provider (number or name)").strip().lower()
+        if raw.isdigit() and 1 <= int(raw) <= len(providers):
+            return providers[int(raw) - 1]
+        if raw in FRONTIER_PROVIDERS:
+            return raw
+        console.print(f"[warning]'{raw}' isn't one of the options — pick 1-{len(providers)} or a name.[/warning]")
+
+
 def _prompt_for_model(provider: str) -> str:
     """Ask which specific model to use within `provider` (e.g. Opus vs
     Sonnet), rather than silently defaulting to one. Always offers a free-
@@ -264,9 +310,10 @@ def _prompt_for_model(provider: str) -> str:
     """
     choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
     if not choices:
-        return typer.prompt("Enter the exact frontier model id").strip()
+        _drain_buffered_input()
+        return _prompt_nonempty("Enter the exact frontier model id")
 
-    console.print("\nAvailable models:")
+    console.print("\nWhich model should it use?")
     for i, model_id in enumerate(choices, start=1):
         console.print(f"  {i}) {model_id}")
     other_idx = len(choices) + 1
@@ -274,14 +321,28 @@ def _prompt_for_model(provider: str) -> str:
     if provider == "local":
         console.print("     (any Ollama model works, but must be prefixed \"ollama/\", e.g. ollama/llama3.1:8b)")
 
-    raw = typer.prompt("Choose a model", default="1").strip()
-    if raw.isdigit():
-        idx = int(raw)
-        if 1 <= idx <= len(choices):
-            return choices[idx - 1]
-        if idx == other_idx:
-            return typer.prompt("Enter the exact model id").strip()
-    return raw  # let them type the model id directly instead of a number
+    # No default: an empty answer re-asks rather than silently picking one.
+    _drain_buffered_input()
+    while True:
+        raw = typer.prompt(f"Choose a model (1-{other_idx})").strip()
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(choices):
+                return choices[idx - 1]
+            if idx == other_idx:
+                return _prompt_nonempty("Enter the exact model id")
+        elif raw:
+            return raw  # let them type the model id directly instead of a number
+        console.print(f"[warning]Pick a number from 1 to {other_idx}, or type a model id.[/warning]")
+
+
+def _prompt_nonempty(message: str) -> str:
+    """Prompt until a non-empty answer is given -- never silently accept ''."""
+    while True:
+        value = typer.prompt(message).strip()
+        if value:
+            return value
+        console.print("[warning]That can't be empty.[/warning]")
 
 
 @app.command()
@@ -325,10 +386,7 @@ def setup() -> None:
     # 2. Frontier model provider -- always asked explicitly, even if a key
     # for some provider already happens to be sitting in the environment.
     # We never silently guess which one the user wants localforge to use.
-    provider = typer.prompt(
-        f"Which frontier model provider should localforge use? ({'/'.join(FRONTIER_PROVIDERS)})",
-        default="anthropic",
-    ).strip().lower()
+    provider = _prompt_for_provider()
 
     frontier_model: str | None = None
     if provider not in FRONTIER_PROVIDERS:

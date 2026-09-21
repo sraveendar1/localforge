@@ -67,7 +67,15 @@ uv tool install --reinstall "$PROJECT_DIR"
 
 echo
 echo "Running setup (you'll only be asked for a frontier model API key)..."
-"$HOME/.local/bin/localforge" setup
+# Read prompts from the terminal, not this script's stdin: under
+# `curl ... | bash`, stdin is the script itself, so setup's interactive
+# prompts would hit EOF and abort. Falls back to inherited stdin when
+# there's no tty (non-interactive context).
+if [ -e /dev/tty ]; then
+    "$HOME/.local/bin/localforge" setup < /dev/tty
+else
+    "$HOME/.local/bin/localforge" setup
+fi
 
 echo
 "$HOME/.local/bin/localforge"
