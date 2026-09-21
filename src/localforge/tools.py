@@ -4,6 +4,8 @@ each tool call to the best-fitting local model via the matching backend.
 
 from __future__ import annotations
 
+import time
+from dataclasses import dataclass
 from typing import Callable
 
 from localforge.backends import BACKENDS
@@ -13,6 +15,25 @@ from localforge.hardware import HardwareProfile
 # Called right before a subtask is handed to a local model, so callers (the
 # CLI, the wizard) can show the user what's actually doing the work and why.
 DelegateCallback = Callable[[str, ModelEntry], None]
+
+
+@dataclass
+class ActivityHooks:
+    """Optional callbacks so a caller can show a run's activity live. Every
+    field is optional; without them a run is silent until it returns.
+    """
+
+    # before each frontier turn, with the 1-based round number
+    on_frontier: Callable[[int], None] | None = None
+    # (modality, entry) right before a subtask goes to a local model
+    on_delegate: DelegateCallback | None = None
+    # each chunk of local-model output, as it's generated
+    on_token: Callable[[str], None] | None = None
+    # (modality, entry, tokens, seconds) when a local model finishes a subtask
+    on_done: Callable[[str, ModelEntry, int, float], None] | None = None
+    # (model name, raw Ollama pull event) if a model has to be downloaded first
+    on_pull: Callable[[str, dict], None] | None = None
+
 
 # Modality -> (tool name, description, prompt-building instructions)
 TASK_MODALITIES = {
@@ -31,7 +52,9 @@ TASK_MODALITIES = {
 }
 
 
-def build_tool_schemas(hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> list[dict]:
+def build_tool_schemas(
+    hardware: HardwareProfile, catalog: list[ModelEntry] | None = None, installed: set[str] | None = None
+) -> list[dict]:
     """OpenAI/LiteLLM-style tool schemas for every modality with an available
     local model on this machine. A modality with no fitting catalog entry
     (hardware too limited) is left out entirely, rather than exposing a tool
@@ -39,7 +62,7 @@ def build_tool_schemas(hardware: HardwareProfile, catalog: list[ModelEntry] | No
     """
     schemas = []
     for modality, meta in TASK_MODALITIES.items():
-        if not candidates(modality, hardware, catalog):
+        if not candidates(modality, hardware, catalog, installed):
             continue
         schemas.append(
             {
@@ -104,9 +127,22 @@ def _looks_suspect(content: str, instructions: str) -> str | None:
 class Dispatcher:
     """Resolves a tool call to modality -> catalog entry -> backend, and runs it."""
 
-    def __init__(self, hardware: HardwareProfile, catalog: list[ModelEntry] | None = None):
+    def __init__(
+        self,
+        hardware: HardwareProfile,
+        catalog: list[ModelEntry] | None = None,
+        installed: set[str] | None = None,
+        hooks: ActivityHooks | None = None,
+    ):
         self.hardware = hardware
         self.catalog = catalog if catalog is not None else load_catalog()
+        # Model tags already on disk, or None if unknown. When known, an
+        # installed fitting model wins over a higher-tier one that would have
+        # to be downloaded -- otherwise a run silently pulls gigabytes mid-task
+        # (a real bug: qwen2.5-coder:14b was fetched during a run while setup
+        # had picked the already-installed 7b).
+        self.installed = installed
+        self.hooks = hooks or ActivityHooks()
         self._resolved_models: dict[str, ModelEntry] = {}
         self.local_tokens_generated = 0  # running total, for usage metrics
 
@@ -118,7 +154,7 @@ class Dispatcher:
 
     def resolve(self, modality: str) -> ModelEntry:
         if modality not in self._resolved_models:
-            self._resolved_models[modality] = best_match(modality, self.hardware, self.catalog)
+            self._resolved_models[modality] = best_match(modality, self.hardware, self.catalog, installed=self.installed)
         return self._resolved_models[modality]
 
     def _retry_candidate(self, modality: str, current: ModelEntry) -> ModelEntry | None:
@@ -131,7 +167,11 @@ class Dispatcher:
         highest quality_tier among the alternatives, on a one-off basis
         that never changes `resolve()`'s cached pick for the rest of the run.
         """
-        alternatives = [c for c in candidates(modality, self.hardware, self.catalog) if c.name != current.name]
+        alternatives = [c for c in candidates(modality, self.hardware, self.catalog, self.installed) if c.name != current.name]
+        if self.installed is not None:
+            # A retry is not worth a surprise multi-GB download; with nothing
+            # else installed, the caller retries the same model instead.
+            alternatives = [c for c in alternatives if c.name in self.installed]
         return max(alternatives, key=lambda m: m.quality_tier) if alternatives else None
 
     def _reinforced_instructions(self, instructions: str, reason: str) -> str:
@@ -142,12 +182,22 @@ class Dispatcher:
         )
 
     def _run(self, modality: str, entry: ModelEntry, instructions: str, on_delegate: DelegateCallback | None) -> dict:
+        hooks = self.hooks
+        on_delegate = on_delegate or hooks.on_delegate
         if on_delegate is not None:
             on_delegate(modality, entry)
         backend = BACKENDS[entry.runtime]
-        backend.ensure_available(entry.name)
-        result = backend.generate(entry.name, _prompt_for(modality, instructions))
-        self.local_tokens_generated += result.get("tokens", 0)  # every attempt costs local compute, retries included
+        on_pull = (lambda event: hooks.on_pull(entry.name, event)) if hooks.on_pull else None
+        backend.ensure_available(entry.name, on_progress=on_pull)
+        started = time.monotonic()
+        if hooks.on_token is not None:
+            result = backend.generate(entry.name, _prompt_for(modality, instructions), on_token=hooks.on_token)
+        else:
+            result = backend.generate(entry.name, _prompt_for(modality, instructions))
+        tokens = result.get("tokens", 0)
+        self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
+        if hooks.on_done is not None:
+            hooks.on_done(modality, entry, tokens, time.monotonic() - started)
         return result
 
     def dispatch(self, tool_name: str, instructions: str, on_delegate: DelegateCallback | None = None) -> str:

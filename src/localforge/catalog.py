@@ -32,20 +32,31 @@ def load_catalog() -> list[ModelEntry]:
     return [ModelEntry(**m) for m in data["models"]]
 
 
-def _fits(entry: ModelEntry, hw: HardwareProfile) -> bool:
+def _fits(entry: ModelEntry, hw: HardwareProfile, installed: set[str] | None = None) -> bool:
     if hw.ram_gb < entry.min_ram_gb:
         return False
-    if hw.free_disk_gb < entry.disk_gb:
+    # Free disk only matters for a download. An installed model needs none --
+    # counting its size again would reject it right after it was pulled
+    # (seen on a 16 GB Mac left with 5.8 GB free by a 9 GB model).
+    already_on_disk = installed is not None and entry.name in installed
+    if not already_on_disk and hw.free_disk_gb < entry.disk_gb:
         return False
     if entry.min_vram_gb == 0:
         return True  # CPU-runnable
     return hw.total_vram_gb >= entry.min_vram_gb
 
 
-def candidates(modality: str, hardware: HardwareProfile, catalog: list[ModelEntry] | None = None) -> list[ModelEntry]:
-    """All catalog models for `modality` that fit `hardware` (RAM/VRAM/disk)."""
+def candidates(
+    modality: str,
+    hardware: HardwareProfile,
+    catalog: list[ModelEntry] | None = None,
+    installed: set[str] | None = None,
+) -> list[ModelEntry]:
+    """All catalog models for `modality` that fit `hardware` (RAM/VRAM, and
+    free disk unless the model is already in `installed`).
+    """
     catalog = catalog if catalog is not None else load_catalog()
-    return [m for m in catalog if m.modality == modality and _fits(m, hardware)]
+    return [m for m in catalog if m.modality == modality and _fits(m, hardware, installed)]
 
 
 def best_match(
@@ -65,7 +76,7 @@ def best_match(
     highest quality_tier fitting entry, installed or not, exactly as
     before, when nothing installed fits (or `installed` isn't given).
     """
-    fitting = candidates(modality, hardware, catalog)
+    fitting = candidates(modality, hardware, catalog, installed)
     if not fitting:
         raise NoFittingModelError(
             f"No catalog model for modality={modality!r} fits this machine "

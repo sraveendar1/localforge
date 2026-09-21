@@ -77,7 +77,15 @@ class OllamaBackend:
                     except json.JSONDecodeError:
                         continue
 
-    def generate(self, model_name: str, prompt: str, **kwargs) -> BackendResult:
+    def generate(
+        self, model_name: str, prompt: str, on_token: Callable[[str], None] | None = None, **kwargs
+    ) -> BackendResult:
+        """Run the model. With `on_token`, the reply is streamed and each chunk
+        is handed over as Ollama produces it, so the user watches the local
+        model work instead of staring at a spinner until it's done.
+        """
+        if on_token is not None:
+            return self._generate_streaming(model_name, prompt, on_token, **kwargs)
         with self._client() as client:
             resp = client.post(
                 "/api/generate",
@@ -88,3 +96,29 @@ class OllamaBackend:
             # "eval_count" is Ollama's count of tokens it generated for this
             # response -- used for usage metrics, not for the API call itself.
             return {"type": "text", "content": data["response"], "tokens": data.get("eval_count", 0)}
+
+    def _generate_streaming(self, model_name: str, prompt: str, on_token: Callable[[str], None], **kwargs) -> BackendResult:
+        parts: list[str] = []
+        tokens = 0
+        with self._client() as client:
+            with client.stream(
+                "POST", "/api/generate", json={"model": model_name, "prompt": prompt, "stream": True, **kwargs}
+            ) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("error"):
+                        raise RuntimeError(f"{model_name}: {event['error']}")
+                    chunk = event.get("response", "")
+                    if chunk:
+                        parts.append(chunk)
+                        on_token(chunk)
+                    if event.get("done"):
+                        # only the final event carries the token count
+                        tokens = event.get("eval_count", 0)
+        return {"type": "text", "content": "".join(parts), "tokens": tokens}

@@ -24,7 +24,7 @@ def _hw(ram_gb: float = 32, free_disk_gb: float = 100) -> HardwareProfile:
 
 
 class _StubDispatcher:
-    def __init__(self, hardware, catalog=None):
+    def __init__(self, hardware, catalog=None, **kwargs):
         self.catalog = catalog or []
         self.local_tokens_generated = 999
 

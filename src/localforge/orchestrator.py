@@ -13,8 +13,19 @@ import litellm
 from litellm import completion
 
 from localforge import cli_transport
+from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
-from localforge.tools import DelegateCallback, Dispatcher, build_tool_schemas
+from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
+
+
+def _installed_models() -> set[str] | None:
+    """Ollama tags on disk, or None if Ollama can't be asked (the dispatcher
+    then falls back to plain best-fit selection).
+    """
+    try:
+        return {m["name"] for m in OllamaBackend().list_installed()}
+    except Exception:  # noqa: BLE001 - a nice-to-have preference, never a reason to fail the run
+        return None
 
 
 @dataclass
@@ -110,6 +121,7 @@ def run(
     hardware: HardwareProfile | None = None,
     on_delegate: DelegateCallback | None = None,
     cli_provider: str | None = None,
+    hooks: ActivityHooks | None = None,
 ) -> RunResult:
     """Run `task` to completion, delegating subtasks to local models.
 
@@ -124,13 +136,18 @@ def run(
     cli_transport. The loop below is identical either way; only the call
     that produces a response differs.
 
+    `hooks` lets the caller show activity live: each frontier turn, each
+    local model's output as it streams, and when each subtask finishes.
+
     Returns a `RunResult` with the final answer and usage metrics (frontier
     tokens/cost actually spent, and tokens local models generated instead --
     the latter never touched the frontier API at all).
     """
     hardware = hardware if hardware is not None else detect_hardware()
-    dispatcher = Dispatcher(hardware)
-    tools = build_tool_schemas(hardware, dispatcher.catalog)
+    hooks = hooks or ActivityHooks()
+    installed = _installed_models()
+    dispatcher = Dispatcher(hardware, installed=installed, hooks=hooks)
+    tools = build_tool_schemas(hardware, dispatcher.catalog, installed)
     stats = RunStats()
 
     messages = [
@@ -157,7 +174,9 @@ def run(
 
     tool_message_indices: list[int] = []
 
-    for _ in range(MAX_ROUNDS):
+    for round_number in range(1, MAX_ROUNDS + 1):
+        if hooks.on_frontier is not None:
+            hooks.on_frontier(round_number)
         if cli_provider:
             response = cli_transport.complete(cli_provider, messages, tools)
         else:

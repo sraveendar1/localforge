@@ -74,7 +74,7 @@ def recommend_models(
     catalog = catalog if catalog is not None else load_catalog()
     modalities = sorted({m.modality for m in catalog})
 
-    per_modality = {modality: candidates(modality, hardware, catalog) for modality in modalities}
+    per_modality = {modality: candidates(modality, hardware, catalog, installed) for modality in modalities}
     choosable = {modality: entries for modality, entries in per_modality.items() if entries}
 
     result: dict[str, ModelEntry | None] = {modality: None for modality in modalities if modality not in choosable}

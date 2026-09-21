@@ -187,3 +187,23 @@ def test_setup_does_not_pull_models_that_are_already_installed(tmp_path, monkeyp
     assert delegate_pulls == [], f"re-downloaded installed models: {delegate_pulls}"
     normalized = " ".join(result.output.split())
     assert "Nothing to download" in normalized
+
+
+def test_an_installed_model_is_not_rejected_for_lack_of_free_disk():
+    """Reported machine after a surprise 9 GB pull: 16 GB RAM, 12 GB VRAM,
+    5.8 GB free. The installed 14b needs no more disk, so it must still fit;
+    a model that would have to be downloaded still needs the space.
+    """
+    from localforge.catalog import best_match, candidates, load_catalog
+    from localforge.hardware import GPU, HardwareProfile
+
+    hw = HardwareProfile(
+        os="Darwin", arch="arm64", cpu_cores=10, ram_gb=16, free_disk_gb=5.8,
+        gpus=[GPU(name="Apple M4", vram_gb=12, backend="metal")],
+    )
+    catalog = load_catalog()
+    installed = {"qwen2.5-coder:14b", "qwen2.5-coder:7b"}
+
+    assert best_match("coding", hw, catalog, installed=installed).name == "qwen2.5-coder:14b"
+    # without the installed info the 9 GB download genuinely doesn't fit
+    assert "qwen2.5-coder:14b" not in {m.name for m in candidates("coding", hw, catalog)}

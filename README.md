@@ -31,6 +31,8 @@ Type a task to build it, or /help for commands. /exit to leave.
 localforge>
 ```
 
+While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.
+
 Type a task directly and it runs (shorthand for `/run <task>`), or use a
 slash command for anything else — `/usage`, `/setup`, `/doctor`, `/scan`,
 `/theme dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every

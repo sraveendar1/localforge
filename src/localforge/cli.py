@@ -23,6 +23,7 @@ from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
 from localforge.orchestrator import OrchestrationError, RunStats
 from localforge.orchestrator import run as run_orchestrator
+from localforge.tools import ActivityHooks
 
 app = typer.Typer(
     name="localforge",
@@ -764,12 +765,12 @@ def run(
             spec = config.FRONTIER_CLI_AUTH[cli_provider]
             console.print(f"[dim]Orchestrating via your `{spec['command']}` login (subscription, not API billing)[/dim]")
 
-    def _on_delegate(modality: str, entry) -> None:
-        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (local, via {entry.runtime})")
-
+    activity = _LiveActivity(frontier_model)
     try:
-        with console.status(f"[bold success]Orchestrating with {frontier_model}..."):
-            result = run_orchestrator(task, frontier_model, on_delegate=_on_delegate, cli_provider=cli_provider)
+        try:
+            result = run_orchestrator(task, frontier_model, cli_provider=cli_provider, hooks=activity.hooks())
+        finally:
+            activity.close()
     except cli_transport.CLINotAvailableError as exc:
         # The provider CLI failed mid-run -- most often a session that expired
         # since setup. Say how to fix it, in shell terms.
@@ -797,6 +798,92 @@ def run(
     _session_usage.append((frontier_model, result.stats))
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
+
+
+class _LiveActivity:
+    """Shows a run as it happens: a spinner only while the frontier model is
+    thinking, and each local model's output streamed as it's generated, so
+    delegated work is visible instead of hidden behind one long spinner.
+    """
+
+    INDENT = "    "
+
+    def __init__(self, frontier_model: str):
+        self.frontier_model = frontier_model
+        self._status = None
+        self._pull_shown: dict[str, int] = {}
+        self._at_line_start = True
+        self._first_token_at: float | None = None
+
+    def hooks(self) -> ActivityHooks:
+        return ActivityHooks(
+            on_frontier=self._on_frontier,
+            on_delegate=self._on_delegate,
+            on_token=self._on_token,
+            on_done=self._on_done,
+            on_pull=self._on_pull,
+        )
+
+    def _stop_spinner(self) -> None:
+        if self._status is not None:
+            self._status.stop()
+            self._status = None
+
+    def _on_frontier(self, round_number: int) -> None:
+        self._stop_spinner()
+        doing = "planning" if round_number == 1 else "reviewing results"
+        self._status = console.status(f"[bold success]{self.frontier_model} is {doing}...")
+        self._status.start()
+
+    def _on_delegate(self, modality: str, entry) -> None:
+        self._stop_spinner()
+        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (local, via {entry.runtime})")
+        self._at_line_start = True
+        self._first_token_at = None
+        # Nothing streams while the model loads into memory, which can take
+        # tens of seconds for a big model; keep that visible too.
+        self._status = console.status(f"[dim]{entry.name} is loading / thinking...[/dim]")
+        self._status.start()
+
+    def _on_token(self, chunk: str) -> None:
+        if self._first_token_at is None:
+            self._stop_spinner()
+            self._first_token_at = time.monotonic()
+        # Indent every line so streamed output reads as nested under its
+        # "delegating" line; markup/highlight off so code isn't mangled.
+        text = chunk.replace("\n", "\n" + self.INDENT)
+        if self._at_line_start:
+            text = self.INDENT + text
+        self._at_line_start = chunk.endswith("\n")
+        if self._at_line_start:
+            text = text[: -len(self.INDENT)]
+        console.print(text, end="", style="dim", markup=False, highlight=False, soft_wrap=True)
+
+    def _on_done(self, modality: str, entry, tokens: int, seconds: float) -> None:
+        self._stop_spinner()
+        if not self._at_line_start:
+            console.print()
+        # Rate from the first token on: the wall time also covers loading the
+        # model into memory, which would make a big model look absurdly slow.
+        generating = time.monotonic() - self._first_token_at if self._first_token_at else 0
+        rate = f", {tokens / generating:.0f} tok/s" if generating > 0 and tokens else ""
+        console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s{rate}")
+        self._at_line_start = True
+
+    def _on_pull(self, model_name: str, event: dict) -> None:
+        # A download should be rare now (installed models are preferred), but
+        # never silent: report it in 10% steps.
+        self._stop_spinner()
+        total, completed = event.get("total"), event.get("completed")
+        if not total or completed is None:
+            return
+        pct = int(100 * completed / total) // 10 * 10
+        if pct > self._pull_shown.get(model_name, -1):
+            self._pull_shown[model_name] = pct
+            console.print(f"    [warning]↓[/warning] downloading {model_name} ({total / 1e9:.1f} GB): {pct}%")
+
+    def close(self) -> None:
+        self._stop_spinner()
 
 
 # (frontier model, stats) for every task run in this process. Usage is only

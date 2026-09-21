@@ -19,6 +19,9 @@ class Backend(Protocol):
         """
         ...
 
-    def generate(self, model_name: str, prompt: str, **kwargs) -> BackendResult:
-        """Run `model_name` on `prompt` and return its output."""
+    def generate(self, model_name: str, prompt: str, on_token: object = None, **kwargs) -> BackendResult:
+        """Run `model_name` on `prompt` and return its output. `on_token`, if
+        given, is called with each chunk of text as it's generated (a backend
+        that can't stream may ignore it and just return the full result).
+        """
         ...
