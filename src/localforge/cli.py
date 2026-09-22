@@ -9,6 +9,7 @@ import time
 import webbrowser
 from pathlib import Path
 
+import litellm
 import typer
 from rich.console import Console
 from rich.live import Live
@@ -24,7 +25,7 @@ from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
-from localforge.orchestrator import Conversation, OrchestrationError, RunStats
+from localforge.orchestrator import Conversation, OrchestrationError, RunStats, TaskCancelled
 from localforge.orchestrator import run as run_orchestrator
 from localforge.tools import ActivityHooks, Dispatcher
 from localforge.scratchpad import Scratchpad
@@ -900,6 +901,12 @@ def run(
     except local_transport.LocalOrchestratorError as exc:
         console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         raise typer.Exit(code=1) from None
+    except TaskCancelled as exc:
+        # Ctrl+C mid-task: only the task stops, not the session. Changes the
+        # user already approved stay; the conversation notes it was stopped.
+        _session_usage.append((frontier_model, exc.stats))
+        console.print("\n[warning]Stopped.[/warning] Changes you already approved are kept. Type your next message.")
+        raise typer.Exit(code=130) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
         # compute along the way -- record it so /usage still accounts for it.
@@ -1033,6 +1040,7 @@ class _LiveActivity:
         "web_search": "Web search",
         "fetch_url": "Fetch",
         "compact": "Memory",
+        "retry": "Retry",
         "remember": "Remember",
         "forget": "Forget",
     }
@@ -1581,6 +1589,8 @@ def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
         f"[warning]■[/warning] Frontier ({', '.join(models)}): {prompt} in + {completion} out = "
         f"{prompt + completion} tokens" + cost,
     ]
+    if len(models) == 1 and (saved := _savings_line(local, models[0])):
+        lines.append(saved)
     console.print(
         Panel("\n".join(lines), title=f"Usage — session ({len(entries)} tasks)", border_style="panel.border")
     )
@@ -1598,6 +1608,21 @@ def _frontier_cost_note(stats) -> str:
     return f" (${stats.frontier_cost_usd:.4f})"
 
 
+def _savings_line(local_tokens: int, frontier_model: str) -> str:
+    """What the local models' output would have cost if the orchestrator
+    had written it, at its own output price (LiteLLM's price table). Empty
+    when there's nothing to price (a local orchestrator, an unknown model)."""
+    if not local_tokens or _is_local_model(frontier_model):
+        return ""
+    try:
+        price = litellm.model_cost.get(frontier_model, {}).get("output_cost_per_token")
+    except Exception:  # noqa: BLE001 - an estimate is optional
+        price = None
+    if not price:
+        return ""
+    return f"[success]≈ ${local_tokens * price:.4f} saved[/success]: what {local_tokens} tokens of local output would have cost from {frontier_model}"
+
+
 def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None:
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
@@ -1608,6 +1633,8 @@ def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + _frontier_cost_note(stats),
     ]
+    if saved := _savings_line(stats.local_tokens_generated, frontier_model):
+        usage_lines.append(saved)
     console.print(Panel("\n".join(usage_lines), title=title, border_style="panel.border"))
 
 

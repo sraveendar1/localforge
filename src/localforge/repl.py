@@ -206,6 +206,8 @@ def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | Non
             app(argv, standalone_mode=False)
         except typer.Exit:
             pass  # the command already reported its own success/failure
+        except KeyboardInterrupt:
+            console.print("\n[warning]Stopped.[/warning]")  # Ctrl+C stops the command, not the session
         except Exception as exc:  # noqa: BLE001 - keep the session alive on any command failure
             console.print(f"[error]Error:[/error] {exc}")
         console.print()

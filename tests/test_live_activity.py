@@ -171,7 +171,7 @@ def test_ollama_generate_streams_chunks_and_reads_final_token_count():
 
     backend = OllamaBackend()
     chunks = []
-    with patch.object(backend, "_client", lambda: httpx.Client(base_url="http://x", transport=httpx.MockTransport(handler))):
+    with patch.object(backend, "_client", lambda *a: httpx.Client(base_url="http://x", transport=httpx.MockTransport(handler))):
         result = backend.generate("coder:7b", "prompt", on_token=chunks.append)
 
     assert requests[0]["stream"] is True
@@ -184,7 +184,7 @@ def test_ollama_streaming_surfaces_a_mid_stream_error():
         return httpx.Response(200, content=b'{"error": "model ran out of memory"}')
 
     backend = OllamaBackend()
-    with patch.object(backend, "_client", lambda: httpx.Client(base_url="http://x", transport=httpx.MockTransport(handler))):
+    with patch.object(backend, "_client", lambda *a: httpx.Client(base_url="http://x", transport=httpx.MockTransport(handler))):
         try:
             backend.generate("coder:7b", "p", on_token=lambda c: None)
         except RuntimeError as exc:

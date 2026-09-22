@@ -16,6 +16,7 @@ tying the orchestrator to any one vendor's SDK.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -384,6 +385,9 @@ def complete(
     cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *output_args]
     if model and spec.get("model_flag"):
         cmd += [spec["model_flag"], model]
+    if spec.get("effort_flag"):
+        effort = os.environ.get(config.ORCHESTRATOR_EFFORT_ENV_VAR) or config.DEFAULT_ORCHESTRATOR_EFFORT
+        cmd += [spec["effort_flag"], effort]
     if spec.get("prompt_via_stdin"):
         # A session's prompt grows every turn; stdin carries any size (a
         # 340k-char prompt verified live), where one argv element is fragile.

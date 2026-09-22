@@ -72,6 +72,23 @@ saves a fact. At `/exit`, a local model saves what's worth keeping, so the
 next session in that folder picks up from there. `/memory` shows it, and
 `/memory forget <name>` or `/memory clear` remove it.
 
+**When something goes wrong:** if a local model crashes, stalls or starts
+repeating itself, localforge stops it and tries again, with another installed
+model if there is one. The orchestrator is told what failed and works around
+it (retry, simpler instructions, a different approach). Only after a few
+different attempts does it stop and tell you what's blocking. A brief
+connection hiccup with Claude is retried once. Ctrl+C stops the current task
+without ending the session.
+
+**Where the money goes:** the frontier model is told it's the expensive one:
+it plans, directs and checks, and the local models write. It doesn't paste
+files or code into its instructions: it names `context_files`, and localforge
+hands those files straight to the local model. What a local model writes
+comes back to the frontier model as a short summary, while you still see the
+full diff. Claude also orchestrates at medium thinking effort
+(`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows an estimate of
+what the local models' work would have cost from the frontier model.
+
 **Fully local, no account:** pick "local" in `localforge setup`, or type
 `/model` in a session and choose a model you already have in Ollama (e.g.
 `/model ollama/qwen2.5:7b`). The orchestrator then runs on your machine too,

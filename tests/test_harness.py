@@ -195,7 +195,7 @@ def test_update_todos_goes_to_the_hook():
 def test_tool_schemas_carry_real_parameters():
     by_name = {s["function"]["name"]: s["function"]["parameters"] for s in build_tool_schemas(_hw(), CATALOG)}
     assert by_name["read_file"]["required"] == ["path"]
-    assert set(by_name["delegate_coding_task"]["properties"]) == {"instructions", "path"}
+    assert set(by_name["delegate_coding_task"]["properties"]) == {"instructions", "path", "context_files"}
     assert {"read_file", "list_files", "search", "edit_file", "run_command", "update_todos"} <= set(by_name)
     assert "write_file" not in by_name  # the orchestrator can't write whole files itself
 
