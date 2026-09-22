@@ -5,6 +5,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import webbrowser
 from pathlib import Path
@@ -28,6 +29,7 @@ from localforge.hardware import detect_hardware
 from localforge.orchestrator import Conversation, OrchestrationError, RunStats, TaskCancelled
 from localforge.orchestrator import run as run_orchestrator
 from localforge.tools import ActivityHooks, Dispatcher
+from localforge.background import TaskRunner
 from localforge.scratchpad import Scratchpad
 from localforge.workspace import Workspace
 
@@ -49,9 +51,20 @@ def _main(ctx: typer.Context) -> None:
         # print-and-exit behavior so nothing that scripts against a bare
         # `localforge` call starts waiting on stdin forever.
         if sys.stdin.isatty() and sys.stdout.isatty():
-            repl.run_repl(
-                app, console, on_start=_start_session, on_exit=_save_memory_at_exit, history_file=config.CONFIG_DIR / "history"
-            )
+            runner = TaskRunner(lambda task: _run_in_background(task))
+            _session.runner = runner
+            try:
+                repl.run_repl(
+                    app,
+                    console,
+                    on_start=_start_session,
+                    on_exit=_save_memory_at_exit,
+                    history_file=config.CONFIG_DIR / "history",
+                    runner=runner,
+                )
+            finally:
+                runner.shutdown()
+                _session.runner = None
         else:
             _print_getting_started()
         raise typer.Exit()
@@ -872,7 +885,7 @@ def run(
                 "interactively to trust it, or pass --yes to allow this run."
             )
             raise typer.Exit(code=1)
-    activity = _LiveActivity(frontier_model)
+    activity = _session.make_activity(frontier_model)
     scratch = _session.scratchpad_for(folder)
     workspace = Workspace(folder, approver=activity.approve, scratch=scratch.root)
     conversation = _session.conversation_for(workspace.root)
@@ -1145,6 +1158,106 @@ class _LiveActivity:
         self._stop_spinner()
 
 
+class _BackgroundActivity(_LiveActivity):
+    """Hooks for a task running on the background worker (see background.py).
+    Same events as _LiveActivity, but compressed: no spinner, no Live, no
+    token-by-token output -- the status bar shows what's in progress, each
+    finished step prints one line, and the answer prints when it's done.
+    Permission prompts are handed to the main thread, which owns the keyboard."""
+
+    def __init__(self, frontier_model: str, runner):
+        super().__init__(frontier_model)
+        self.runner = runner
+        runner.state.orchestrator = frontier_model
+
+    def hooks(self) -> ActivityHooks:
+        hooks = super().hooks()
+        hooks.on_answer_text = self._on_answer_text
+        hooks.poll_notes = self._poll_notes
+        return hooks
+
+    def _step(self, line: str) -> None:
+        self.runner.state.steps.append(line)
+
+    def _stop_spinner(self) -> None:  # nothing live to stop in background mode
+        return
+
+    def _on_frontier(self, round_number: int) -> None:
+        self.runner.check_cancel()
+        state = self.runner.state
+        state.local_model = state.downloading = ""
+        state.answer_words = 0
+        state.phase = "planning" if round_number == 1 else f"reviewing results (step {round_number})"
+        self.reply_streamed = False
+
+    def _poll_notes(self) -> list[str]:
+        notes = self.runner.take_notes()
+        for note in notes:
+            console.print(f"  [accent]●[/accent] [bold]Your note[/bold] passed to {escape(self.frontier_model)}: {escape(note)}", highlight=False)
+        return notes
+
+    def _on_delegate(self, modality: str, entry) -> None:
+        self.runner.check_cancel()
+        state = self.runner.state
+        state.local_model, state.local_what = entry.name, f"working on {modality}"
+        state.local_tokens, state.local_started = 0, time.monotonic()
+        console.print(f"  → {modality} → [accent]{entry.name}[/accent] (local)", highlight=False)
+        self._step(f"→ {modality} delegated to {entry.name}")
+
+    def _on_token(self, chunk: str) -> None:
+        self.runner.check_cancel()
+        self.runner.state.local_tokens += 1
+
+    def _on_done(self, modality: str, entry, tokens: int, seconds: float) -> None:
+        state = self.runner.state
+        state.local_model = ""
+        console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s", highlight=False)
+        self._step(f"✓ {entry.name} finished {modality} ({tokens} tokens)")
+
+    def _on_pull(self, model_name: str, event: dict) -> None:
+        total, completed = event.get("total"), event.get("completed")
+        if total and completed is not None:
+            self.runner.state.downloading = f"downloading {model_name}: {int(100 * completed / total)}%"
+
+    def _on_tool(self, tool_name: str, summary: str) -> None:
+        self.runner.check_cancel()
+        label = self.TOOL_LABELS.get(tool_name, tool_name)
+        self.runner.state.phase = f"{label.lower()} {summary}"[:80]
+        console.print(f"  [accent]●[/accent] [bold]{label}[/bold] {escape(summary)}", highlight=False)
+        self._step(f"● {label} {summary}"[:100])
+
+    def _on_tool_result(self, tool_name: str, result: str) -> None:
+        first = (result.strip().splitlines() or [""])[0]
+        console.print(f"[dim]    ⎿ {escape(first[:140])}[/dim]", highlight=False)
+
+    def _on_todos(self, todos: list[dict]) -> None:
+        self.runner.state.todos = todos
+        done = sum(t.get("status") == "completed" for t in todos)
+        current = next((t.get("content", "") for t in todos if t.get("status") == "in_progress"), "")
+        console.print(
+            f"  [accent]●[/accent] [bold]Plan[/bold] {done}/{len(todos)} done" + (f" — now: {escape(current)}" if current else ""),
+            highlight=False,
+        )
+
+    def _on_answer_text(self, text: str) -> None:
+        # Collected, not streamed: run() prints it formatted once it's done.
+        self._answer += text
+        self.runner.state.answer_words = len(self._answer.split())
+
+    def approve(self, kind: str, title: str, detail: str) -> bool:
+        if _session.auto_approve or kind in _session.always_allow:
+            self._print_change(kind, title, detail)
+            return True
+        self._print_change(kind, title, detail)
+        answer = self.runner.ask(kind, title)
+        if answer.always:
+            _session.always_allow.add(kind)
+        return answer.allowed
+
+    def close(self) -> None:
+        return
+
+
 class _SessionState:
     """What an interactive session remembers between messages. The REPL runs
     every command in-process, so module-level state is the session."""
@@ -1157,6 +1270,15 @@ class _SessionState:
         self.always_allow: set[str] = set()
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
+        self.runner = None  # background.TaskRunner when the session runs tasks in the background
+
+    def make_activity(self, frontier_model: str):
+        """The display for a task: compressed and approval-by-handoff on the
+        background worker, the classic live one everywhere else."""
+        runner = self.runner
+        if runner is not None and threading.current_thread() is runner.thread:
+            return _BackgroundActivity(frontier_model, runner)
+        return _LiveActivity(frontier_model)
 
     def conversation_for(self, root: Path) -> Conversation:
         if self.conversation is None or self.root != root:
@@ -1300,6 +1422,18 @@ def _ask_trust(folder: Path) -> bool:
         if answer == "2":
             return False
         console.print("[warning]Type 1 or 2.[/warning]")
+
+
+def _run_in_background(task: str) -> None:
+    """The worker thread's job: the same `run` command a foreground task uses."""
+    try:
+        app(["run", task], standalone_mode=False)
+    except typer.Exit:
+        pass
+    except Exception as exc:  # noqa: BLE001 - reported, then the queue carries on
+        console.print(f"[error]Error:[/error] {escape(str(exc))}")
+    finally:
+        console.print()
 
 
 def _start_session() -> bool:
@@ -1527,6 +1661,58 @@ def scratch(
         console.print("The scratchpad is empty.")
     for f in files:
         console.print(f"  scratchpad/{escape(str(f.relative_to(pad.root)))}  [dim]({f.stat().st_size:,} bytes)[/dim]", highlight=False)
+
+
+@app.command()
+def summary() -> None:
+    """What's happening right now: the task, which model is doing what, the plan, the queue."""
+    runner = _session.runner
+    if runner is None:
+        console.print("Nothing is running in the background (tasks run in the foreground here).")
+        return
+    for line in runner.summary():
+        console.print(escape(line), highlight=False)
+
+
+@app.command(name="queue")
+def queue_command(
+    action: str = typer.Argument(None, help="Omit to list queued tasks; `clear` to drop them."),
+) -> None:
+    """Tasks waiting behind the current one."""
+    runner = _session.runner
+    if runner is None or not runner.queue:
+        console.print("The queue is empty. Type a task while one is running to queue it.")
+        return
+    if action == "clear":
+        runner.queue.clear()
+        console.print("[success]✓[/success] Queue cleared.")
+        return
+    for i, task in enumerate(runner.queue, 1):
+        console.print(f"  {i}. {escape(task)}", highlight=False)
+
+
+@app.command()
+def stop() -> None:
+    """Stop the running task (queued tasks then continue)."""
+    runner = _session.runner
+    if runner is None or not runner.cancel():
+        console.print("Nothing is running.")
+        return
+    console.print("[warning]Stopping…[/warning] it will stop at its next step.")
+
+
+@app.command()
+def tell(note: list[str] = typer.Argument(None, help="A note for the running task.")) -> None:
+    """Add a note to the running task; the orchestrator sees it at its next step."""
+    text = " ".join(note or []).strip()
+    runner = _session.runner
+    if not text:
+        console.print("[error]What should I tell it?[/error] /tell <note>")
+        raise typer.Exit(code=1)
+    if runner is None or not runner.tell(text):
+        console.print("Nothing is running — just type it as a new task.")
+        return
+    console.print("[success]✓[/success] It'll see that at its next step.")
 
 
 @app.command()

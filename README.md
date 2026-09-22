@@ -50,10 +50,22 @@ when you want to change. There's no default, so you always choose. Type `/` to s
 a description, and press Tab to complete. Arrow keys, mid-line editing and
 Up for history all work.
 
-**Watching it work:** local models' output streams as they write, and so does
-the orchestrator's answer, rendered as formatted text while it's written.
-In between you see each action: files read, commands run, the plan checklist,
-and diffs waiting for your approval.
+**Watching it work, while you keep working:** a task runs in the background
+and your prompt stays live, like Claude Code. A status bar at the bottom shows
+who is doing what, for example `qwen2.5-coder:7b working on coding · 312
+tokens · 41 tok/s`, and each finished step prints one line instead of
+flooding the screen with code. While it works you can:
+- `/summary`: the task, which model is doing what, the plan, recent steps
+  and the queue (instant, no model call)
+- type another task: it's queued and runs next (`/queue` to see or clear)
+- `/tell <note>`: add something to the task that's running now
+- `/stop` or Ctrl+C: stop the current task (the session stays open)
+- `/usage`, `/memory`, `/scratch` and the other read-only commands
+
+When a change needs your approval, the diff prints above and the prompt
+itself asks: (y)es / (n)o / (a)lways. The answer is printed, formatted, when
+the task is done. (A one-off `localforge run "..."` still streams in the
+foreground.)
 
 **Files:** in a trusted folder it can read, create, change, move and delete
 files and run commands. Every change asks first: (y)es / (n)o / (a)lways this

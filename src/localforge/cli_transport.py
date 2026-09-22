@@ -355,6 +355,9 @@ def _run_streaming(cmd: list[str], stdin_text: str, cwd: str, timeout: float, on
                 result_event = event
         stderr = proc.stderr.read()
         proc.wait()
+    except BaseException:
+        proc.kill()  # e.g. /stop mid-answer: don't leave `claude` running
+        raise
     finally:
         timer.cancel()
     if timed_out.is_set():

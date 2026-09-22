@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import shlex
+from contextlib import nullcontext
 import sys
 import time
 from collections.abc import Callable
@@ -18,6 +19,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory, InMemoryHistory
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.markup import escape
 
@@ -31,6 +33,10 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
   /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
+  /summary          what's happening now: which model is doing what, the plan, the queue
+  /queue            tasks waiting behind the current one (/queue clear to drop them)
+  /stop             stop the running task
+  /tell <note>      add a note to the running task
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
   /wizard           setup as a terminal UI
@@ -82,8 +88,9 @@ class LineReader:
     escape codes like ^[[D -- so it's only the fallback for pipes and tests.
     """
 
-    def __init__(self, console: Console, history_file: Path | None = None):
+    def __init__(self, console: Console, history_file: Path | None = None, runner=None):
         self.console = console
+        self.runner = runner
         self.session = None
         if sys.stdin.isatty() and sys.stdout.isatty():
             history = None
@@ -94,17 +101,39 @@ class LineReader:
                     history = FileHistory(str(history_file))
                 except OSError:
                     history = None
+            extra = {}
+            if runner is not None:
+                # the live status line, redrawn while a task runs in the background
+                extra = {"bottom_toolbar": runner.toolbar, "refresh_interval": 0.25}
             self.session = PromptSession(
                 history=history or InMemoryHistory(),
                 completer=SlashCompleter(),
                 complete_while_typing=True,
                 reserve_space_for_menu=8,
+                **extra,
             )
 
     def read(self) -> str:
         if self.session is None:
             return self.console.input("[bold accent]localforge>[/bold accent] ")
-        return self.session.prompt(HTML("<b><ansigreen>localforge&gt;</ansigreen></b> "))
+        return self.session.prompt(self._message)
+
+    def _message(self):
+        """The prompt text; while the task waits for a permission answer it
+        becomes that question (re-evaluated on every redraw)."""
+        approval = self.runner.approval if self.runner is not None else None
+        if approval is not None:
+            return HTML(f"<b><ansiyellow>Allow {_html(approval.title)}? (y)es / (n)o / (a)lways &gt;</ansiyellow></b> ")
+        return HTML("<b><ansigreen>localforge&gt;</ansigreen></b> ")
+
+
+def _html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# Commands that change the conversation, the settings or the models a running
+# task is using -- refused while one runs rather than risking a corrupted turn.
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "wizard", "uninstall", "delete", "run"}
 HELP_COMMANDS = {"/help", "/?"}
 
 
@@ -131,12 +160,13 @@ def run_repl(
     on_start: Callable[[], bool] | None = None,
     on_exit: Callable[[], None] | None = None,
     history_file: Path | None = None,
+    runner=None,
 ) -> None:
     """`on_start` runs after the banner (cli.py uses it to ask which
     orchestrator to use); returning False ends the session. `on_exit` runs
     when the session ends (cli.py saves session memory there)."""
     try:
-        _loop(app, console, on_start, history_file)
+        _loop(app, console, on_start, history_file, runner)
     finally:
         if on_exit is not None:
             try:
@@ -145,7 +175,9 @@ def run_repl(
                 console.print(f"[error]Couldn't save session memory: {exc}[/error]")
 
 
-def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | None, history_file: Path | None = None) -> None:
+def _loop(
+    app: typer.Typer, console: Console, on_start: Callable[[], bool] | None, history_file: Path | None = None, runner=None
+) -> None:
     banner.render(console)
     console.print(
         f"\n[dim]Project folder: {escape(str(Path.cwd()))}[/dim]\n"
@@ -162,7 +194,14 @@ def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | Non
             highlight=False,
         )
 
-    reader = LineReader(console, history_file)
+    reader = LineReader(console, history_file, runner)
+    if reader.session is None:
+        runner = None  # no real terminal: run tasks in the foreground, as before
+    with patch_stdout(raw=True) if runner is not None else nullcontext():
+        _read_eval(app, console, reader, runner)
+
+
+def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -> None:
     last_interrupt = 0.0
     while True:
         try:
@@ -171,6 +210,10 @@ def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | Non
             console.print()
             break
         except KeyboardInterrupt:
+            if runner is not None and runner.busy:
+                runner.cancel()  # Ctrl+C with a task running stops the task, not the session
+                console.print("[warning]Stopping the task…[/warning]")
+                continue
             # Like Claude Code: Ctrl+C clears the line; twice in a row leaves.
             now = time.monotonic()
             if now - last_interrupt < 2.0:
@@ -182,9 +225,17 @@ def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | Non
         last_interrupt = 0.0  # only two presses in a row exit
 
         line = line.strip()
+        if runner is not None and runner.approval is not None:
+            answer = line.lower()
+            if answer in ("y", "yes", "n", "no", "a", "always"):
+                runner.answer(answer in ("y", "yes", "a", "always"), always=answer in ("a", "always"))
+                continue
         if not line:
             continue
         if line in EXIT_COMMANDS:
+            if runner is not None and runner.busy:
+                runner.shutdown()
+                console.print("[warning]Stopped the running task.[/warning]")
             break
         if line in HELP_COMMANDS:
             # highlight=False: Rich's automatic highlighter styles "/word"
@@ -200,6 +251,15 @@ def _loop(app: typer.Typer, console: Console, on_start: Callable[[], bool] | Non
         if cmd == "run" and not remainder:
             console.print("[warning]Usage: /run <task>, or just type your task directly.[/warning]")
             continue
+        if runner is not None:
+            if cmd == "run":
+                position = runner.submit(remainder)
+                if position:
+                    console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
+                continue
+            if runner.busy and cmd in BUSY_BLOCKED:
+                console.print(f"[warning]/{cmd} has to wait until the current task is done[/warning] (/summary to check on it, /stop to end it).")
+                continue
 
         argv = _to_argv(cmd, remainder)
         try:

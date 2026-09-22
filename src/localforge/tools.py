@@ -50,6 +50,8 @@ class ActivityHooks:
     on_todos: Callable[[list[dict]], None] | None = None
     # each piece of the orchestrator's own answer text, as it's written
     on_answer_text: Callable[[str], None] | None = None
+    # notes the user added while the task runs (/tell), fetched each step
+    poll_notes: Callable[[], list[str]] | None = None
 
 
 # Modality -> tool name + description. Each delegate tool takes

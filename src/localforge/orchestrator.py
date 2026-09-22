@@ -348,6 +348,8 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
             hooks.on_frontier(round_number)
+        for note in hooks.poll_notes() if hooks.poll_notes is not None else []:
+            messages.append({"role": "user", "content": f"[Note from the user, added while you were working]: {note}"})
         response = _call_frontier(frontier_model, cli_provider, hooks, messages, tools)
         _record_frontier_usage(response, stats)
         message = response.choices[0].message
