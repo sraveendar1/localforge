@@ -5,6 +5,7 @@ import pytest
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_local_menu: use the real local-orchestrator menu builder")
+    config.addinivalue_line("markers", "untrusted: start the test with no trusted folders")
 
 
 @pytest.fixture(autouse=True)
@@ -55,5 +56,32 @@ def _fresh_session(monkeypatch):
     every test a fresh one so nothing carries over."""
     import localforge.cli as cli_module
 
-    monkeypatch.setattr(cli_module, "_session", cli_module._SessionState())
+    session = cli_module._SessionState()
+    monkeypatch.setattr(cli_module, "_session", session)
     monkeypatch.setattr(cli_module, "_session_usage", [])
+    yield
+    session.drop_scratchpad()  # never leave scratch folders in the real temp dir
+
+
+@pytest.fixture(autouse=True)
+def _trusted_cwd(request, _isolated_config_dir):
+    """Most tests call `run` and aren't about folder trust, so trust the
+    current folder in this test's own (throwaway) config. Tests marked
+    `untrusted` start with nothing trusted."""
+    if request.node.get_closest_marker("untrusted"):
+        return
+    from pathlib import Path
+
+    from localforge import trust
+
+    trust.trust(Path.cwd())
+
+
+@pytest.fixture(autouse=True)
+def _scratch_in_tmp(monkeypatch, tmp_path_factory):
+    """Scratchpads made during tests live under pytest's temp dir, not the
+    real system temp folder."""
+    from localforge import scratchpad
+
+    base = tmp_path_factory.mktemp("scratch-base")
+    monkeypatch.setattr(scratchpad, "base_dir", lambda: base)

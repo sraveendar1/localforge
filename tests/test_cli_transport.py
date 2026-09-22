@@ -292,3 +292,34 @@ def test_run_explains_how_to_fix_an_expired_cli_session():
     assert "claude login" in normalized
     assert "localforge setup" in normalized  # offers the API-key escape hatch
     assert "/model" in normalized  # and switching the orchestrator
+
+
+def test_the_chosen_claude_model_is_passed_to_the_cli():
+    """Reported as a question ("when I choose claude it should take claude?"):
+    it did use Claude, but `claude -p` was never told WHICH model, so the
+    Opus/Sonnet/Haiku choice from setup was silently ignored."""
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport.subprocess, "run", return_value=_proc('{"result": "{\\"final_answer\\": \\"ok\\"}"}')
+    ) as run:
+        cli_transport.complete("anthropic", [{"role": "user", "content": "x"}], [], model="claude-haiku-4-5-20251001")
+    cmd = run.call_args.args[0]
+    assert cmd[cmd.index("--model") + 1] == "claude-haiku-4-5-20251001"
+
+
+def test_no_model_flag_when_no_model_is_given():
+    with patch.object(cli_transport, "available", return_value=True), patch.object(
+        cli_transport.subprocess, "run", return_value=_proc('{"result": "{\\"final_answer\\": \\"ok\\"}"}')
+    ) as run:
+        cli_transport.complete("anthropic", [{"role": "user", "content": "x"}], [])
+    assert "--model" not in run.call_args.args[0]
+
+
+def test_orchestrator_runs_claude_on_the_saved_model():
+    import localforge.orchestrator as orch
+    from localforge.hardware import HardwareProfile
+
+    hw = HardwareProfile(os="Linux", arch="x86_64", cpu_cores=8, ram_gb=32, free_disk_gb=100, gpus=[])
+    final = cli_transport.CLIResponse(choices=[cli_transport._Choice(message=cli_transport.message_from_reply('{"final_answer": "hi"}'))])
+    with patch.object(orch.cli_transport, "complete", return_value=final) as complete, patch.object(orch, "_installed_models", return_value=None):
+        orch.run("hi", "claude-sonnet-5", hardware=hw, cli_provider="anthropic")
+    assert complete.call_args.kwargs["model"] == "claude-sonnet-5"

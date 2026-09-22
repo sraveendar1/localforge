@@ -42,6 +42,35 @@ local model condenses the older turns into a session-memory note, which is
 also saved so your next session in the same folder picks up where you left
 off (`/compact` to do it now, `/clear` to start fresh).
 
+**Starting a session:** the first time in a folder, localforge asks whether
+you trust it (like Claude Code). Then it asks which model should orchestrate
+this session: any model in Ollama, or Claude/GPT/Gemini if you've set one up.
+There's no default, so you always choose. Type `/` to see every command with
+a description, and press Tab to complete. Arrow keys, mid-line editing and
+Up for history all work.
+
+**Watching it work:** local models' output streams as they write, and so does
+the orchestrator's answer, rendered as formatted text while it's written.
+In between you see each action: files read, commands run, the plan checklist,
+and diffs waiting for your approval.
+
+**Files:** in a trusted folder it can read, create, change, move and delete
+files and run commands. Every change asks first: (y)es / (n)o / (a)lways this
+session. Deletions always ask separately, and `/auto` turns prompts off.
+
+**Scratchpad:** each session gets a private scratch folder outside your
+project (so it never shows up in git), where local models draft pseudo-code
+and code before anything touches a real file. Moving a draft into the project
+shows you the diff first. It's deleted when the session ends (`/scratch` shows
+what's in it).
+
+**Memory:** like Claude Code, localforge keeps memory per project, outside
+the project: remembered facts (your preferences, decisions, pointers) and a
+summary of where the last session left off. Tell it "remember that…" and it
+saves a fact. At `/exit`, a local model saves what's worth keeping, so the
+next session in that folder picks up from there. `/memory` shows it, and
+`/memory forget <name>` or `/memory clear` remove it.
+
 **Fully local, no account:** pick "local" in `localforge setup`, or type
 `/model` in a session and choose a model you already have in Ollama (e.g.
 `/model ollama/qwen2.5:7b`). The orchestrator then runs on your machine too,

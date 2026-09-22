@@ -44,7 +44,9 @@ def stale_claude_login(monkeypatch):
 def test_a_local_model_never_routes_through_a_provider_cli(stale_claude_login):
     assert cli_module._cli_provider_for("ollama/gemma3:4b", explicit=False) is None
     assert cli_module._cli_provider_for("claude-opus-5", explicit=False) == "anthropic"
-    assert cli_module._cli_provider_for("claude-opus-5", explicit=True) is None  # --model means the API path
+    # --model with the same provider keeps the login; another provider means its API path
+    assert cli_module._cli_provider_for("claude-sonnet-5", explicit=True) == "anthropic"
+    assert cli_module._cli_provider_for("gpt-5", explicit=True) is None
 
 
 def test_run_with_a_saved_local_model_skips_claude_entirely(stale_claude_login, monkeypatch):
@@ -64,7 +66,7 @@ def test_run_with_a_saved_local_model_skips_claude_entirely(stale_claude_login, 
 def test_orchestrator_sends_local_models_to_ollama_even_if_a_cli_is_passed():
     sent = {}
 
-    def fake_local(model, messages, tools):
+    def fake_local(model, messages, tools, on_text=None):
         sent["model"] = model
         return local_transport.cli_transport.CLIResponse(
             choices=[local_transport.cli_transport._Choice(message=local_transport.cli_transport.message_from_reply('{"final_answer": "done"}'))],

@@ -11,13 +11,14 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, local_transport, memory, repl, theme
+from localforge import cli_transport, config, local_transport, memory, repl, theme, trust
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -26,6 +27,7 @@ from localforge.hardware import detect_hardware
 from localforge.orchestrator import Conversation, OrchestrationError, RunStats
 from localforge.orchestrator import run as run_orchestrator
 from localforge.tools import ActivityHooks, Dispatcher
+from localforge.scratchpad import Scratchpad
 from localforge.workspace import Workspace
 
 app = typer.Typer(
@@ -46,7 +48,9 @@ def _main(ctx: typer.Context) -> None:
         # print-and-exit behavior so nothing that scripts against a bare
         # `localforge` call starts waiting on stdin forever.
         if sys.stdin.isatty() and sys.stdout.isatty():
-            repl.run_repl(app, console)
+            repl.run_repl(
+                app, console, on_start=_start_session, on_exit=_save_memory_at_exit, history_file=config.CONFIG_DIR / "history"
+            )
         else:
             _print_getting_started()
         raise typer.Exit()
@@ -768,16 +772,20 @@ def _is_local_model(model: str) -> bool:
 
 
 def _cli_provider_for(frontier_model: str, explicit: bool) -> str | None:
-    """Which provider CLI to orchestrate through, if any. Only a saved
-    CLI-login choice, only for the saved model, and never for an
-    open-weight model: a stale `cli_login` left over from an earlier setup
-    once made a local orchestrator call `claude` anyway.
+    """Which provider CLI to orchestrate through, if any: only with a saved
+    CLI-login choice, only for a model from that same provider, and never
+    for an open-weight model (a stale `cli_login` once made a local
+    orchestrator call `claude` anyway). An explicit `--model claude-sonnet-5`
+    with a saved Claude login still uses the login; `--model gpt-5` doesn't.
     """
-    if explicit or _is_local_model(frontier_model):
+    if _is_local_model(frontier_model):
         return None
     if os.environ.get(config.AUTH_METHOD_ENV_VAR) != config.AUTH_CLI_LOGIN:
         return None
-    return os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR) or None
+    saved = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR) or None
+    if explicit and _cloud_provider(frontier_model) != saved:
+        return None
+    return saved
 
 
 def _orchestrator_label(frontier_model: str, cli_provider: str | None) -> str:
@@ -851,8 +859,21 @@ def run(
 
     if yes:
         _session.auto_approve = True
+    folder = Path.cwd().resolve()
+    if not trust.is_trusted(folder):
+        if sys.stdin.isatty():
+            if not _ask_trust(folder):
+                console.print("Not trusted — nothing was run.")
+                raise typer.Exit(code=1)
+        elif not yes:
+            console.print(
+                f"[error]{escape(str(folder))} isn't a trusted folder.[/error] Run `localforge` here once "
+                "interactively to trust it, or pass --yes to allow this run."
+            )
+            raise typer.Exit(code=1)
     activity = _LiveActivity(frontier_model)
-    workspace = Workspace(Path.cwd(), approver=activity.approve)
+    scratch = _session.scratchpad_for(folder)
+    workspace = Workspace(folder, approver=activity.approve, scratch=scratch.root)
     conversation = _session.conversation_for(workspace.root)
     try:
         try:
@@ -866,6 +887,8 @@ def run(
             )
         finally:
             activity.close()
+            if not _session.interactive:
+                _session.drop_scratchpad()  # a one-off run's scratch work ends with it
     except cli_transport.CLINotAvailableError as exc:
         # The provider CLI failed mid-run. Say why in plain terms and what to
         # do -- a usage limit is not an expired login, and advising
@@ -889,8 +912,11 @@ def run(
         console.print(f"[bold error]Error:[/bold error] {exc}")
         raise typer.Exit(code=1) from None
 
-    console.print()
-    console.print(Markdown(result.answer or "(no answer)"))
+    if not activity.reply_streamed:
+        # Not streamed (a CLI without streaming, or an unparseable reply that
+        # became the answer as-is): show it now.
+        console.print()
+        console.print(Markdown(result.answer or "(no answer)"))
     _session_usage.append((frontier_model, result.stats))
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
@@ -910,6 +936,11 @@ class _LiveActivity:
         self._pull_shown: dict[str, int] = {}
         self._at_line_start = True
         self._first_token_at: float | None = None
+        self._live: Live | None = None
+        self._answer = ""
+        # True once the current reply's answer has been streamed to screen,
+        # so run() doesn't print it a second time.
+        self.reply_streamed = False
 
     def hooks(self) -> ActivityHooks:
         return ActivityHooks(
@@ -921,15 +952,36 @@ class _LiveActivity:
             on_tool=self._on_tool,
             on_tool_result=self._on_tool_result,
             on_todos=self._on_todos,
+            on_answer_text=self._on_answer_text,
         )
 
     def _stop_spinner(self) -> None:
+        """Clear whatever is live on screen -- the spinner, or an answer being
+        streamed -- before anything else prints. Every hook calls this first."""
         if self._status is not None:
             self._status.stop()
             self._status = None
+        if self._live is not None:
+            self._live.update(Markdown(self._answer), refresh=True)
+            self._live.stop()
+            self._live = None
+
+    def _on_answer_text(self, text: str) -> None:
+        """The orchestrator's answer, rendered as markdown while it's written
+        (like Claude Code), instead of appearing all at once at the end."""
+        if self._live is None:
+            self._stop_spinner()
+            console.print()
+            self._answer = ""
+            self._live = Live(Markdown(""), console=console, refresh_per_second=12, vertical_overflow="visible")
+            self._live.start()
+            self.reply_streamed = True
+        self._answer += text
+        self._live.update(Markdown(self._answer))
 
     def _on_frontier(self, round_number: int) -> None:
         self._stop_spinner()
+        self.reply_streamed = False  # a new reply starts
         doing = "planning" if round_number == 1 else "reviewing results"
         self._status = console.status(f"[bold success]{self.frontier_model} is {doing}...")
         self._status.start()
@@ -975,9 +1027,14 @@ class _LiveActivity:
         "search": "Search",
         "edit_file": "Edit",
         "run_command": "Bash",
+        "make_dir": "Mkdir",
+        "move_path": "Move",
+        "delete_path": "Delete",
         "web_search": "Web search",
         "fetch_url": "Fetch",
         "compact": "Memory",
+        "remember": "Remember",
+        "forget": "Forget",
     }
 
     def _on_tool(self, tool_name: str, summary: str) -> None:
@@ -1029,7 +1086,7 @@ class _LiveActivity:
             console.print("[warning]  No terminal to ask on — declined. Use --yes to approve changes non-interactively.[/warning]")
             return False
         _drain_buffered_input()
-        what = {"write": "file changes", "command": "commands", "download": "model downloads"}.get(kind, kind)
+        what = {"write": "file changes", "delete": "deletions", "command": "commands", "download": "model downloads"}.get(kind, kind)
         while True:
             # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
             answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
@@ -1046,6 +1103,8 @@ class _LiveActivity:
             body = f"[bold]$ {escape(detail)}[/bold]"
         elif kind == "download":
             body = f"[warning]↓[/warning] {escape(detail)}"
+        elif kind == "delete":
+            body = f"[error]{escape(detail)}[/error]"
         else:
             styled = []
             for line in detail.splitlines():
@@ -1085,17 +1144,35 @@ class _SessionState:
     def __init__(self) -> None:
         self.conversation: Conversation | None = None
         self.root: Path | None = None
+        self.scratch: Scratchpad | None = None
         self.auto_approve = False
         self.always_allow: set[str] = set()
         self.announced = False
+        self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
 
     def conversation_for(self, root: Path) -> Conversation:
         if self.conversation is None or self.root != root:
             self.root = root
-            self.conversation = Conversation(memory=memory.load(root))
+            self.conversation = Conversation(memory=memory.load(root), facts=memory.facts_for_prompt(root))
+            notes = []
             if self.conversation.memory:
-                console.print("[dim]Resuming with this folder's session memory (/clear to start fresh).[/dim]")
+                notes.append(f"the last session's summary ({len(self.conversation.memory.split())} words)")
+            if facts := memory.list_facts(root):
+                notes.append(f"{len(facts)} remembered fact{'s' if len(facts) != 1 else ''}")
+            if notes:
+                console.print(f"[dim]Resuming with {' and '.join(notes)} — /memory to see, /clear to start fresh.[/dim]")
         return self.conversation
+
+    def scratchpad_for(self, root: Path) -> Scratchpad:
+        if self.scratch is None:
+            self.scratch = Scratchpad(root)
+            self.scratch.ensure()
+        return self.scratch
+
+    def drop_scratchpad(self) -> None:
+        if self.scratch is not None:
+            self.scratch.remove()
+            self.scratch = None
 
 
 _session = _SessionState()
@@ -1179,6 +1256,87 @@ def _set_orchestrator(model: str, auth: dict) -> None:
     console.print(f"[success]✓[/success] Orchestrator is now {escape(_orchestrator_label(model, _cli_provider_for(model, explicit=False)))}")
 
 
+def _ask_trust(folder: Path) -> bool:
+    """Claude-Code-style trust prompt for a folder not trusted before.
+    Numbered, no default. Returns whether the folder is (now) trusted."""
+    if trust.is_trusted(folder):
+        return True
+    home_note = (
+        "\n[warning]This is your home folder, so everything in it would be in reach. "
+        "Usually you want a project folder instead.[/warning]"
+        if folder in (Path.home().resolve(), Path(folder.anchor))
+        else ""
+    )
+    console.print(
+        Panel(
+            f"[bold]Do you trust the files in this folder?[/bold]\n\n  {escape(str(folder))}\n\n"
+            "localforge will be able to read, create, change, move and delete files here and run commands in it. "
+            "Each change and command still asks you first (unless you turn on /auto)."
+            f"{home_note}",
+            title="Folder trust",
+            border_style="panel.border",
+        )
+    )
+    console.print("  1) Yes, trust this folder\n  2) No, exit")
+    _drain_buffered_input()
+    while True:
+        try:
+            answer = console.input("Choose 1-2: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return False
+        if answer == "1":
+            trust.trust(folder)
+            console.print(f"[success]✓[/success] Trusted {escape(str(folder))}\n")
+            return True
+        if answer == "2":
+            return False
+        console.print("[warning]Type 1 or 2.[/warning]")
+
+
+def _start_session() -> bool:
+    """Before the first prompt: folder trust, then the orchestrator choice."""
+    _session.interactive = True
+    if not _ask_trust(Path.cwd().resolve()):
+        console.print("Not trusted — exiting. cd into a folder you trust and run localforge there.")
+        return False
+    return _choose_orchestrator_at_start()
+
+
+def _choose_orchestrator_at_start() -> bool:
+    """Every new session asks which orchestrator to use (the user's choice:
+    a new window shouldn't silently reuse yesterday's). A number is
+    required -- no default, matching setup's menus. Returns False if the
+    user backs out (Ctrl+C / Ctrl+D), which ends the session.
+    """
+    current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or ""
+    choices = _model_choices()
+    if not choices:
+        console.print(
+            "[warning]No orchestrator is available yet: no models in Ollama and no cloud key or login.[/warning] "
+            "Run /setup, or `ollama pull qwen2.5:7b` and then /model.\n"
+        )
+        return True
+    console.print("[bold]Which model should orchestrate this session?[/bold]")
+    for i, (model_id, label, _) in enumerate(choices, 1):
+        last = "  [dim](last used)[/dim]" if model_id == current else ""
+        console.print(f"  {i}) {escape(label)}{last}", highlight=False)
+    _drain_buffered_input()
+    while True:
+        try:
+            answer = console.input(f"Choose 1-{len(choices)}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return False
+        if answer.isdigit() and 1 <= int(answer) <= len(choices):
+            model_id, _, auth = choices[int(answer) - 1]
+            _set_orchestrator(model_id, auth)
+            _session.conversation_for(Path.cwd().resolve())
+            console.print()
+            return True
+        console.print(f"[warning]Type a number from 1 to {len(choices)}.[/warning]")
+
+
 @app.command(name="model")
 def model_command(
     model: str = typer.Argument(None, help="Model id, e.g. ollama/qwen2.5:7b or claude-opus-5. Omit to pick from a list."),
@@ -1225,6 +1383,99 @@ def model_command(
         _set_orchestrator(model_id, auth)
     else:
         console.print("[warning]Not a number from the list — nothing changed.[/warning]")
+
+
+def _memory_dispatcher(hooks=None) -> Dispatcher:
+    return Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()), hooks=hooks)
+
+
+def _save_memory_at_exit() -> None:
+    """At the end of a session: the local memory keeper saves what's worth
+    remembering and a summary of where things stand (so the next session
+    here picks up from it), and this session's scratchpad is deleted."""
+    try:
+        conversation = _session.conversation
+        if conversation is None or not any(m.get("role") == "user" for m in conversation.messages[1:]):
+            return
+        root = _session.root or Path.cwd()
+        activity = _LiveActivity("local model")
+        dispatcher = _memory_dispatcher(activity.hooks())
+        if memory.keeper(dispatcher) is None:
+            console.print("[dim]No local model to keep memory, so this session wasn't saved to memory.[/dim]")
+            return
+        try:
+            memory.extract_facts(conversation, dispatcher, root, activity.hooks())  # before compact trims the turns
+            memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=root)
+        finally:
+            activity.close()
+    finally:
+        _session.drop_scratchpad()
+
+
+@app.command(name="memory")
+def memory_command(
+    action: str = typer.Argument(None, help="Omit to show this folder's memory; `clear` deletes all of it; `forget` one."),
+    name: str = typer.Argument(None, help="With `forget`: the memory's name."),
+) -> None:
+    """Show this folder's memory (remembered facts + last session summary), or clear it."""
+    root = Path.cwd()
+    if action == "clear":
+        memory.forget(root)
+        if _session.conversation is not None:
+            _session.conversation.memory = _session.conversation.facts = ""
+        console.print("[success]✓[/success] Everything remembered for this folder is deleted.")
+        return
+    if action == "forget":
+        if not name:
+            console.print("[error]Which one?[/error] /memory forget <name> (names are listed by /memory).")
+            raise typer.Exit(code=1)
+        if memory.forget_fact(root, name):
+            console.print(f"[success]✓[/success] Forgot {escape(name)}.")
+        else:
+            console.print(f"[warning]No memory named {escape(name)!r}.[/warning]")
+        return
+    if action:
+        console.print(f"[error]Unknown action {escape(action)!r}.[/error] Use /memory, /memory forget <name>, or /memory clear.")
+        raise typer.Exit(code=1)
+
+    keeper = memory.keeper(_memory_dispatcher())
+    who = f"kept by {keeper.name} (local)" if keeper else "no local model available to keep it"
+    facts, summary = memory.list_facts(root), memory.load(root)
+    if not facts and not summary:
+        console.print(f"Nothing remembered for this folder yet ({who}). Memory is saved when you /exit.")
+        return
+    if facts:
+        table = Table(title=f"Remembered for {escape(root.name)}", title_justify="left")
+        table.add_column("Name")
+        table.add_column("Type")
+        table.add_column("Memory")
+        for f in facts:
+            table.add_row(escape(f["name"]), escape(f.get("type", "")), escape(f.get("description", "")))
+        console.print(table)
+    if summary:
+        console.print(Panel(Markdown(summary), title="Last session", border_style="panel.border"))
+    console.print(f"[dim]{escape(who)} · stored in {escape(str(memory.project_dir(root)))}[/dim]")
+
+
+@app.command()
+def scratch(
+    action: str = typer.Argument(None, help="Omit to list the scratchpad; `clear` to empty it."),
+) -> None:
+    """Show this session's scratchpad (temporary drafts, deleted when the session ends)."""
+    pad = _session.scratchpad_for(Path.cwd().resolve())
+    if action == "clear":
+        pad.clear()
+        console.print("[success]✓[/success] Scratchpad emptied.")
+        return
+    if action:
+        console.print(f"[error]Unknown action {escape(action)!r}.[/error] Use /scratch or /scratch clear.")
+        raise typer.Exit(code=1)
+    files = pad.files()
+    console.print(f"[dim]{escape(str(pad.root))} — private to this session, deleted when it ends[/dim]")
+    if not files:
+        console.print("The scratchpad is empty.")
+    for f in files:
+        console.print(f"  scratchpad/{escape(str(f.relative_to(pad.root)))}  [dim]({f.stat().st_size:,} bytes)[/dim]", highlight=False)
 
 
 @app.command()

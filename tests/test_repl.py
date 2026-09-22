@@ -204,3 +204,59 @@ def test_help_output_has_no_path_style_highlighting_split():
     plain_codes = cap.get().count("\x1b[")
 
     assert plain_codes < highlighted_codes
+
+
+# --- line editing and the slash menu (reported: no menu on "/", no Tab,
+# --- and arrow keys printed ^[[D instead of moving the cursor) ------------------
+
+
+def test_every_help_line_becomes_a_menu_entry():
+    from localforge.repl import SLASH_HELP, slash_commands
+
+    names = [name for name, _ in slash_commands()]
+    documented = [line.split()[0].rstrip(",") for line in SLASH_HELP.splitlines()[1:]]
+    assert set(documented) <= set(names)
+    assert {"/exit", "/quit", "/q", "/memory", "/scratch", "/model", "/usage"} <= set(names)
+    assert all(description for _, description in slash_commands())
+
+
+def test_slash_menu_narrows_as_you_type_and_shows_descriptions():
+    from prompt_toolkit.document import Document
+
+    from localforge.repl import SlashCompleter
+
+    def complete(text):
+        return [(c.text, c.display_meta_text) for c in SlashCompleter().get_completions(Document(text), None)]
+
+    everything = complete("/")
+    assert len(everything) >= 20
+    assert [name for name, _ in complete("/memo")] == ["/memory"]
+    assert complete("/memo")[0][1].startswith("show this folder's memory")
+    assert {name for name, _ in complete("/mo")} == {"/model", "/models"}
+    assert complete("build me an app") == []  # only for commands
+    assert complete("/memory ") == []  # not once arguments start
+
+
+def test_without_a_terminal_input_falls_back_to_plain_reads():
+    from unittest.mock import MagicMock
+
+    from localforge.repl import LineReader
+
+    console = MagicMock()
+    console.input.return_value = "hello"
+    reader = LineReader(console)  # pytest's stdin isn't a tty
+    assert reader.session is None and reader.read() == "hello"
+
+
+def test_ctrl_c_once_clears_twice_exits(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from localforge import repl
+
+    console = MagicMock()
+    console.input.side_effect = [KeyboardInterrupt, "/help", KeyboardInterrupt, KeyboardInterrupt]
+    monkeypatch.setattr(repl.banner, "render", lambda c: None)
+    repl.run_repl(MagicMock(), console)
+    printed = " ".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+    assert "press Ctrl+C again to exit" in printed
+    assert console.input.call_count == 4  # kept going after the first, left after the double

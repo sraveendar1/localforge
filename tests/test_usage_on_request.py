@@ -14,8 +14,6 @@ from localforge.orchestrator import OrchestrationError, RunResult, RunStats
 @pytest.fixture(autouse=True)
 def _fresh(monkeypatch, tmp_path):
     monkeypatch.setattr(cli_module, "_session_usage", [])
-    monkeypatch.setattr(cli_module.config, "CONFIG_DIR", tmp_path)
-    monkeypatch.setattr(cli_module.config, "CONFIG_FILE", tmp_path / "config.env")
     monkeypatch.delenv("LOCALFORGE_AUTH_METHOD", raising=False)
 
 

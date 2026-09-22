@@ -28,7 +28,7 @@ def _best_choice(entries: list[ModelEntry], installed: set[str] | None) -> Model
     return max(entries, key=lambda e: e.quality_tier)
 
 
-def _ask_via_cli(cli_provider: str, prompt: str, choosable: dict[str, list[ModelEntry]]) -> dict:
+def _ask_via_cli(cli_provider: str, prompt: str, choosable: dict[str, list[ModelEntry]], model: str | None = None) -> dict:
     """Same question, asked through a logged-in CLI instead of an API key.
 
     The CLI has no native tool-calling/enum constraint, so we ask for plain
@@ -49,7 +49,7 @@ def _ask_via_cli(cli_provider: str, prompt: str, choosable: dict[str, list[Model
             ),
         }
     ]
-    response = cli_transport.complete(cli_provider, messages, tools=[])
+    response = cli_transport.complete(cli_provider, messages, tools=[], model=model)
     content = response.choices[0].message.content or ""
     return cli_transport._extract_json(content) or {}
 
@@ -124,7 +124,7 @@ def recommend_models(
 
     try:
         if cli_provider:
-            args = _ask_via_cli(cli_provider, prompt, choosable)
+            args = _ask_via_cli(cli_provider, prompt, choosable, model=frontier_model)
         else:
             response = completion(
                 model=frontier_model,

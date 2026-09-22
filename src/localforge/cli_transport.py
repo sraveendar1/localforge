@@ -19,9 +19,12 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 from localforge import config
+from localforge.answer_stream import AnswerStreamer
 
 
 class CLINotAvailableError(RuntimeError):
@@ -310,14 +313,77 @@ def _failure_detail(proc) -> str:
     return (proc.stderr or proc.stdout or "no output").strip()[:500]
 
 
-def complete(provider: str, messages: list[dict], tools: list[dict], timeout: float = 600.0) -> CLIResponse:
-    """Run one orchestration turn through the provider's logged-in CLI."""
+def _run_streaming(cmd: list[str], stdin_text: str, cwd: str, timeout: float, on_text) -> SimpleNamespace:
+    """Run a CLI that emits stream-json events (one JSON object per line),
+    passing each text delta to an AnswerStreamer as it arrives. Returns a
+    proc-like object whose stdout is the final `result` event, so the normal
+    envelope parsing applies unchanged.
+    """
+    streamer = AnswerStreamer(on_text)
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd, bufsize=1
+    )
+    timed_out = threading.Event()
+
+    def _watchdog() -> None:
+        timed_out.set()
+        proc.kill()
+
+    timer = threading.Timer(timeout, _watchdog)
+    timer.start()
+    # Write the prompt from a thread: a large prompt could fill the pipe
+    # while the CLI is already writing events back.
+    writer = threading.Thread(target=lambda: (proc.stdin.write(stdin_text), proc.stdin.close()), daemon=True)
+    writer.start()
+    result_event: dict | None = None
+    lines = []
+    try:
+        for line in proc.stdout:
+            lines.append(line)
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "stream_event":
+                delta = (event.get("event") or {}).get("delta") or {}
+                if delta.get("type") == "text_delta":
+                    streamer.feed(delta.get("text") or "")
+            elif event.get("type") == "result":
+                result_event = event
+        stderr = proc.stderr.read()
+        proc.wait()
+    finally:
+        timer.cancel()
+    if timed_out.is_set():
+        raise subprocess.TimeoutExpired(cmd, timeout)
+    stdout = json.dumps(result_event) if result_event is not None else "".join(lines)
+    return SimpleNamespace(returncode=proc.returncode, stdout=stdout, stderr=stderr)
+
+
+def complete(
+    provider: str,
+    messages: list[dict],
+    tools: list[dict],
+    timeout: float = 600.0,
+    model: str | None = None,
+    on_text=None,
+) -> CLIResponse:
+    """Run one orchestration turn through the provider's logged-in CLI, on
+    `model` if given (otherwise the CLI's own default model). With `on_text`
+    and a CLI that can stream, the final answer's text is passed on as it's
+    written."""
     spec = _spec(provider)
     if not available(provider):
         raise CLINotAvailableError(requirements_message(provider))
 
     prompt = _render_prompt(messages, tools)
-    cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *spec.get("json_args", [])]
+    streaming = on_text is not None and bool(spec.get("stream_args"))
+    output_args = spec["stream_args"] if streaming else spec.get("json_args", [])
+    cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *output_args]
+    if model and spec.get("model_flag"):
+        cmd += [spec["model_flag"], model]
     if spec.get("prompt_via_stdin"):
         # A session's prompt grows every turn; stdin carries any size (a
         # 340k-char prompt verified live), where one argv element is fragile.
@@ -331,9 +397,12 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
         # An empty scratch cwd: even a CLI whose tools can't be switched off
         # sees nothing of the folder localforge was started from.
         with tempfile.TemporaryDirectory(prefix="localforge-orchestrator-") as scratch:
-            proc = subprocess.run(
-                cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, check=False, cwd=scratch
-            )
+            if streaming:
+                proc = _run_streaming(cmd, stdin_text, scratch, timeout, on_text)
+            else:
+                proc = subprocess.run(
+                    cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, check=False, cwd=scratch
+                )
     except subprocess.TimeoutExpired as exc:
         raise CLINotAvailableError(f"{spec['command']} timed out after {timeout}s") from exc
     except OSError as exc:

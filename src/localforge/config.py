@@ -71,6 +71,7 @@ AUTH_LOCAL = "local"  # an open-weight orchestrator: no key, no login
 #                   "jsonl" -> stdout is newline-delimited JSON events
 #   result_key    : (json) key holding the reply text
 #   usage_key     : (json) key holding token counts
+#   model_flag    : flag that selects the model for the run
 #   isolation_args: args that switch off the CLI's own agent tools (shell,
 #                   file edits, web, MCP connectors). The CLI is the
 #                   *orchestrator* here: it plans and delegates through
@@ -93,7 +94,15 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # by another option, never directly by the prompt.
         "isolation_args": ["--tools", "", "--strict-mcp-config"],
         "prompt_via_stdin": True,
+        # Which Claude model to run. Without it `claude -p` uses Claude Code's
+        # own default, silently ignoring the model picked in setup (a real bug).
+        "model_flag": "--model",
         "json_args": ["--output-format", "json"],
+        # Live streaming (verified live): text arrives as stream_event /
+        # content_block_delta / text_delta; the last `result` event carries
+        # the same fields as the json envelope. --verbose is required with
+        # stream-json in -p mode.
+        "stream_args": ["--output-format", "stream-json", "--verbose", "--include-partial-messages"],
         "envelope": "json",
         "result_key": "result",
         "usage_key": "usage",
@@ -111,6 +120,7 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # because it runs in an empty scratch directory (see cli_transport).
         # From Codex's docs, not verified live.
         "isolation_args": ["--sandbox", "read-only", "--skip-git-repo-check"],
+        "model_flag": "--model",  # from Codex's docs, not verified live
         "json_args": ["--json"],
         "envelope": "jsonl",
         "result_key": "text",
@@ -126,6 +136,7 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # No verified flag to switch its tools off; it still runs in an empty
         # scratch directory, so its file tools see nothing of the user's.
         "isolation_args": [],
+        "model_flag": "--model",  # from gemini-cli's docs, not verified live
         "json_args": ["--output-format", "json"],
         "envelope": "json",
         "result_key": "response",

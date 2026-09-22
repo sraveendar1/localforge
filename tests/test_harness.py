@@ -325,7 +325,8 @@ def test_memory_file_lives_outside_the_project(project, monkeypatch, tmp_path_fa
     monkeypatch.setattr(memory.config, "CONFIG_DIR", cfg)
     path = memory.memory_file(project)
     assert project not in path.parents
-    assert path.parent == cfg / "memory"
+    assert path.parent.parent == cfg / "projects" and path.name == "session.md"
+    assert memory.memory_dir(project) == path.parent / "memory"
 
 
 # --- permission prompt ---------------------------------------------------------------
@@ -396,3 +397,72 @@ def test_run_answer_is_rendered_as_markdown(fresh_session, monkeypatch, tmp_path
     with patch.object(cli_module, "run_orchestrator", return_value=RunResult("## Done\n- **one**", RunStats())):
         out = CliRunner().invoke(cli_module.app, ["run", "t", "-m", "gpt-5"]).output
     assert "Done" in out and "## Done" not in out and "**one**" not in out
+
+
+# --- session start: pick the orchestrator; session end: save memory -------------------
+
+
+def test_each_new_session_asks_for_the_orchestrator_with_no_default(fresh_session, monkeypatch):
+    choices = [
+        ("ollama/qwen2.5:7b", "ollama/qwen2.5:7b  (local)", {"LOCALFORGE_AUTH_METHOD": "local", "LOCALFORGE_FRONTIER_PROVIDER": "local"}),
+        ("claude-opus-5", "claude-opus-5  (your `claude` login)", {"LOCALFORGE_AUTH_METHOD": "cli_login", "LOCALFORGE_FRONTIER_PROVIDER": "anthropic"}),
+    ]
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: choices)
+    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "claude-opus-5")
+    answers = iter(["", "9", "1"])  # Enter doesn't pick anything; out-of-range re-asks
+    monkeypatch.setattr(cli_module.console, "input", lambda prompt="": next(answers))
+
+    assert cli_module._choose_orchestrator_at_start() is True
+    saved = cli_module.config.CONFIG_FILE.read_text()
+    assert "LOCALFORGE_FRONTIER_MODEL=ollama/qwen2.5:7b" in saved and "LOCALFORGE_AUTH_METHOD=local" in saved
+
+
+def test_backing_out_of_the_start_picker_ends_the_session(fresh_session, monkeypatch):
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: [("m", "m", {})])
+    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
+
+    def ctrl_d(prompt=""):
+        raise EOFError
+
+    monkeypatch.setattr(cli_module.console, "input", ctrl_d)
+    assert cli_module._choose_orchestrator_at_start() is False
+
+
+def test_repl_runs_the_start_picker_and_saves_memory_on_exit(monkeypatch):
+    from localforge import repl
+
+    events = []
+    console = MagicMock()
+    console.input.side_effect = ["/exit"]
+    monkeypatch.setattr(repl.banner, "render", lambda c: None)
+    repl.run_repl(MagicMock(), console, on_start=lambda: events.append("start") or True, on_exit=lambda: events.append("exit"))
+    assert events == ["start", "exit"]
+
+
+def test_exit_folds_the_session_into_memory(fresh_session, project, monkeypatch):
+    conv = fresh_session.conversation_for(project)
+    conv.messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "build x"}, {"role": "assistant", "content": "built x"}]
+    fresh_session.root = project
+    local = Local("## Goal\nbuild x")
+    monkeypatch.setattr(cli_module, "_memory_dispatcher", lambda hooks=None: Dispatcher(_hw(), catalog=CATALOG, installed={"talker"}, hooks=hooks))
+    with patch.dict("localforge.memory.BACKENDS", {"stub": local}):
+        cli_module._save_memory_at_exit()
+    assert memory.load(project) == "## Goal\nbuild x"
+    assert "build x" in local.prompts[0]
+
+
+def test_memory_command_shows_the_note_and_its_keeper(fresh_session, project, monkeypatch):
+    monkeypatch.chdir(project)
+    memory.save(project, "## Goal\nship it")
+    monkeypatch.setattr(cli_module, "_memory_dispatcher", lambda hooks=None: Dispatcher(_hw(), catalog=CATALOG, installed={"talker"}))
+    monkeypatch.setitem(memory.BACKENDS, "stub", Local())
+    out = " ".join(CliRunner().invoke(cli_module.app, ["memory"]).output.split())
+    assert "ship it" in out and "kept by talker (local)" in out
+    CliRunner().invoke(cli_module.app, ["memory", "clear"])
+    assert memory.load(project) == ""
+
+
+def test_memory_never_downloads_a_model_to_keep_itself():
+    d = Dispatcher(_hw(), catalog=CATALOG, installed=set())
+    assert memory.keeper(d) is None

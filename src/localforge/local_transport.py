@@ -14,11 +14,13 @@ among others) have no tool-calling template in Ollama at all. Ollama's
 
 from __future__ import annotations
 
+import json
 import re
 
 import httpx
 
 from localforge import cli_transport
+from localforge.answer_stream import AnswerStreamer
 from localforge.backends.ollama import OLLAMA_BASE_URL, OllamaBackend
 
 PREFIXES = ("ollama/", "ollama_chat/")
@@ -62,6 +64,31 @@ class LocalOrchestratorError(RuntimeError):
     """The local orchestrator model couldn't be reached or run."""
 
 
+def _stream_chat(client: httpx.Client, body: dict, streamer: AnswerStreamer) -> tuple[str, dict]:
+    """(full reply, final event) from a streamed /api/chat, feeding each
+    chunk to the answer streamer as it arrives."""
+    parts: list[str] = []
+    final: dict = {}
+    with client.stream("POST", "/api/chat", json=body) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if event.get("error"):
+                raise LocalOrchestratorError(str(event["error"]))
+            chunk = str((event.get("message") or {}).get("content") or "")
+            if chunk:
+                parts.append(chunk)
+                streamer.feed(chunk)
+            if event.get("done"):
+                final = event  # carries the token counts
+    return "".join(parts), final
+
+
 def model_name(frontier_model: str) -> str:
     for prefix in PREFIXES:
         if frontier_model.startswith(prefix):
@@ -69,7 +96,9 @@ def model_name(frontier_model: str) -> str:
     return frontier_model
 
 
-def complete(frontier_model: str, messages: list[dict], tools: list[dict]) -> cli_transport.CLIResponse:
+def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_text=None) -> cli_transport.CLIResponse:
+    """One orchestration turn on a local model. With `on_text`, the reply is
+    streamed and the final answer's text is passed on as it's written."""
     name = model_name(frontier_model)
     backend = OllamaBackend()
     if not backend.is_running():
@@ -80,24 +109,25 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict]) -> cl
         raise LocalOrchestratorError(f"Could not get {name} from Ollama: {exc}") from exc
 
     prompt = cli_transport._render_prompt(messages, tools)
+    body = {
+        "model": name,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": on_text is not None,
+        "format": "json",
+        "options": {"num_ctx": NUM_CTX},
+    }
     try:
         with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
-            resp = client.post(
-                "/api/chat",
-                json={
-                    "model": name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                    "format": "json",
-                    "options": {"num_ctx": NUM_CTX},
-                },
-            )
-            resp.raise_for_status()
-            data = resp.json()
+            if on_text is None:
+                resp = client.post("/api/chat", json=body)
+                resp.raise_for_status()
+                data = resp.json()
+                raw = str((data.get("message") or {}).get("content") or "")
+            else:
+                raw, data = _stream_chat(client, body, AnswerStreamer(on_text))
     except httpx.HTTPError as exc:
         raise LocalOrchestratorError(f"{name} failed: {exc}") from exc
 
-    raw = str((data.get("message") or {}).get("content") or "")
     usage = cli_transport._Usage(
         prompt_tokens=int(data.get("prompt_eval_count") or 0),
         completion_tokens=int(data.get("eval_count") or 0),

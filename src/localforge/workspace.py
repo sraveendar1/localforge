@@ -16,12 +16,14 @@ import difflib
 import fnmatch
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Callable
 
-# (kind, title, detail) -> allowed? kind is "write" or "command"; detail is a
-# diff or the command line. Without an approver every change is refused.
+# (kind, title, detail) -> allowed? kind is "write", "delete", "command" or
+# "download"; detail is a diff, a listing or the command line. Without an
+# approver every change is refused.
 Approver = Callable[[str, str, str], bool]
 
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", "dist", "build", ".idea", ".next"}
@@ -35,6 +37,9 @@ MAX_DIFF_LINES = 80
 COMMAND_TIMEOUT = 300
 
 
+SCRATCH_PREFIX = "scratchpad"
+
+
 class WorkspaceError(RuntimeError):
     """A tool call that can't be carried out; the message goes back to the orchestrator."""
 
@@ -44,22 +49,45 @@ def _deny_all(kind: str, title: str, detail: str) -> bool:
 
 
 class Workspace:
-    def __init__(self, root: Path, approver: Approver | None = None):
+    def __init__(self, root: Path, approver: Approver | None = None, scratch: Path | None = None):
         self.root = Path(root).resolve()
         self.approver = approver or _deny_all
+        # This session's scratchpad (see scratchpad.py), reached as
+        # "scratchpad/...". Changes inside it need no approval.
+        self.scratch = Path(scratch).resolve() if scratch is not None else None
 
     # --- paths ----------------------------------------------------------------
 
     def resolve(self, path: str) -> Path:
         if not path or not str(path).strip():
             raise WorkspaceError("a path is required")
-        candidate = (self.root / str(path).strip()).resolve()
+        path = str(path).strip()
+        head, _, rest = path.replace("\\", "/").partition("/")
+        if self.scratch is not None and head == SCRATCH_PREFIX:
+            candidate = (self.scratch / rest).resolve()
+            if candidate != self.scratch and self.scratch not in candidate.parents:
+                raise WorkspaceError(f"{path!r} is outside the scratchpad")
+            return candidate
+        candidate = (self.root / path).resolve()
         if candidate != self.root and self.root not in candidate.parents:
             raise WorkspaceError(f"{path!r} is outside the project folder ({self.root})")
         return candidate
 
+    def in_scratch(self, path: Path) -> bool:
+        return self.scratch is not None and (path == self.scratch or self.scratch in path.parents)
+
     def rel(self, path: Path) -> str:
+        if self.in_scratch(path):
+            inner = path.relative_to(self.scratch)
+            return SCRATCH_PREFIX + ("" if str(inner) == "." else f"/{inner}")
         return str(path.relative_to(self.root)) if path != self.root else "."
+
+    def _allowed(self, kind: str, title: str, detail: str, *targets: Path) -> bool:
+        """Ask the user -- unless every path involved is in the scratchpad,
+        which is disposable and outside the project."""
+        if targets and all(self.in_scratch(t) for t in targets):
+            return True
+        return self.approver(kind, title, detail)
 
     def _walk(self, start: Path):
         for dirpath, dirnames, filenames in os.walk(start):
@@ -149,7 +177,7 @@ class Workspace:
             return f"{self.rel(target)} is unchanged."
         verb = "Update" if target.exists() else "Create"
         diff = self._diff(target, old, content)
-        if not self.approver("write", f"{verb} {self.rel(target)}", diff):
+        if not self._allowed("write", f"{verb} {self.rel(target)}", diff, target):
             return f"The user declined the change to {self.rel(target)}; it was not written."
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content if content.endswith("\n") else content + "\n")
@@ -168,6 +196,73 @@ class Workspace:
         if count > 1:
             raise WorkspaceError(f"old_string appears {count} times in {path}; include more surrounding lines so it's unique")
         return self.write_file(path, text.replace(old_string, new_string, 1))
+
+    def make_dir(self, path: str) -> str:
+        target = self.resolve(path)
+        if target.is_dir():
+            return f"{self.rel(target)}/ already exists."
+        if target.exists():
+            raise WorkspaceError(f"{path} exists and is a file")
+        if not self._allowed("write", f"Create folder {self.rel(target)}/", f"mkdir {self.rel(target)}", target):
+            return f"The user declined creating {self.rel(target)}/."
+        target.mkdir(parents=True)
+        return f"Created folder {self.rel(target)}/."
+
+    def move_path(self, source: str, destination: str) -> str:
+        src, dst = self.resolve(source), self.resolve(destination)
+        if src == self.root:
+            raise WorkspaceError("can't move the project folder itself")
+        if not src.exists():
+            raise WorkspaceError(f"{source} does not exist")
+        if self.in_scratch(src) and not self.in_scratch(dst):
+            return self._promote(src, dst)  # may update an existing file: that's what a promote is for
+        if dst.exists():
+            raise WorkspaceError(f"{destination} already exists; delete it first or pick another name")
+        if not self._allowed("write", f"Move {self.rel(src)}", f"{self.rel(src)}  →  {self.rel(dst)}", src, dst):
+            return f"The user declined moving {self.rel(src)}."
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        src.rename(dst)
+        return f"Moved {self.rel(src)} to {self.rel(dst)}."
+
+    def _promote(self, src: Path, dst: Path) -> str:
+        """Scratchpad draft -> real project file: shown and approved as a
+        normal create/update diff, then the draft is removed."""
+        if src.is_dir():
+            raise WorkspaceError("promote scratchpad files one at a time, not whole folders")
+        result = self.write_file(self.rel(dst), src.read_text(errors="replace"))
+        if result.startswith(("Created ", "Updated ")):
+            src.unlink()
+            return result.replace(" (", f" from {self.rel(src)} (", 1)
+        return result
+
+    def delete_path(self, path: str, recursive: bool = False) -> str:
+        """Delete a file, or a folder (a non-empty one only with recursive).
+        Deletions are their own approval kind, so "always allow file
+        changes" never covers them."""
+        target = self.resolve(path)
+        if target == self.root:
+            raise WorkspaceError("refusing to delete the whole project folder")
+        if target == self.scratch:
+            raise WorkspaceError("delete files inside the scratchpad, not the scratchpad itself")
+        if not target.exists() and not target.is_symlink():
+            raise WorkspaceError(f"{path} does not exist")
+        rel = self.rel(target)
+        if target.is_dir() and not target.is_symlink():
+            contents = [p for p in target.rglob("*") if p.is_file()]
+            if contents and not recursive:
+                raise WorkspaceError(f"{rel}/ has {len(contents)} file(s); pass recursive=true to delete it and everything in it")
+            listing = "\n".join(self.rel(p) for p in contents[:20]) + (f"\n... and {len(contents) - 20} more" if len(contents) > 20 else "")
+            detail = f"Folder {rel}/ and the {len(contents)} file(s) in it:\n{listing}" if contents else f"Empty folder {rel}/"
+        else:
+            size = target.lstat().st_size
+            detail = f"File {rel} ({size:,} bytes)"
+        if not self._allowed("delete", f"Delete {rel}", detail, target):
+            return f"The user declined deleting {rel}; nothing was removed."
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+        return f"Deleted {rel}."
 
     def run_command(self, command: str, timeout: int = COMMAND_TIMEOUT) -> str:
         command = (command or "").strip()
@@ -224,4 +319,10 @@ class Workspace:
             if self.is_broad()
             else ""
         )
-        return f"Project folder: {self.root}{branch}\nTop-level entries:\n{listing}{note}"
+        scratch = (
+            f"\nScratchpad: scratchpad/ (this session's private temp folder, at {self.scratch}; "
+            "use that absolute path in run_command)"
+            if self.scratch is not None
+            else ""
+        )
+        return f"Project folder: {self.root}{branch}\nTop-level entries:\n{listing}{note}{scratch}"

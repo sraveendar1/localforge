@@ -1,17 +1,28 @@
-"""Session memory, kept by a local model.
+"""Memory, modeled on Claude Code's: kept per project, outside the project.
 
-A session keeps its whole conversation so the orchestrator has context, but
-that history is resent to the frontier model every turn (and, under CLI
-login, flattened into one prompt). Left alone it grows until it's slow,
-expensive, or too big. So when it passes COMPACT_AT_CHARS -- or the user
-types /compact -- a local model folds the older turns into a short
-markdown "session memory" note, which replaces them in the system prompt.
-The note is also saved per project folder, so a new session in the same
-folder starts with it.
+    ~/.config/localforge/projects/<folder>-<hash>/
+        session.md          what the last session left off with (condensed)
+        memory/MEMORY.md    index: one line per memory, loaded every session
+        memory/<name>.md    one fact per file, with frontmatter:
+                              name, description, type (user | feedback |
+                              project | reference)
 
-Summarizing is exactly the kind of bulk text work local models are for: it
-costs no frontier tokens. If no local model is usable, the oldest turns are
-dropped instead, so the size cap holds either way.
+Two things keep it current:
+
+* In-session compaction. The whole conversation is resent every turn (and,
+  under CLI login, flattened into one prompt), so once it passes
+  COMPACT_AT_CHARS -- or on /compact -- a local model folds older turns into
+  the session summary, which replaces them in the system prompt.
+* On /exit, the local "memory keeper" model condenses the session into
+  session.md and extracts durable facts (preferences, decisions, project
+  facts) into memory files. The orchestrator can also save or drop facts
+  itself with the remember/forget tools, the way Claude Code writes memory
+  when asked to remember something.
+
+Summarizing is bulk text work, which is what local models are for: it costs
+no frontier tokens, and memory never triggers a model download. If no local
+model is usable, compaction drops the oldest turns instead so the size cap
+still holds, and the exit-time extraction is skipped.
 """
 
 from __future__ import annotations
@@ -48,20 +59,42 @@ New conversation to fold in:
 """
 
 
-# --- persistence ---------------------------------------------------------------
+# --- where it lives ------------------------------------------------------------
+
+MEMORY_TYPES = ("user", "feedback", "project", "reference")
+INDEX = "MEMORY.md"
+MAX_FACTS_CHARS = 8_000  # fact contents given to the orchestrator each session
 
 
-def memory_file(root: Path) -> Path:
-    """Where a project's memory lives: under localforge's own config folder,
-    never inside the user's project (nothing is written there unasked).
-    """
+def project_dir(root: Path) -> Path:
+    """localforge's own folder for one project: never inside the project."""
     root = Path(root).resolve()
     slug = re.sub(r"[^A-Za-z0-9]+", "-", root.name).strip("-") or "project"
     digest = hashlib.sha1(str(root).encode()).hexdigest()[:10]
-    return config.CONFIG_DIR / "memory" / f"{slug}-{digest}.md"
+    return config.CONFIG_DIR / "projects" / f"{slug}-{digest}"
+
+
+def memory_file(root: Path) -> Path:
+    """The session summary (what the last session left off with)."""
+    return project_dir(root) / "session.md"
+
+
+def memory_dir(root: Path) -> Path:
+    return project_dir(root) / "memory"
+
+
+def _migrate(root: Path) -> None:
+    """Move a summary saved by an older localforge (memory/<folder>-<hash>.md)."""
+    new = memory_file(root)
+    old = config.CONFIG_DIR / "memory" / new.parent.name
+    old = old.with_suffix(".md")
+    if old.is_file() and not new.exists():
+        new.parent.mkdir(parents=True, exist_ok=True)
+        old.replace(new)
 
 
 def load(root: Path) -> str:
+    _migrate(root)
     path = memory_file(root)
     try:
         return path.read_text().strip() if path.is_file() else ""
@@ -76,7 +109,97 @@ def save(root: Path, text: str) -> None:
 
 
 def forget(root: Path) -> None:
+    """Delete everything remembered for this project."""
+    import shutil
+
+    shutil.rmtree(project_dir(root), ignore_errors=True)
+    _migrate(root)  # an old-format file would otherwise reappear
     memory_file(root).unlink(missing_ok=True)
+
+
+# --- facts: one per file, indexed in MEMORY.md --------------------------------------
+
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")[:60]
+
+
+def _parse(text: str) -> dict:
+    meta, body = {}, text
+    if text.startswith("---\n"):
+        head, sep, rest = text[4:].partition("\n---\n")
+        if sep:
+            body = rest
+            for line in head.splitlines():
+                key, _, value = line.partition(":")
+                if key.strip() in ("name", "description", "type"):
+                    meta[key.strip()] = value.strip()
+    meta["content"] = body.strip()
+    return meta
+
+
+def list_facts(root: Path) -> list[dict]:
+    folder = memory_dir(root)
+    facts = []
+    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        if path.name == INDEX:
+            continue
+        try:
+            fact = _parse(path.read_text())
+        except OSError:
+            continue
+        fact.setdefault("name", path.stem)
+        facts.append(fact)
+    return facts
+
+
+def _write_index(root: Path) -> None:
+    folder = memory_dir(root)
+    facts = list_facts(root)
+    if not facts:
+        (folder / INDEX).unlink(missing_ok=True)
+        return
+    lines = [f"- [{f['name']}]({f['name']}.md) — {f.get('description', '')}" for f in facts]
+    (folder / INDEX).write_text("\n".join(lines) + "\n")
+
+
+def remember(root: Path, name: str, content: str, description: str = "", type: str = "project") -> str:
+    """Create or update one fact. Returns its (normalized) name."""
+    slug = _slug(name)
+    if not slug:
+        raise ValueError("a memory needs a name")
+    if not str(content).strip():
+        raise ValueError("a memory needs content")
+    kind = type if type in MEMORY_TYPES else "project"
+    description = " ".join(str(description or content).split())[:150]
+    folder = memory_dir(root)
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{slug}.md").write_text(
+        f"---\nname: {slug}\ndescription: {description}\ntype: {kind}\n---\n\n{str(content).strip()}\n"
+    )
+    _write_index(root)
+    return slug
+
+
+def forget_fact(root: Path, name: str) -> bool:
+    path = memory_dir(root) / f"{_slug(name)}.md"
+    if not path.is_file():
+        return False
+    path.unlink()
+    _write_index(root)
+    return True
+
+
+def facts_for_prompt(root: Path) -> str:
+    """The index plus each fact's content, for the system prompt."""
+    facts = list_facts(root)
+    if not facts:
+        return ""
+    parts = []
+    for f in facts:
+        parts.append(f"- {f['name']} ({f.get('type', 'project')}): {f['content']}")
+    text = "\n".join(parts)
+    return text if len(text) <= MAX_FACTS_CHARS else text[:MAX_FACTS_CHARS] + "\n[... more memories not shown]"
 
 
 # --- compaction ----------------------------------------------------------------
@@ -99,15 +222,24 @@ def _render(messages: list[dict]) -> str:
     return text
 
 
-def _summarize(old_memory: str, transcript: str, dispatcher, hooks) -> str | None:
-    entry = None
+def keeper(dispatcher):
+    """The local model that keeps session memory: the first installed model
+    that fits, preferring general-purpose ones. None if there isn't one --
+    memory never triggers a download."""
+    installed = dispatcher.installed  # None = unknown (Ollama unreachable): don't filter
     for modality in MEMORY_MODALITIES:
         try:
             entry = dispatcher.resolve(modality)
-            break
         except NoFittingModelError:
             continue
-    if entry is None or entry.runtime not in BACKENDS:
+        if (installed is None or entry.name in installed) and entry.runtime in BACKENDS:
+            return entry
+    return None
+
+
+def _summarize(old_memory: str, transcript: str, dispatcher, hooks) -> str | None:
+    entry = keeper(dispatcher)
+    if entry is None:
         return None
     if hooks is not None and hooks.on_tool is not None:
         hooks.on_tool("compact", f"condensing earlier turns with {entry.name}")
@@ -151,3 +283,58 @@ def compact(conversation, dispatcher, hooks=None, keep_recent_turns: int = KEEP_
     conversation.messages = conversation.messages[:1] + kept
     conversation.reindex_tools()
     return True
+
+
+# --- extracting facts at the end of a session -----------------------------------
+
+EXTRACT_PROMPT = """You maintain long-term memory for a coding project, like a careful note-taker.
+From the session below, pick out facts worth remembering in FUTURE sessions: the user's preferences and
+corrections (type "feedback"), who the user is or how they work ("user"), decisions and facts about this
+project that aren't obvious from its files ("project"), and pointers to outside resources ("reference").
+Skip anything temporary, obvious from the code, or already in the existing memories unless it changed.
+
+Existing memories:
+{existing}
+
+Session:
+{transcript}
+
+Reply with ONLY JSON: {{"memories": [{{"name": "short-kebab-name", "type": "feedback|user|project|reference",
+"description": "one line", "content": "the fact, and why it matters"}}], "forget": ["name-of-a-memory-now-wrong"]}}
+Use an existing name to update that memory. Empty lists are fine."""
+
+
+def extract_facts(conversation, dispatcher, root: Path, hooks=None) -> int:
+    """Have the memory keeper turn this session into memory files. Returns
+    how many memories were written or removed. Best-effort: a small model's
+    unusable reply changes nothing."""
+    from localforge.cli_transport import _extract_json
+
+    entry = keeper(dispatcher)
+    turns = [m for m in conversation.messages[1:] if m.get("role") in ("user", "assistant")]
+    if entry is None or not any(m.get("role") == "user" for m in turns):
+        return 0
+    existing = "\n".join(f"- {f['name']}: {f['content'][:200]}" for f in list_facts(root)) or "(none)"
+    if hooks is not None and hooks.on_tool is not None:
+        hooks.on_tool("compact", f"saving what's worth remembering with {entry.name}")
+    try:
+        result = BACKENDS[entry.runtime].generate(entry.name, EXTRACT_PROMPT.format(existing=existing, transcript=_render(turns)))
+    except Exception:  # noqa: BLE001 - memory is best-effort
+        return 0
+    dispatcher.local_tokens_generated += result.get("tokens", 0)
+    decision = _extract_json(str(result.get("content") or "")) or {}
+    changed = 0
+    for item in decision.get("memories") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            remember(root, item.get("name", ""), item.get("content", ""), item.get("description", ""), item.get("type", "project"))
+            changed += 1
+        except ValueError:
+            continue
+    for name in decision.get("forget") or []:
+        if isinstance(name, str) and forget_fact(root, name):
+            changed += 1
+    if hooks is not None and hooks.on_tool_result is not None:
+        hooks.on_tool_result("compact", f"{changed} memor{'y' if changed == 1 else 'ies'} saved or updated")
+    return changed

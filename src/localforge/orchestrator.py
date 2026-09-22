@@ -99,6 +99,22 @@ def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[
 _PROMISE = re.compile(r"\b(I will|I'll|I am going to|I'm going to|Let me)\s+(now\s+)?(create|write|add|make|build|update|edit|run|fix|generate|implement|set up|delegate)\b", re.I)
 
 
+def _complete_streaming(frontier_model: str, messages: list[dict], tools: list[dict], on_text) -> object:
+    """API-key path, streamed: native tool calling, so text deltas are the
+    model's own words and go straight to `on_text`; the chunks are then
+    reassembled into one ordinary response (tool calls, usage and all)."""
+    chunks = []
+    for chunk in completion(
+        model=frontier_model, messages=messages, tools=tools, stream=True, stream_options={"include_usage": True}
+    ):
+        chunks.append(chunk)
+        choices = getattr(chunk, "choices", None) or []
+        text = getattr(getattr(choices[0], "delta", None), "content", None) if choices else None
+        if text:
+            on_text(text)
+    return litellm.stream_chunk_builder(chunks, messages=messages)
+
+
 def _canonical_args(arguments: str | None) -> str:
     """Tool-call arguments in a stable form, so the same call is recognised
     regardless of key order or whitespace."""
@@ -138,9 +154,12 @@ How to work:
 - Investigate before changing anything: list_files, search and read_file show you the project. Never guess at code you haven't read.
 - To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees ONLY your instructions plus the current file contents -- no other files, no conversation, no internet. So put everything it needs into `instructions`: the goal, the exact interfaces and names from other files, conventions, and any facts you looked up.
 - edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
+- make_dir, move_path and delete_path create folders, move/rename, and delete. The user has trusted this folder, and still approves each change; only delete what the task needs.
 - run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them.
 - The local models have no internet access. When the task needs anything current or external -- library docs, API details, versions, a URL the user mentioned -- use web_search and fetch_url yourself and pass the relevant facts along.
 - For any task with more than two steps, call update_todos first with your plan, and update it as steps complete.
+- scratchpad/ is this session's private temp folder, outside the project and git, deleted when the session ends. Use it for pseudo-code, plans, experiments and drafts: delegate with a path like scratchpad/draft.py (no approval needed there), review it, then move_path it to its real location, which shows the user the diff for approval.
+- Memory: facts remembered from earlier sessions in this project are listed below. When the user tells you to remember something, or states a lasting preference or correction, save it with remember (type user, feedback, project or reference); use forget when a memory turns out wrong. Don't save things that are obvious from the code or only matter today.
 - This is an ongoing conversation: the user's earlier messages and your earlier work are above, and older turns may be condensed into a session-memory note.
 - If the user declines a change or command, don't retry it unchanged; ask or adjust.
 - Finish with a short summary of what you changed (files, commands run, results) and anything left to do.
@@ -159,11 +178,14 @@ class Conversation:
     tool_indices: list[int] = field(default_factory=list)
     memory: str = ""
     project_snapshot: str = ""
+    facts: str = ""
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
         if self.project_snapshot:
             content += "\n\n" + self.project_snapshot
+        if self.facts:
+            content += "\n\nRemembered for this project:\n" + self.facts
         if self.memory:
             content += "\n\nSession memory (condensed earlier turns, kept by a local model):\n" + self.memory
         return {"role": "system", "content": content}
@@ -212,8 +234,10 @@ def run(
     tools = build_tool_schemas(hardware, dispatcher.catalog, installed)
     stats = RunStats()
 
-    if workspace is not None and not conversation.project_snapshot:
-        conversation.project_snapshot = workspace.snapshot()
+    if workspace is not None:
+        if not conversation.project_snapshot:
+            conversation.project_snapshot = workspace.snapshot()
+        conversation.facts = memory.facts_for_prompt(workspace.root)  # may have changed via remember/forget
     if conversation.chars() > memory.COMPACT_AT_CHARS:
         memory.compact(conversation, dispatcher, hooks)
     if not conversation.messages:
@@ -236,12 +260,15 @@ def run(
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
             hooks.on_frontier(round_number)
+        on_text = hooks.on_answer_text
         if frontier_model.startswith(local_transport.PREFIXES):
             # An open-weight orchestrator on this machine: straight to Ollama,
             # never through a provider CLI, whatever else is configured.
-            response = local_transport.complete(frontier_model, messages, tools)
+            response = local_transport.complete(frontier_model, messages, tools, on_text=on_text)
         elif cli_provider:
-            response = cli_transport.complete(cli_provider, messages, tools)
+            response = cli_transport.complete(cli_provider, messages, tools, model=frontier_model, on_text=on_text)
+        elif on_text is not None:
+            response = _complete_streaming(frontier_model, messages, tools, on_text)
         else:
             response = completion(model=frontier_model, messages=messages, tools=tools)
         _record_frontier_usage(response, stats)

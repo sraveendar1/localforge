@@ -44,6 +44,8 @@ class ActivityHooks:
     on_tool_result: Callable[[str, str], None] | None = None
     # (list of {"content", "status"}) when the orchestrator updates its plan
     on_todos: Callable[[list[dict]], None] | None = None
+    # each piece of the orchestrator's own answer text, as it's written
+    on_answer_text: Callable[[str], None] | None = None
 
 
 # Modality -> tool name + description. Each delegate tool takes
@@ -121,6 +123,32 @@ DIRECT_TOOLS = {
             new_string=("string", "Replacement text."),
         ),
     },
+    "make_dir": {
+        "description": "Create a folder (and any missing parents) in the project. The user approves it.",
+        "parameters": _params(["path"], path=("string", "Folder to create, relative to the project.")),
+    },
+    "move_path": {
+        "description": "Move or rename a file or folder inside the project. The user approves it.",
+        "parameters": _params(
+            ["source", "destination"],
+            source=("string", "Existing file or folder."),
+            destination=("string", "New path; must not exist yet."),
+        ),
+    },
+    "delete_path": {
+        "description": (
+            "Delete a file or folder in the project. A non-empty folder needs recursive=true. "
+            "The user sees exactly what will be removed and approves it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "File or folder to delete."},
+                "recursive": {"type": "boolean", "description": "Required to delete a folder that has files in it."},
+            },
+            "required": ["path"],
+        },
+    },
     "run_command": {
         "description": (
             "Run a shell command in the project folder (git clone, tests, installs, builds). "
@@ -139,6 +167,23 @@ DIRECT_TOOLS = {
     "fetch_url": {
         "description": "Read a public web page as text.",
         "parameters": _params(["url"], url=("string", "Full http(s) URL.")),
+    },
+    "remember": {
+        "description": (
+            "Save a lasting fact for future sessions in this project (a user preference or correction, "
+            "a project decision, a pointer to a resource). Reusing a name updates that memory."
+        ),
+        "parameters": _params(
+            ["name", "content"],
+            name=("string", "Short kebab-case name, e.g. prefers-pytest."),
+            content=("string", "The fact, and why it matters."),
+            description=("string", "One line summary."),
+            type=("string", "user, feedback, project or reference."),
+        ),
+    },
+    "forget": {
+        "description": "Delete a saved memory that is wrong or no longer applies.",
+        "parameters": _params(["name"], name=("string", "The memory's name.")),
     },
     "update_todos": {
         "description": (
@@ -433,7 +478,9 @@ class Dispatcher:
         if hooks.on_tool is not None:
             hooks.on_tool(tool_name, _summarize(tool_name, args))
         try:
-            if tool_name in WEB_TOOLS:
+            if tool_name in ("remember", "forget"):
+                result = self._memory_call(tool_name, args)
+            elif tool_name in WEB_TOOLS:
                 target = args.get("query") or args.get("url") or args.get("instructions") or ""
                 runner = web.web_search if tool_name == "web_search" else web.fetch_url
                 result = runner(str(target))
@@ -451,6 +498,17 @@ class Dispatcher:
             hooks.on_tool_result(tool_name, result)
         return result
 
+    def _memory_call(self, tool_name: str, args: dict) -> str:
+        from localforge import memory
+
+        if self.workspace is None:
+            return f"{tool_name} needs a project folder, and none is open."
+        root = self.workspace.root
+        if tool_name == "remember":
+            name = memory.remember(root, args["name"], args["content"], args.get("description", ""), args.get("type", "project"))
+            return f"Remembered {name}."
+        return f"Forgot {args['name']}." if memory.forget_fact(root, args["name"]) else f"No memory named {args['name']!r}."
+
     def _workspace_call(self, tool_name: str, args: dict) -> str:
         ws = self.workspace
         if tool_name == "read_file":
@@ -461,6 +519,12 @@ class Dispatcher:
             return ws.search(args["pattern"], args.get("path") or ".", args.get("glob") or "")
         if tool_name == "edit_file":
             return ws.edit_file(args["path"], args["old_string"], args["new_string"])
+        if tool_name == "make_dir":
+            return ws.make_dir(args["path"])
+        if tool_name == "move_path":
+            return ws.move_path(args["source"], args["destination"])
+        if tool_name == "delete_path":
+            return ws.delete_path(args["path"], bool(args.get("recursive")))
         if tool_name == "run_command":
             return ws.run_command(args.get("command") or args.get("instructions") or "", args.get("timeout") or 300)
         raise ValueError(f"unknown tool {tool_name}")
@@ -474,8 +538,12 @@ def _summarize(tool_name: str, args: dict) -> str:
         return " ".join(x for x in (str(args.get("path") or "."), str(args.get("pattern") or "")) if x)
     if tool_name == "search":
         return repr(args.get("pattern", "")) + (f" in {args['path']}" if args.get("path") else "")
-    if tool_name == "edit_file":
+    if tool_name in ("remember", "forget"):
+        return str(args.get("name", ""))
+    if tool_name in ("edit_file", "make_dir", "delete_path"):
         return str(args.get("path", ""))
+    if tool_name == "move_path":
+        return f"{args.get('source', '')} → {args.get('destination', '')}"
     if tool_name == "run_command":
         return str(args.get("command") or args.get("instructions") or "")
     return str(args.get("query") or args.get("url") or args.get("instructions") or "")
