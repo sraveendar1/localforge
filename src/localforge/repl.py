@@ -7,14 +7,19 @@ subcommand in an interactive terminal (see cli.py's root callback).
 from __future__ import annotations
 
 import shlex
+from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 
 from localforge import banner
 
 SLASH_HELP = """[bold]Commands:[/bold]
-  /run <task>       delegate a task to local models (or just type it directly)
+  /run <task>       work on a task in this folder (or just type it directly)
+  /clear            start a fresh conversation (/clear --forget also drops saved memory)
+  /compact          have a local model condense the conversation into session memory
+  /auto <on|off>    approve file changes and commands without asking
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
   /wizard           setup as a terminal UI
@@ -53,7 +58,8 @@ def _to_argv(cmd: str, remainder: str) -> list[str]:
 def run_repl(app: typer.Typer, console: Console) -> None:
     banner.render(console)
     console.print(
-        "\nType a task to build it, or [accent]/help[/accent] for commands. "
+        f"\n[dim]Project folder: {escape(str(Path.cwd()))}[/dim]\n"
+        "Type what you want built or changed, or [accent]/help[/accent] for commands. "
         "[accent]/exit[/accent] to leave.\n",
         highlight=False,
     )

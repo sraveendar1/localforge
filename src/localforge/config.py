@@ -91,6 +91,7 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # built-in or MCP tools. `--tools` is variadic, so it must be followed
         # by another option, never directly by the prompt.
         "isolation_args": ["--tools", "", "--strict-mcp-config"],
+        "prompt_via_stdin": True,
         "json_args": ["--output-format", "json"],
         "envelope": "json",
         "result_key": "result",

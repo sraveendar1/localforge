@@ -4,11 +4,13 @@ each tool call to the best-fitting local model via the matching backend.
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from localforge import web
+from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
 from localforge.catalog import ModelEntry, best_match, candidates, load_catalog
 from localforge.hardware import HardwareProfile
@@ -34,81 +36,180 @@ class ActivityHooks:
     on_done: Callable[[str, ModelEntry, int, float], None] | None = None
     # (model name, raw Ollama pull event) if a model has to be downloaded first
     on_pull: Callable[[str, dict], None] | None = None
-    # (tool name, query or URL) when the orchestrator uses the web
-    on_web: Callable[[str, str], None] | None = None
+    # (tool name, one-line summary) when the orchestrator uses a tool that
+    # isn't a delegation: reading files, searching, running a command, the web
+    on_tool: Callable[[str, str], None] | None = None
+    # (tool name, short result) after it ran, e.g. "Read 120 lines" or a
+    # command's last output lines
+    on_tool_result: Callable[[str, str], None] | None = None
+    # (list of {"content", "status"}) when the orchestrator updates its plan
+    on_todos: Callable[[list[dict]], None] | None = None
 
 
-# Modality -> (tool name, description, prompt-building instructions)
+# Modality -> tool name + description. Each delegate tool takes
+# `instructions` and an optional `path`: with a path, the local model writes
+# that file (the dispatcher saves its output after the user approves the
+# diff), so generated code never has to pass through the frontier model.
 TASK_MODALITIES = {
     "coding": {
         "tool_name": "delegate_coding_task",
-        "description": "Delegate a coding subtask to a local coding-specialist model.",
+        "description": (
+            "Have a local coding model write code. Give `path` to create or rewrite that file "
+            "with its output (the current file content is sent to it automatically), or omit "
+            "it to just get code back."
+        ),
     },
     "docs": {
         "tool_name": "delegate_docs_task",
-        "description": "Delegate a documentation-writing subtask to a local model.",
+        "description": "Have a local model write documentation. Give `path` (e.g. README.md) to write it to that file.",
     },
     "general": {
         "tool_name": "delegate_general_task",
-        "description": "Delegate a general-purpose text subtask to a local model.",
+        "description": "Have a local model do a general text task. Give `path` to write the result to a file.",
     },
 }
 
 
-# Web tools run inside localforge for the orchestrator. Local models have no
-# internet access; the orchestrator looks things up and passes the relevant
-# facts into each delegated subtask's instructions. Both take the same single
-# `instructions` string as the delegate tools, so the CLI transport (which
-# can only express that one field) handles them unchanged.
-WEB_TOOLS = {
-    "web_search": {
-        "description": (
-            "Search the web. `instructions` is the search query. Returns titles, URLs and "
-            "snippets; use fetch_url to read a page in full."
+def _params(required: list[str], **props: tuple[str, str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {name: {"type": typ, "description": desc} for name, (typ, desc) in props.items()},
+        "required": required,
+    }
+
+
+# Tools the orchestrator runs itself (no local model involved), modeled on
+# Claude Code's: Read, Glob, Grep, Edit, Bash, WebSearch, WebFetch, TodoWrite.
+# Local models have no internet and no tools; the orchestrator researches and
+# investigates, then puts what matters into each delegated instruction.
+DIRECT_TOOLS = {
+    "read_file": {
+        "description": "Read a file in the project, with line numbers. Read before you change anything.",
+        "parameters": _params(
+            ["path"],
+            path=("string", "Path relative to the project folder."),
+            offset=("integer", "First line to read (default 1)."),
+            limit=("integer", "How many lines (default and max 400)."),
         ),
-        "run": web.web_search,
+    },
+    "list_files": {
+        "description": "List files in the project (skips .git, node_modules, virtualenvs).",
+        "parameters": _params(
+            [],
+            path=("string", "Folder to list, relative to the project (default: whole project)."),
+            pattern=("string", "Optional glob such as '*.py' or 'src/**/*.ts'."),
+        ),
+    },
+    "search": {
+        "description": "Search file contents with a regular expression, like grep. Returns path:line: text.",
+        "parameters": _params(
+            ["pattern"],
+            pattern=("string", "Python regular expression."),
+            path=("string", "File or folder to search (default: whole project)."),
+            glob=("string", "Only files whose name matches, e.g. '*.py'."),
+        ),
+    },
+    "edit_file": {
+        "description": (
+            "Replace one exact, unique snippet in a file. Only for small fix-ups (a few lines) -- "
+            "new files and real code changes go to delegate_coding_task with a path. The user approves the diff."
+        ),
+        "parameters": _params(
+            ["path", "old_string", "new_string"],
+            path=("string", "File to edit."),
+            old_string=("string", "Exact text to replace, copied from read_file (without line numbers)."),
+            new_string=("string", "Replacement text."),
+        ),
+    },
+    "run_command": {
+        "description": (
+            "Run a shell command in the project folder (git clone, tests, installs, builds). "
+            "The user approves every command first. Output is returned (long output is cut)."
+        ),
+        "parameters": _params(
+            ["command"],
+            command=("string", "The shell command."),
+            timeout=("integer", "Seconds before it's stopped (default 300)."),
+        ),
+    },
+    "web_search": {
+        "description": "Search the web. Returns titles, URLs and snippets; use fetch_url to read a page.",
+        "parameters": _params(["query"], query=("string", "The search query.")),
     },
     "fetch_url": {
-        "description": "Read a web page as text. `instructions` is the full http(s) URL.",
-        "run": web.fetch_url,
+        "description": "Read a public web page as text.",
+        "parameters": _params(["url"], url=("string", "Full http(s) URL.")),
+    },
+    "update_todos": {
+        "description": (
+            "Show the user your plan as a checklist, and keep it current as you work. "
+            "Use it for any task with more than two steps."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string"},
+                            "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                        },
+                        "required": ["content", "status"],
+                    },
+                }
+            },
+            "required": ["todos"],
+        },
     },
 }
 
+# kept for callers that only care about the web pair
+WEB_TOOLS = {name: DIRECT_TOOLS[name] for name in ("web_search", "fetch_url")}
 
-def _schema(name: str, description: str, param_description: str) -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": description,
-            "parameters": {
-                "type": "object",
-                "properties": {"instructions": {"type": "string", "description": param_description}},
-                "required": ["instructions"],
-            },
-        },
-    }
+
+def _schema(name: str, description: str, parameters: dict) -> dict:
+    return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
 
 def build_tool_schemas(
     hardware: HardwareProfile, catalog: list[ModelEntry] | None = None, installed: set[str] | None = None
 ) -> list[dict]:
-    """OpenAI/LiteLLM-style tool schemas for every modality with an available
-    local model on this machine, plus the web tools. A modality with no
-    fitting catalog entry (hardware too limited) is left out entirely, rather
-    than exposing a tool the frontier model could call only to get a
-    NoFittingModelError back.
+    """OpenAI/LiteLLM-style tool schemas: a delegate tool for every modality
+    with a fitting local model on this machine, plus the direct tools. A
+    modality with no fitting catalog entry (hardware too limited) is left out
+    entirely, rather than exposing a tool the frontier model could call only
+    to get a NoFittingModelError back.
     """
     schemas = []
     for modality, meta in TASK_MODALITIES.items():
         if not candidates(modality, hardware, catalog, installed):
             continue
         schemas.append(
-            _schema(meta["tool_name"], meta["description"], "What the local model should do, with all context it needs.")
+            _schema(
+                meta["tool_name"],
+                meta["description"],
+                _params(
+                    ["instructions"],
+                    instructions=("string", "Everything the local model needs: it sees nothing else (no files, no internet)."),
+                    path=("string", "Optional file to write the result to, relative to the project."),
+                ),
+            )
         )
-    for name, meta in WEB_TOOLS.items():
-        schemas.append(_schema(name, meta["description"], "The search query or URL."))
+    for name, meta in DIRECT_TOOLS.items():
+        schemas.append(_schema(name, meta["description"], meta["parameters"]))
     return schemas
+
+
+def _extract_file_content(text: str) -> str:
+    """A model asked for a whole file still tends to wrap it in a code fence
+    and add a sentence around it; keep only the (longest) fenced block.
+    """
+    blocks = re.findall(r"```[^\n`]*\n(.*?)```", text, flags=re.DOTALL)
+    if blocks:
+        return max(blocks, key=len).rstrip("\n") + "\n"
+    return text.strip("\n") + "\n"
 
 
 def _prompt_for(modality: str, instructions: str) -> str:
@@ -158,8 +259,10 @@ class Dispatcher:
         catalog: list[ModelEntry] | None = None,
         installed: set[str] | None = None,
         hooks: ActivityHooks | None = None,
+        workspace: Workspace | None = None,
     ):
         self.hardware = hardware
+        self.workspace = workspace
         self.catalog = catalog if catalog is not None else load_catalog()
         # Model tags already on disk, or None if unknown. When known, an
         # installed fitting model wins over a higher-tier one that would have
@@ -225,36 +328,126 @@ class Dispatcher:
             hooks.on_done(modality, entry, tokens, time.monotonic() - started)
         return result
 
-    def dispatch(self, tool_name: str, instructions: str, on_delegate: DelegateCallback | None = None) -> str:
-        if tool_name in WEB_TOOLS:
-            if self.hooks.on_web is not None:
-                self.hooks.on_web(tool_name, instructions)
-            try:
-                return WEB_TOOLS[tool_name]["run"](instructions)
-            except web.WebError as exc:
-                return f"{tool_name} failed: {exc}"
+    def dispatch(self, tool_name: str, args: dict | str, on_delegate: DelegateCallback | None = None) -> str:
+        """Run one tool call. `args` is the call's arguments object; a bare
+        string is accepted as {"instructions": ...} for older callers.
+        """
+        if isinstance(args, str):
+            args = {"instructions": args}
+        if tool_name in DIRECT_TOOLS:
+            return self._direct(tool_name, args)
         modality = self._tool_name_to_modality(tool_name)
+        instructions = str(args.get("instructions") or "")
+        path = args.get("path")
+        if path:
+            return self._delegate_to_file(modality, instructions, str(path), on_delegate)
+        content, warning = self._delegate(modality, instructions, on_delegate)
+        return f"{warning}\n\n{content}" if warning else content
+
+    def _delegate(self, modality: str, instructions: str, on_delegate: DelegateCallback | None) -> tuple[str, str | None]:
+        """(content, warning or None), with one automatic retry on a suspect result."""
         entry = self.resolve(modality)
         result = self._run(modality, entry, instructions, on_delegate)
         if result["type"] == "file":
-            return f"[generated file: {result['content']}]"
+            return f"[generated file: {result['content']}]", None
 
-        content = result["content"]
-        reason = _looks_suspect(content, instructions)
+        reason = _looks_suspect(result["content"], instructions)
         if reason is None:
-            return content
+            return result["content"], None
 
         retry_entry = self._retry_candidate(modality, entry) or entry
         retry_instructions = instructions if retry_entry is not entry else self._reinforced_instructions(instructions, reason)
         retry_result = self._run(modality, retry_entry, retry_instructions, on_delegate)
         if retry_result["type"] == "file":
-            return f"[generated file: {retry_result['content']}]"
-        retry_content = retry_result["content"]
-        retry_reason = _looks_suspect(retry_content, instructions)
+            return f"[generated file: {retry_result['content']}]", None
+        retry_reason = _looks_suspect(retry_result["content"], instructions)
         if retry_reason is None:
-            return retry_content
-
-        return (
+            return retry_result["content"], None
+        return retry_result["content"], (
             f"[WARNING: this {modality} result may be unreliable ({retry_reason}) -- verify before use, "
-            "or delegate again with clearer/simpler instructions]\n\n" + retry_content
+            "or delegate again with clearer/simpler instructions]"
         )
+
+    def _delegate_to_file(self, modality: str, instructions: str, path: str, on_delegate: DelegateCallback | None) -> str:
+        if self.workspace is None:
+            return "No project folder is open, so nothing can be written; omit `path` to get the text back."
+        try:
+            target = self.workspace.resolve(path)
+        except WorkspaceError as exc:
+            return f"Cannot write {path}: {exc}"
+        rel = self.workspace.rel(target)
+        current = target.read_text(errors="replace") if target.is_file() else None
+        brief = (
+            f"{instructions}\n\nWrite the COMPLETE contents of the file `{rel}`. "
+            "Reply with only the file's contents in one code block -- no explanation before or after."
+        )
+        if current is not None:
+            brief += f"\n\nCurrent contents of `{rel}` (change what the task needs, keep the rest):\n```\n{current}\n```"
+        content, warning = self._delegate(modality, brief, on_delegate)
+        if warning:
+            return f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}"
+        result = self.workspace.write_file(rel, _extract_file_content(content))
+        if self.hooks.on_tool_result is not None:
+            self.hooks.on_tool_result("write", result.splitlines()[0])
+        return result
+
+    def _direct(self, tool_name: str, args: dict) -> str:
+        """A tool the orchestrator runs itself. Failures come back as text so
+        the orchestrator can adjust, never as an exception.
+        """
+        hooks = self.hooks
+        if tool_name == "update_todos":
+            todos = [t for t in (args.get("todos") or []) if isinstance(t, dict) and t.get("content")]
+            if hooks.on_todos is not None:
+                hooks.on_todos(todos)
+            return f"Plan updated ({sum(t.get('status') == 'completed' for t in todos)}/{len(todos)} done)."
+
+        if hooks.on_tool is not None:
+            hooks.on_tool(tool_name, _summarize(tool_name, args))
+        try:
+            if tool_name in WEB_TOOLS:
+                target = args.get("query") or args.get("url") or args.get("instructions") or ""
+                runner = web.web_search if tool_name == "web_search" else web.fetch_url
+                result = runner(str(target))
+            else:
+                if self.workspace is None:
+                    return f"{tool_name} needs a project folder, and none is open."
+                result = self._workspace_call(tool_name, args)
+        except (web.WebError, WorkspaceError) as exc:
+            result = f"{tool_name} failed: {exc}"
+        except KeyError as exc:
+            result = f"{tool_name} is missing the required argument {exc}; check the tool's parameters."
+        except (TypeError, ValueError) as exc:
+            result = f"{tool_name} got bad arguments ({exc}); check the tool's parameters."
+        if hooks.on_tool_result is not None:
+            hooks.on_tool_result(tool_name, result)
+        return result
+
+    def _workspace_call(self, tool_name: str, args: dict) -> str:
+        ws = self.workspace
+        if tool_name == "read_file":
+            return ws.read_file(args["path"], args.get("offset") or 1, args.get("limit") or 400)
+        if tool_name == "list_files":
+            return ws.list_files(args.get("path") or ".", args.get("pattern") or "")
+        if tool_name == "search":
+            return ws.search(args["pattern"], args.get("path") or ".", args.get("glob") or "")
+        if tool_name == "edit_file":
+            return ws.edit_file(args["path"], args["old_string"], args["new_string"])
+        if tool_name == "run_command":
+            return ws.run_command(args.get("command") or args.get("instructions") or "", args.get("timeout") or 300)
+        raise ValueError(f"unknown tool {tool_name}")
+
+
+def _summarize(tool_name: str, args: dict) -> str:
+    """One line for the activity feed, e.g. `Read src/app.py`."""
+    if tool_name == "read_file":
+        return str(args.get("path", ""))
+    if tool_name == "list_files":
+        return " ".join(x for x in (str(args.get("path") or "."), str(args.get("pattern") or "")) if x)
+    if tool_name == "search":
+        return repr(args.get("pattern", "")) + (f" in {args['path']}" if args.get("path") else "")
+    if tool_name == "edit_file":
+        return str(args.get("path", ""))
+    if tool_name == "run_command":
+        return str(args.get("command") or args.get("instructions") or "")
+    return str(args.get("query") or args.get("url") or args.get("instructions") or "")

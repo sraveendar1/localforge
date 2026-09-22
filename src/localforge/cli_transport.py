@@ -123,29 +123,44 @@ def requirements_message(provider: str) -> str:
     )
 
 
+def _signature(tool: dict) -> str:
+    """`name(path, offset?, limit?)` from a JSON-schema tool definition."""
+    params = tool["function"].get("parameters") or {}
+    required = set(params.get("required") or [])
+    names = [n if n in required else f"{n}?" for n in (params.get("properties") or {})]
+    return f"{tool['function']['name']}({', '.join(names)})"
+
+
 def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
     """Flatten the conversation + tool schemas into one prompt, asking for a
-    strict JSON reply we can parse back into tool calls.
+    strict JSON reply we can parse back into tool calls with arguments.
     """
-    tool_lines = [
-        f"- {t['function']['name']}: {t['function']['description']}" for t in tools
-    ]
+    tool_lines = []
+    for t in tools:
+        tool_lines.append(f"- {_signature(t)}: {t['function']['description']}")
+        for name, prop in ((t["function"].get("parameters") or {}).get("properties") or {}).items():
+            if prop.get("description"):
+                tool_lines.append(f"    {name}: {prop['description']}")
+
+    system = [m for m in messages if m.get("role") == "system"]
     transcript = []
     for m in messages:
         role = m.get("role", "user")
+        if role == "system":
+            continue
         content = m.get("content") or ""
-        transcript.append(f"[{role}]\n{content}")
+        transcript.append(f"[{'tool result' if role == 'tool' else role}]\n{content}")
 
     return (
-        "You are orchestrating a task. Decide the next step. The tools below are "
-        "the only ones you have.\n\n"
-        "Available tools (each takes a single string field `instructions`):\n"
+        (str(system[0].get("content")) + "\n\n" if system else "")
+        + "Decide the next step. The tools below are the only ones you have.\n\n"
+        "Available tools (arguments marked ? are optional):\n"
         + ("\n".join(tool_lines) if tool_lines else "(none)")
         + "\n\nConversation so far:\n"
         + "\n\n".join(transcript)
         + "\n\nReply with ONLY a single JSON object, no prose and no code fence.\n"
-        'To delegate: {"tool_calls": [{"name": "<tool>", "instructions": "<what to do>"}]}\n'
-        'When finished:  {"final_answer": "<your complete answer>"}'
+        'To use tools (one or more): {"tool_calls": [{"name": "<tool>", "arguments": {"<arg>": <value>, ...}}]}\n'
+        'When finished:  {"final_answer": "<your reply to the user>"}'
     )
 
 
@@ -233,27 +248,42 @@ def _unwrap_envelope(stdout: str, spec: dict) -> tuple[str, _Usage, float]:
     return stdout, _Usage(), 0.0
 
 
+def _failure_detail(proc) -> str:
+    """The useful part of a failed run: a JSON envelope's own error/result
+    text if there is one, else stderr/stdout -- not the first 300 chars of a
+    usage blob, which is what hid the cause of an intermittent exit 1.
+    """
+    envelope = _extract_json(proc.stdout or "")
+    if isinstance(envelope, dict):
+        for key in ("error", "result", "message", "subtype"):
+            if envelope.get(key):
+                return str(envelope[key])[:500]
+    return (proc.stderr or proc.stdout or "no output").strip()[:500]
+
+
 def complete(provider: str, messages: list[dict], tools: list[dict], timeout: float = 600.0) -> CLIResponse:
     """Run one orchestration turn through the provider's logged-in CLI."""
     spec = _spec(provider)
     if not available(provider):
         raise CLINotAvailableError(requirements_message(provider))
 
-    cmd = [
-        spec["command"],
-        *spec["headless_args"],
-        *spec.get("isolation_args", []),
-        *spec.get("json_args", []),
-        _render_prompt(messages, tools),
-    ]
+    prompt = _render_prompt(messages, tools)
+    cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *spec.get("json_args", [])]
+    if spec.get("prompt_via_stdin"):
+        # A session's prompt grows every turn; stdin carries any size (a
+        # 340k-char prompt verified live), where one argv element is fragile.
+        # Closing stdin after writing is also what avoids `claude -p` hanging
+        # on an open, never-written stdin.
+        stdin_text = prompt
+    else:
+        cmd.append(prompt)
+        stdin_text = ""
     try:
         # An empty scratch cwd: even a CLI whose tools can't be switched off
         # sees nothing of the folder localforge was started from.
-        # stdin=DEVNULL: with an open non-tty stdin (pipes, CI, some shells)
-        # `claude -p` waits to read it and the turn hangs -- seen live.
         with tempfile.TemporaryDirectory(prefix="localforge-orchestrator-") as scratch:
             proc = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=timeout, check=False, cwd=scratch, stdin=subprocess.DEVNULL
+                cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, check=False, cwd=scratch
             )
     except subprocess.TimeoutExpired as exc:
         raise CLINotAvailableError(f"{spec['command']} timed out after {timeout}s") from exc
@@ -261,9 +291,7 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
         raise CLINotAvailableError(f"Could not run {spec['command']}: {exc}") from exc
 
     if proc.returncode != 0:
-        raise CLINotAvailableError(
-            f"{spec['command']} exited {proc.returncode}: {(proc.stderr or proc.stdout).strip()[:300]}"
-        )
+        raise CLINotAvailableError(f"{spec['command']} exited {proc.returncode}: {_failure_detail(proc)}")
 
     raw, usage, notional_cost = _unwrap_envelope(proc.stdout.strip(), spec)
 
@@ -278,10 +306,15 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
             name = call.get("name")
             if not name:
                 continue
-            instructions = call.get("instructions") or call.get("arguments", {}).get("instructions", "")
-            calls.append(
-                _ToolCall(id=f"cli_call_{i}", function=_Function(name=name, arguments=json.dumps({"instructions": instructions})))
-            )
+            arguments = call.get("arguments")
+            if isinstance(arguments, str):
+                # some replies double-encode the arguments object
+                arguments = _extract_json(arguments) or {"instructions": arguments}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            if "instructions" in call and "instructions" not in arguments:
+                arguments["instructions"] = call["instructions"]  # older flat form
+            calls.append(_ToolCall(id=f"cli_call_{i}", function=_Function(name=name, arguments=json.dumps(arguments))))
         message = _Message(content=None, tool_calls=calls or None)
         if not calls:
             message = _Message(content=raw, tool_calls=None)

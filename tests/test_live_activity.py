@@ -94,7 +94,7 @@ def test_run_passes_installed_models_to_the_dispatcher():
     seen = {}
 
     class Capture:
-        def __init__(self, hardware, catalog=None, installed=None, hooks=None):
+        def __init__(self, hardware, catalog=None, installed=None, hooks=None, **kwargs):
             seen["installed"] = installed
             raise RuntimeError("stop here")
 
@@ -201,7 +201,7 @@ def test_run_command_streams_local_output_indented_then_a_done_line(monkeypatch,
     monkeypatch.delenv("LOCALFORGE_AUTH_METHOD", raising=False)
     entry = CATALOG[0]
 
-    def fake_run(task, frontier_model, cli_provider=None, hooks=None):
+    def fake_run(task, frontier_model, cli_provider=None, hooks=None, **kwargs):
         hooks.on_frontier(1)
         hooks.on_delegate("coding", entry)
         for chunk in ["def f():\n", "    return 1", "\n"]:

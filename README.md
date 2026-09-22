@@ -31,6 +31,17 @@ Type a task to build it, or /help for commands. /exit to leave.
 localforge>
 ```
 
+It works in the folder you start it in, like Claude Code. The frontier model
+reads your code (`read_file`, `list_files`, `search`), runs commands
+(`git clone`, tests, installs), keeps a visible plan, and hands the actual
+writing to your local models, which write whole files. Before any file is
+saved you see a diff, and before any command runs you see it, and you answer
+**(y)es / (n)o / (a)lways this session**. (`/auto on` or `run --yes` skips
+the prompts.) The session remembers the conversation. When it gets long, a
+local model condenses the older turns into a session-memory note, which is
+also saved so your next session in the same folder picks up where you left
+off (`/compact` to do it now, `/clear` to start fresh).
+
 **Web access:** local models have no internet access. The frontier model does any research (`web_search`, `fetch_url`, built into localforge so it works the same with an API key or CLI login) and passes what it found into each subtask's instructions. When you orchestrate through a CLI login, that CLI's own tools (shell, file edits, web, connected apps) are switched off, and it runs in an empty scratch folder, so it can plan and delegate but can't touch your files. `fetch_url` refuses localhost and private-network addresses.
 
 While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.

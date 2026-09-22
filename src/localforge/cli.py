@@ -11,20 +11,22 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, repl, theme
+from localforge import cli_transport, config, memory, repl, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
-from localforge.orchestrator import OrchestrationError, RunStats
+from localforge.orchestrator import Conversation, OrchestrationError, RunStats
 from localforge.orchestrator import run as run_orchestrator
-from localforge.tools import ActivityHooks
+from localforge.tools import ActivityHooks, Dispatcher
+from localforge.workspace import Workspace
 
 app = typer.Typer(
     name="localforge",
@@ -750,8 +752,15 @@ def run(
         "--usage",
         help="Print token usage after the task. Inside a session, use /usage instead.",
     ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        "-y",
+        help="Approve every file change and command without asking (inside a session: /auto).",
+    ),
 ) -> None:
-    """Run a task: the frontier model plans it and delegates subtasks to local models."""
+    """Run a task in the current folder: the frontier model investigates and plans,
+    local models write the code, and you approve each change."""
     frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
 
     # An explicit --model always means "use the API path for this model";
@@ -762,14 +771,26 @@ def run(
         if cli_provider and not cli_transport.available(cli_provider):
             console.print(f"[error]Error:[/error] {cli_transport.requirements_message(cli_provider)}")
             raise typer.Exit(code=1)
-        if cli_provider:
+        if cli_provider and not _session.announced:
             spec = config.FRONTIER_CLI_AUTH[cli_provider]
             console.print(f"[dim]Orchestrating via your `{spec['command']}` login (subscription, not API billing)[/dim]")
+            _session.announced = True
 
+    if yes:
+        _session.auto_approve = True
     activity = _LiveActivity(frontier_model)
+    workspace = Workspace(Path.cwd(), approver=activity.approve)
+    conversation = _session.conversation_for(workspace.root)
     try:
         try:
-            result = run_orchestrator(task, frontier_model, cli_provider=cli_provider, hooks=activity.hooks())
+            result = run_orchestrator(
+                task,
+                frontier_model,
+                cli_provider=cli_provider,
+                hooks=activity.hooks(),
+                conversation=conversation,
+                workspace=workspace,
+            )
         finally:
             activity.close()
     except cli_transport.CLINotAvailableError as exc:
@@ -795,7 +816,8 @@ def run(
         console.print(f"[bold error]Error:[/bold error] {exc}")
         raise typer.Exit(code=1) from None
 
-    console.print(result.answer)
+    console.print()
+    console.print(Markdown(result.answer or "(no answer)"))
     _session_usage.append((frontier_model, result.stats))
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
@@ -823,7 +845,9 @@ class _LiveActivity:
             on_token=self._on_token,
             on_done=self._on_done,
             on_pull=self._on_pull,
-            on_web=self._on_web,
+            on_tool=self._on_tool,
+            on_tool_result=self._on_tool_result,
+            on_todos=self._on_todos,
         )
 
     def _stop_spinner(self) -> None:
@@ -872,13 +896,96 @@ class _LiveActivity:
         console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s{rate}")
         self._at_line_start = True
 
-    def _on_web(self, tool_name: str, target: str) -> None:
+    TOOL_LABELS = {
+        "read_file": "Read",
+        "list_files": "List",
+        "search": "Search",
+        "edit_file": "Edit",
+        "run_command": "Bash",
+        "web_search": "Web search",
+        "fetch_url": "Fetch",
+        "compact": "Memory",
+    }
+
+    def _on_tool(self, tool_name: str, summary: str) -> None:
         self._stop_spinner()
-        label = "searching the web" if tool_name == "web_search" else "reading"
-        # escape(): a URL or query can contain [brackets] Rich would eat as markup
-        console.print(f"  [accent]⌕[/accent] {self.frontier_model} is {label}: {escape(target)}", highlight=False)
-        self._status = console.status("[dim]waiting for the web...[/dim]")
-        self._status.start()
+        label = self.TOOL_LABELS.get(tool_name, tool_name)
+        # escape(): paths, queries and commands can contain [brackets] Rich would eat as markup
+        console.print(f"  [accent]●[/accent] [bold]{label}[/bold] {escape(summary)}", highlight=False)
+        if tool_name in ("web_search", "fetch_url", "run_command", "compact"):
+            self._status = console.status("[dim]working...[/dim]")
+            self._status.start()
+
+    def _on_tool_result(self, tool_name: str, result: str) -> None:
+        self._stop_spinner()
+        lines = result.strip().splitlines() or [""]
+        if tool_name == "read_file":
+            shown = [lines[0]]
+        elif tool_name == "run_command":
+            shown = lines[:1] + lines[-6:] if len(lines) > 7 else lines
+        elif tool_name in ("list_files", "search"):
+            shown = [f"{len(lines)} result line(s)" if not lines[0].startswith("No ") else lines[0]]
+        else:
+            shown = lines[:1]
+        for i, line in enumerate(shown):
+            prefix = "    ⎿ " if i == 0 else "      "
+            console.print(f"[dim]{prefix}{escape(line[:160])}[/dim]", highlight=False)
+
+    def _on_todos(self, todos: list[dict]) -> None:
+        self._stop_spinner()
+        marks = {"completed": "[success]☒[/success]", "in_progress": "[warning]◐[/warning]"}
+        console.print("  [accent]●[/accent] [bold]Plan[/bold]")
+        for t in todos:
+            mark = marks.get(t.get("status"), "☐")
+            text = escape(str(t.get("content", "")))
+            if t.get("status") == "completed":
+                text = f"[dim strike]{text}[/dim strike]"
+            console.print(f"      {mark} {text}", highlight=False)
+
+    def approve(self, kind: str, title: str, detail: str) -> bool:
+        """Claude-Code-style permission prompt: show the diff or command, then
+        yes / no / always (for this kind, this session). Without a terminal
+        to ask on, the change is refused and the orchestrator is told so.
+        """
+        self._stop_spinner()
+        if _session.auto_approve or kind in _session.always_allow:
+            self._print_change(kind, title, detail)
+            return True
+        self._print_change(kind, title, detail)
+        if not sys.stdin.isatty():
+            console.print("[warning]  No terminal to ask on — declined. Use --yes to approve changes non-interactively.[/warning]")
+            return False
+        _drain_buffered_input()
+        what = "file changes" if kind == "write" else "commands"
+        while True:
+            # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
+            answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
+            if answer in ("y", "yes"):
+                return True
+            if answer in ("n", "no"):
+                return False
+            if answer in ("a", "always"):
+                _session.always_allow.add(kind)
+                return True
+
+    def _print_change(self, kind: str, title: str, detail: str) -> None:
+        if kind == "command":
+            body = f"[bold]$ {escape(detail)}[/bold]"
+        else:
+            styled = []
+            for line in detail.splitlines():
+                if line.startswith(("+++", "---")):
+                    styled.append(f"[bold]{escape(line)}[/bold]")
+                elif line.startswith("+"):
+                    styled.append(f"[success]{escape(line)}[/success]")
+                elif line.startswith("-"):
+                    styled.append(f"[error]{escape(line)}[/error]")
+                elif line.startswith("@@"):
+                    styled.append(f"[accent]{escape(line)}[/accent]")
+                else:
+                    styled.append(f"[dim]{escape(line)}[/dim]")
+            body = "\n".join(styled) or "[dim](empty file)[/dim]"
+        console.print(Panel(body, title=escape(title), title_align="left", expand=True, border_style="panel.border"))
 
     def _on_pull(self, model_name: str, event: dict) -> None:
         # A download should be rare now (installed models are preferred), but
@@ -894,6 +1001,75 @@ class _LiveActivity:
 
     def close(self) -> None:
         self._stop_spinner()
+
+
+class _SessionState:
+    """What an interactive session remembers between messages. The REPL runs
+    every command in-process, so module-level state is the session."""
+
+    def __init__(self) -> None:
+        self.conversation: Conversation | None = None
+        self.root: Path | None = None
+        self.auto_approve = False
+        self.always_allow: set[str] = set()
+        self.announced = False
+
+    def conversation_for(self, root: Path) -> Conversation:
+        if self.conversation is None or self.root != root:
+            self.root = root
+            self.conversation = Conversation(memory=memory.load(root))
+            if self.conversation.memory:
+                console.print("[dim]Resuming with this folder's session memory (/clear to start fresh).[/dim]")
+        return self.conversation
+
+
+_session = _SessionState()
+
+
+@app.command()
+def clear(
+    forget: bool = typer.Option(False, "--forget", help="Also delete this folder's saved session memory."),
+) -> None:
+    """Start a fresh conversation (the saved session memory is kept unless --forget)."""
+    _session.conversation = Conversation()
+    _session.root = Path.cwd().resolve()
+    if forget:
+        memory.forget(Path.cwd())
+        console.print("[success]✓[/success] Conversation cleared and this folder's saved memory deleted.")
+    else:
+        console.print("[success]✓[/success] Conversation cleared. (Saved memory for this folder is kept; /clear --forget deletes it.)")
+
+
+@app.command()
+def compact() -> None:
+    """Have a local model condense the conversation so far into session memory."""
+    conversation = _session.conversation
+    if conversation is None or len(conversation.messages) < 3:
+        console.print("Nothing to compact yet.")
+        return
+    activity = _LiveActivity("local model")
+    dispatcher = Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()) or None, hooks=activity.hooks())
+    try:
+        done = memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=_session.root or Path.cwd())
+    finally:
+        activity.close()
+    if done and conversation.memory:
+        console.print(Panel(Markdown(conversation.memory), title="Session memory", border_style="panel.border"))
+
+
+@app.command()
+def auto(
+    state: str = typer.Argument(None, help="on or off; omit to toggle."),
+) -> None:
+    """Toggle auto-approval of file changes and commands for this session."""
+    if state in ("on", "off"):
+        _session.auto_approve = state == "on"
+    else:
+        _session.auto_approve = not _session.auto_approve
+    if _session.auto_approve:
+        console.print("[warning]Auto-approve ON[/warning]: file changes and commands run without asking. /auto off to stop.")
+    else:
+        console.print("[success]Auto-approve off[/success]: you'll be asked before each change or command.")
 
 
 # (frontier model, stats) for every task run in this process. Usage is only

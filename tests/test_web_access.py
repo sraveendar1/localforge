@@ -18,7 +18,7 @@ import pytest
 
 from localforge import cli_transport, config, web
 from localforge.hardware import HardwareProfile
-from localforge.tools import WEB_TOOLS, ActivityHooks, Dispatcher, build_tool_schemas
+from localforge.tools import ActivityHooks, Dispatcher, build_tool_schemas
 
 
 def _hw() -> HardwareProfile:
@@ -49,9 +49,9 @@ def test_web_tools_are_always_offered_to_the_orchestrator():
 
 def test_dispatcher_runs_web_tools_itself_and_reports_them():
     seen = []
-    dispatcher = Dispatcher(_hw(), catalog=[], hooks=ActivityHooks(on_web=lambda t, a: seen.append((t, a))))
-    with patch.dict(WEB_TOOLS["web_search"], {"run": lambda q: f"results for {q}"}):
-        out = dispatcher.dispatch("web_search", "fastapi lifespan")
+    dispatcher = Dispatcher(_hw(), catalog=[], hooks=ActivityHooks(on_tool=lambda t, a: seen.append((t, a))))
+    with patch.object(web, "web_search", lambda q: f"results for {q}"):
+        out = dispatcher.dispatch("web_search", {"query": "fastapi lifespan"})
     assert out == "results for fastapi lifespan"
     assert seen == [("web_search", "fastapi lifespan")]
     assert dispatcher.local_tokens_generated == 0  # no local model involved
@@ -61,19 +61,16 @@ def test_a_web_failure_goes_back_to_the_orchestrator_as_text():
     def boom(url):
         raise web.WebError("example.invalid returned HTTP 404")
 
-    with patch.dict(WEB_TOOLS["fetch_url"], {"run": boom}):
-        out = Dispatcher(_hw(), catalog=[]).dispatch("fetch_url", "https://example.invalid")
+    with patch.object(web, "fetch_url", boom):
+        out = Dispatcher(_hw(), catalog=[]).dispatch("fetch_url", {"url": "https://example.invalid"})
     assert out == "fetch_url failed: example.invalid returned HTTP 404"
 
 
 def test_system_prompt_says_local_models_have_no_internet():
-    import inspect
-
     import localforge.orchestrator as orch
 
-    source = inspect.getsource(orch.run)
-    assert "no internet access" in source
-    assert "web_search" in source and "fetch_url" in source
+    assert "no internet access" in orch.SYSTEM_PROMPT
+    assert "web_search" in orch.SYSTEM_PROMPT and "fetch_url" in orch.SYSTEM_PROMPT
 
 
 # --- fetch_url --------------------------------------------------------------
@@ -194,14 +191,19 @@ def test_claude_runs_with_its_own_tools_and_connectors_switched_off():
     assert "--strict-mcp-config" in cmd
 
 
-def test_cli_orchestrator_runs_in_an_empty_scratch_dir_with_stdin_closed():
+def test_cli_orchestrator_runs_in_an_empty_scratch_dir_with_the_prompt_on_stdin():
+    """A session's prompt grows every turn: it goes over stdin (verified live
+    with 340k chars), never as one argv element, and stdin is then closed so
+    `claude -p` can't hang waiting on it.
+    """
     with patch.object(cli_transport, "available", return_value=True), patch.object(
         cli_transport.subprocess, "run", return_value=_proc()
     ) as run:
-        cli_transport.complete("anthropic", [{"role": "user", "content": "hi"}], [])
+        cli_transport.complete("anthropic", [{"role": "user", "content": "hi there"}], [])
 
     kwargs = run.call_args.kwargs
-    assert kwargs["stdin"] is cli_transport.subprocess.DEVNULL
+    assert "hi there" in kwargs["input"]
+    assert not any("hi there" in arg for arg in run.call_args.args[0])
     assert kwargs["cwd"] != os.getcwd()
     assert "localforge-orchestrator-" in kwargs["cwd"]
     assert not os.path.exists(kwargs["cwd"])  # cleaned up afterwards
@@ -215,7 +217,8 @@ def test_every_cli_provider_declares_isolation_args():
 def test_render_prompt_lists_web_tools_and_says_they_are_the_only_ones():
     tools = build_tool_schemas(_hw(), catalog=[])
     prompt = cli_transport._render_prompt([{"role": "user", "content": "x"}], tools)
-    assert "- web_search:" in prompt and "- fetch_url:" in prompt
+    assert "- web_search(query):" in prompt and "- fetch_url(url):" in prompt
+    assert "- read_file(path, offset?, limit?):" in prompt
     assert "the only ones you have" in prompt
 
 
@@ -228,13 +231,13 @@ def test_web_activity_line_renders_markup_and_keeps_brackets_in_urls(monkeypatch
     monkeypatch.setattr(cli_module.config, "CONFIG_FILE", tmp_path / "config.env")
     monkeypatch.delenv("LOCALFORGE_AUTH_METHOD", raising=False)
 
-    def fake_run(task, frontier_model, cli_provider=None, hooks=None):
-        hooks.on_web("fetch_url", "https://example.com/a?x=[1]")
-        hooks.on_web("web_search", "fastapi lifespan")
+    def fake_run(task, frontier_model, cli_provider=None, hooks=None, **kwargs):
+        hooks.on_tool("fetch_url", "https://example.com/a?x=[1]")
+        hooks.on_tool("web_search", "fastapi lifespan")
         return RunResult("done", RunStats())
 
     with patch.object(cli_module, "run_orchestrator", side_effect=fake_run):
         out = CliRunner().invoke(cli_module.app, ["run", "t", "-m", "gpt-5"]).output
-    assert "⌕ gpt-5 is reading: https://example.com/a?x=[1]" in out
-    assert "⌕ gpt-5 is searching the web: fastapi lifespan" in out
+    assert "● Fetch https://example.com/a?x=[1]" in out
+    assert "● Web search fastapi lifespan" in out
     assert "[accent]" not in out

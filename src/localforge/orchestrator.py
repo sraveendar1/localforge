@@ -12,10 +12,11 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import cli_transport
+from localforge import cli_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
+from localforge.workspace import Workspace
 
 
 def _installed_models() -> set[str] | None:
@@ -68,7 +69,7 @@ class OrchestrationError(RuntimeError):
         self.stats = stats
 
 
-MAX_ROUNDS = 25
+MAX_ROUNDS = 40
 
 # How many of the most recent tool results to keep in full. Once a task runs
 # long enough to accumulate more than this many, older ones are collapsed to
@@ -115,6 +116,49 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
     stats.frontier_cost_usd += cost or 0.0
 
 
+SYSTEM_PROMPT = """You are the orchestrator inside localforge, a coding harness in the user's terminal, working in their project folder. You plan, investigate and review; local open-weight models running on the user's machine write the code and docs.
+
+How to work:
+- Investigate before changing anything: list_files, search and read_file show you the project. Never guess at code you haven't read.
+- To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees ONLY your instructions plus the current file contents -- no other files, no conversation, no internet. So put everything it needs into `instructions`: the goal, the exact interfaces and names from other files, conventions, and any facts you looked up.
+- edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
+- run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them.
+- The local models have no internet access. When the task needs anything current or external -- library docs, API details, versions, a URL the user mentioned -- use web_search and fetch_url yourself and pass the relevant facts along.
+- For any task with more than two steps, call update_todos first with your plan, and update it as steps complete.
+- This is an ongoing conversation: the user's earlier messages and your earlier work are above, and older turns may be condensed into a session-memory note.
+- If the user declines a change or command, don't retry it unchanged; ask or adjust.
+- Finish with a short summary of what you changed (files, commands run, results) and anything left to do.
+
+Local models occasionally produce bad results: empty output, a refusal, something far too short for what was asked, or content that doesn't actually satisfy the subtask. Do not accept a delegated result at face value -- check it against what you asked for before using it (read_file the written file when it matters). If a result is prefixed with [WARNING: ...], that is an automated flag that something looked wrong; treat it with extra scrutiny. If a result is clearly bad, delegate that subtask again with more specific or simpler instructions rather than passing the bad result through. If you've retried and still can't get a usable result, say so plainly in your final answer instead of presenting a broken result as if it were fine."""
+
+
+@dataclass
+class Conversation:
+    """One session's history, kept across the user's messages so the
+    orchestrator has context the way Claude Code does. `memory` is the
+    local-model-maintained summary of turns that were compacted away.
+    """
+
+    messages: list[dict] = field(default_factory=list)
+    tool_indices: list[int] = field(default_factory=list)
+    memory: str = ""
+    project_snapshot: str = ""
+
+    def system_message(self) -> dict:
+        content = SYSTEM_PROMPT
+        if self.project_snapshot:
+            content += "\n\n" + self.project_snapshot
+        if self.memory:
+            content += "\n\nSession memory (condensed earlier turns, kept by a local model):\n" + self.memory
+        return {"role": "system", "content": content}
+
+    def chars(self) -> int:
+        return sum(len(str(m.get("content") or "")) for m in self.messages)
+
+    def reindex_tools(self) -> None:
+        self.tool_indices = [i for i, m in enumerate(self.messages) if m.get("role") == "tool"]
+
+
 def run(
     task: str,
     frontier_model: str,
@@ -122,22 +166,23 @@ def run(
     on_delegate: DelegateCallback | None = None,
     cli_provider: str | None = None,
     hooks: ActivityHooks | None = None,
+    conversation: Conversation | None = None,
+    workspace: Workspace | None = None,
 ) -> RunResult:
-    """Run `task` to completion, delegating subtasks to local models.
+    """Run one user message to completion: the frontier model investigates,
+    delegates writing to local models, and answers.
 
     `frontier_model` is any LiteLLM model string, e.g. "claude-opus-5",
-    "gpt-5", or "ollama/llama3.1:70b" if you want to self-host the
-    orchestrator too. `on_delegate`, if given, is called with
-    (modality, ModelEntry) right before each subtask is handed to a local
-    model, so the caller can show the user what's doing the work.
+    "gpt-5", or "ollama/llama3.1:70b" to self-host the orchestrator too.
 
     `cli_provider`, if given (e.g. "anthropic"), routes the frontier turns
     through that provider's own logged-in CLI instead of an API key -- see
-    cli_transport. The loop below is identical either way; only the call
-    that produces a response differs.
+    cli_transport. The loop below is identical either way.
 
-    `hooks` lets the caller show activity live: each frontier turn, each
-    local model's output as it streams, and when each subtask finishes.
+    `conversation` carries history across calls (the interactive session
+    passes the same one every time); without it each call starts fresh.
+    `workspace` is the project folder the file/command tools act on.
+    `hooks` lets the caller show activity live.
 
     Returns a `RunResult` with the final answer and usage metrics (frontier
     tokens/cost actually spent, and tokens local models generated instead --
@@ -145,41 +190,25 @@ def run(
     """
     hardware = hardware if hardware is not None else detect_hardware()
     hooks = hooks or ActivityHooks()
+    conversation = conversation if conversation is not None else Conversation()
     installed = _installed_models()
-    dispatcher = Dispatcher(hardware, installed=installed, hooks=hooks)
+    dispatcher = Dispatcher(hardware, installed=installed, hooks=hooks, workspace=workspace)
     tools = build_tool_schemas(hardware, dispatcher.catalog, installed)
     stats = RunStats()
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are an orchestrator. Break the user's request into subtasks and "
-                "delegate each one to the appropriate tool. Do not do the work yourself; "
-                "delegate it, then combine the results into a final answer.\n\n"
-                "The local models have no internet access and no tools: they only see "
-                "the instructions you send them. When the task needs anything current "
-                "or external -- library docs, API details, versions, facts, a URL the "
-                "user mentioned -- look it up yourself with web_search and fetch_url, "
-                "then put the relevant facts, excerpts or code snippets directly into "
-                "the instructions of each subtask that needs them. Research is your job; "
-                "the building itself is still delegated.\n\n"
-                "Local models occasionally produce bad results: empty output, a refusal, "
-                "something far too short for what was asked, or content that doesn't "
-                "actually satisfy the subtask. Do not accept a delegated result at face "
-                "value -- check it against what you asked for before using it. If a "
-                "result is prefixed with [WARNING: ...], that is an automated flag that "
-                "something looked wrong; treat it with extra scrutiny. If a result is "
-                "clearly bad, delegate that subtask again with more specific or simpler "
-                "instructions rather than passing the bad result through. If you've "
-                "retried and still can't get a usable result, say so plainly in your "
-                "final answer instead of presenting a broken result as if it were fine."
-            ),
-        },
-        {"role": "user", "content": task},
-    ]
+    if workspace is not None and not conversation.project_snapshot:
+        conversation.project_snapshot = workspace.snapshot()
+    if conversation.chars() > memory.COMPACT_AT_CHARS:
+        memory.compact(conversation, dispatcher, hooks)
+    if not conversation.messages:
+        conversation.messages.append(conversation.system_message())
+    else:
+        conversation.messages[0] = conversation.system_message()
+    conversation.messages.append({"role": "user", "content": task})
+    messages = conversation.messages
 
-    tool_message_indices: list[int] = []
+    def _finish() -> None:
+        stats.local_tokens_generated = dispatcher.local_tokens_generated
 
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
@@ -193,25 +222,19 @@ def run(
         messages.append(message.model_dump())
 
         if not message.tool_calls:
-            stats.local_tokens_generated = dispatcher.local_tokens_generated
+            _finish()
             return RunResult(answer=message.content or "", stats=stats)
 
         for call in message.tool_calls:
-            args = json.loads(call.function.arguments)
             try:
-                result = dispatcher.dispatch(call.function.name, args["instructions"], on_delegate=on_delegate)
+                args = json.loads(call.function.arguments or "{}")
+                result = dispatcher.dispatch(call.function.name, args, on_delegate=on_delegate)
             except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
                 result = f"Error running {call.function.name}: {exc}"
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call.id,
-                    "content": result,
-                }
-            )
-            tool_message_indices.append(len(messages) - 1)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+            conversation.tool_indices.append(len(messages) - 1)
 
-        _collapse_old_tool_results(messages, tool_message_indices)
+        _collapse_old_tool_results(messages, conversation.tool_indices)
 
-    stats.local_tokens_generated = dispatcher.local_tokens_generated
+    _finish()
     raise OrchestrationError(f"Orchestration did not converge within {MAX_ROUNDS} rounds.", stats)
