@@ -1303,14 +1303,63 @@ def _start_session() -> bool:
     return _choose_orchestrator_at_start()
 
 
+def _ask_number(prompt: str, count: int) -> int | None:
+    """A 1..count choice, re-asked until valid; no default. None if the user
+    backs out with Ctrl+C / Ctrl+D."""
+    _drain_buffered_input()
+    while True:
+        try:
+            answer = console.input(f"{prompt} (1-{count}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= count:
+            return int(answer)
+        console.print(f"[warning]Type a number from 1 to {count}.[/warning]")
+
+
+def _current_is_usable(current: str, choices: list[tuple[str, str, dict]]) -> bool:
+    """The saved orchestrator can still run here: it's among the choices
+    (a downloaded local model, a cloud model with a key/login), or it's a
+    custom cloud model id whose provider is set up."""
+    if not current:
+        return False
+    if any(model_id == current for model_id, _, _ in choices):
+        return True
+    if _is_local_model(current):
+        return False  # not downloaded (any more)
+    provider = _cloud_provider(current)
+    env_var = FRONTIER_PROVIDERS.get(provider) if provider else None
+    return bool(
+        (env_var and os.environ.get(env_var))
+        or (provider and provider in config.FRONTIER_CLI_AUTH and cli_transport.available(provider))
+    )
+
+
 def _choose_orchestrator_at_start() -> bool:
-    """Every new session asks which orchestrator to use (the user's choice:
-    a new window shouldn't silently reuse yesterday's). A number is
-    required -- no default, matching setup's menus. Returns False if the
-    user backs out (Ctrl+C / Ctrl+D), which ends the session.
-    """
+    """Every new session confirms the orchestrator. With a usable one from
+    last time, it's a short "keep it, or choose another?"; the full list
+    only comes up when asked for, or when there's nothing usable to keep.
+    Numbered, no default. Returns False if the user backs out (Ctrl+C / Ctrl+D),
+    which ends the session."""
     current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or ""
     choices = _model_choices()
+
+    if _current_is_usable(current, choices):
+        label = _orchestrator_label(current, _cli_provider_for(current, explicit=False))
+        console.print(f"[bold]Orchestrator from last time:[/bold] {escape(label)}")
+        console.print("  1) Keep using it\n  2) Choose a different model")
+        answer = _ask_number("Choose", 2)
+        if answer is None:
+            return False
+        if answer == 1:
+            _session.announced = True  # just confirmed; don't repeat it on the first task
+            _session.conversation_for(Path.cwd().resolve())
+            console.print()
+            return True
+    elif current:
+        console.print(f"[warning]{escape(current)} from last time isn't available here any more.[/warning]")
+
     if not choices:
         console.print(
             "[warning]No orchestrator is available yet: no models in Ollama and no cloud key or login.[/warning] "
@@ -1321,20 +1370,14 @@ def _choose_orchestrator_at_start() -> bool:
     for i, (model_id, label, _) in enumerate(choices, 1):
         last = "  [dim](last used)[/dim]" if model_id == current else ""
         console.print(f"  {i}) {escape(label)}{last}", highlight=False)
-    _drain_buffered_input()
-    while True:
-        try:
-            answer = console.input(f"Choose 1-{len(choices)}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            return False
-        if answer.isdigit() and 1 <= int(answer) <= len(choices):
-            model_id, _, auth = choices[int(answer) - 1]
-            _set_orchestrator(model_id, auth)
-            _session.conversation_for(Path.cwd().resolve())
-            console.print()
-            return True
-        console.print(f"[warning]Type a number from 1 to {len(choices)}.[/warning]")
+    answer = _ask_number("Choose", len(choices))
+    if answer is None:
+        return False
+    model_id, _, auth = choices[answer - 1]
+    _set_orchestrator(model_id, auth)
+    _session.conversation_for(Path.cwd().resolve())
+    console.print()
+    return True
 
 
 @app.command(name="model")

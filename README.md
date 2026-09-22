@@ -43,9 +43,10 @@ also saved so your next session in the same folder picks up where you left
 off (`/compact` to do it now, `/clear` to start fresh).
 
 **Starting a session:** the first time in a folder, localforge asks whether
-you trust it (like Claude Code). Then it asks which model should orchestrate
-this session: any model in Ollama, or Claude/GPT/Gemini if you've set one up.
-There's no default, so you always choose. Type `/` to see every command with
+you trust it (like Claude Code). Then it confirms the orchestrator. If you used
+one last time, it asks whether to keep it or choose a different one. The list
+(any model in Ollama, or Claude/GPT/Gemini if you've set one up) appears only
+when you want to change. There's no default, so you always choose. Type `/` to see every command with
 a description, and press Tab to complete. Arrow keys, mid-line editing and
 Up for history all work.
 
