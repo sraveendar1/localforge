@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 
 from localforge import config
@@ -101,11 +102,12 @@ def logged_in(provider: str, timeout: float = 60.0) -> bool:
     spec = _spec(provider)
     try:
         proc = subprocess.run(
-            [spec["command"], *spec["headless_args"], "Reply with exactly: OK"],
+            [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), "Reply with exactly: OK"],
             capture_output=True,
             text=True,
             timeout=timeout,
             check=False,
+            stdin=subprocess.DEVNULL,
         )
     except (subprocess.SubprocessError, OSError):
         return False
@@ -135,7 +137,8 @@ def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
         transcript.append(f"[{role}]\n{content}")
 
     return (
-        "You are orchestrating a task. Decide the next step.\n\n"
+        "You are orchestrating a task. Decide the next step. The tools below are "
+        "the only ones you have.\n\n"
         "Available tools (each takes a single string field `instructions`):\n"
         + ("\n".join(tool_lines) if tool_lines else "(none)")
         + "\n\nConversation so far:\n"
@@ -236,9 +239,22 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
     if not available(provider):
         raise CLINotAvailableError(requirements_message(provider))
 
-    cmd = [spec["command"], *spec["headless_args"], *spec.get("json_args", []), _render_prompt(messages, tools)]
+    cmd = [
+        spec["command"],
+        *spec["headless_args"],
+        *spec.get("isolation_args", []),
+        *spec.get("json_args", []),
+        _render_prompt(messages, tools),
+    ]
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+        # An empty scratch cwd: even a CLI whose tools can't be switched off
+        # sees nothing of the folder localforge was started from.
+        # stdin=DEVNULL: with an open non-tty stdin (pipes, CI, some shells)
+        # `claude -p` waits to read it and the turn hangs -- seen live.
+        with tempfile.TemporaryDirectory(prefix="localforge-orchestrator-") as scratch:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout, check=False, cwd=scratch, stdin=subprocess.DEVNULL
+            )
     except subprocess.TimeoutExpired as exc:
         raise CLINotAvailableError(f"{spec['command']} timed out after {timeout}s") from exc
     except OSError as exc:

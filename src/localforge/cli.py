@@ -11,6 +11,7 @@ from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
@@ -822,6 +823,7 @@ class _LiveActivity:
             on_token=self._on_token,
             on_done=self._on_done,
             on_pull=self._on_pull,
+            on_web=self._on_web,
         )
 
     def _stop_spinner(self) -> None:
@@ -869,6 +871,14 @@ class _LiveActivity:
         rate = f", {tokens / generating:.0f} tok/s" if generating > 0 and tokens else ""
         console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s{rate}")
         self._at_line_start = True
+
+    def _on_web(self, tool_name: str, target: str) -> None:
+        self._stop_spinner()
+        label = "searching the web" if tool_name == "web_search" else "reading"
+        # escape(): a URL or query can contain [brackets] Rich would eat as markup
+        console.print(f"  [accent]⌕[/accent] {self.frontier_model} is {label}: {escape(target)}", highlight=False)
+        self._status = console.status("[dim]waiting for the web...[/dim]")
+        self._status.start()
 
     def _on_pull(self, model_name: str, event: dict) -> None:
         # A download should be rare now (installed models are preferred), but

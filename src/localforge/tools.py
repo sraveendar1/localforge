@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from localforge import web
 from localforge.backends import BACKENDS
 from localforge.catalog import ModelEntry, best_match, candidates, load_catalog
 from localforge.hardware import HardwareProfile
@@ -33,6 +34,8 @@ class ActivityHooks:
     on_done: Callable[[str, ModelEntry, int, float], None] | None = None
     # (model name, raw Ollama pull event) if a model has to be downloaded first
     on_pull: Callable[[str, dict], None] | None = None
+    # (tool name, query or URL) when the orchestrator uses the web
+    on_web: Callable[[str, str], None] | None = None
 
 
 # Modality -> (tool name, description, prompt-building instructions)
@@ -52,37 +55,59 @@ TASK_MODALITIES = {
 }
 
 
+# Web tools run inside localforge for the orchestrator. Local models have no
+# internet access; the orchestrator looks things up and passes the relevant
+# facts into each delegated subtask's instructions. Both take the same single
+# `instructions` string as the delegate tools, so the CLI transport (which
+# can only express that one field) handles them unchanged.
+WEB_TOOLS = {
+    "web_search": {
+        "description": (
+            "Search the web. `instructions` is the search query. Returns titles, URLs and "
+            "snippets; use fetch_url to read a page in full."
+        ),
+        "run": web.web_search,
+    },
+    "fetch_url": {
+        "description": "Read a web page as text. `instructions` is the full http(s) URL.",
+        "run": web.fetch_url,
+    },
+}
+
+
+def _schema(name: str, description: str, param_description: str) -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {"instructions": {"type": "string", "description": param_description}},
+                "required": ["instructions"],
+            },
+        },
+    }
+
+
 def build_tool_schemas(
     hardware: HardwareProfile, catalog: list[ModelEntry] | None = None, installed: set[str] | None = None
 ) -> list[dict]:
     """OpenAI/LiteLLM-style tool schemas for every modality with an available
-    local model on this machine. A modality with no fitting catalog entry
-    (hardware too limited) is left out entirely, rather than exposing a tool
-    the frontier model could call only to get a NoFittingModelError back.
+    local model on this machine, plus the web tools. A modality with no
+    fitting catalog entry (hardware too limited) is left out entirely, rather
+    than exposing a tool the frontier model could call only to get a
+    NoFittingModelError back.
     """
     schemas = []
     for modality, meta in TASK_MODALITIES.items():
         if not candidates(modality, hardware, catalog, installed):
             continue
         schemas.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": meta["tool_name"],
-                    "description": meta["description"],
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "instructions": {
-                                "type": "string",
-                                "description": "What the local model should do, with all context it needs.",
-                            }
-                        },
-                        "required": ["instructions"],
-                    },
-                },
-            }
+            _schema(meta["tool_name"], meta["description"], "What the local model should do, with all context it needs.")
         )
+    for name, meta in WEB_TOOLS.items():
+        schemas.append(_schema(name, meta["description"], "The search query or URL."))
     return schemas
 
 
@@ -201,6 +226,13 @@ class Dispatcher:
         return result
 
     def dispatch(self, tool_name: str, instructions: str, on_delegate: DelegateCallback | None = None) -> str:
+        if tool_name in WEB_TOOLS:
+            if self.hooks.on_web is not None:
+                self.hooks.on_web(tool_name, instructions)
+            try:
+                return WEB_TOOLS[tool_name]["run"](instructions)
+            except web.WebError as exc:
+                return f"{tool_name} failed: {exc}"
         modality = self._tool_name_to_modality(tool_name)
         entry = self.resolve(modality)
         result = self._run(modality, entry, instructions, on_delegate)

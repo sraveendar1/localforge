@@ -70,6 +70,14 @@ AUTH_CLI_LOGIN = "cli_login"
 #                   "jsonl" -> stdout is newline-delimited JSON events
 #   result_key    : (json) key holding the reply text
 #   usage_key     : (json) key holding token counts
+#   isolation_args: args that switch off the CLI's own agent tools (shell,
+#                   file edits, web, MCP connectors). The CLI is the
+#                   *orchestrator* here: it plans and delegates through
+#                   localforge's tools only. Left on, `claude -p` could run
+#                   Bash/Edit/Write in the user's folder and reach their
+#                   Slack/M365/Docs connectors -- verified live. Web access
+#                   comes from localforge's own web_search/fetch_url instead,
+#                   so it works the same under an API key.
 #   Flags below were checked against each project's own published docs.
 #   Anthropic is additionally verified live end to end; the other two are
 #   probed at runtime (cli_transport.available/logged_in) rather than
@@ -79,6 +87,10 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
     "anthropic": {
         "command": "claude",
         "headless_args": ["-p"],
+        # Verified live (claude 2.1.x): with these the model reports no
+        # built-in or MCP tools. `--tools` is variadic, so it must be followed
+        # by another option, never directly by the prompt.
+        "isolation_args": ["--tools", "", "--strict-mcp-config"],
         "json_args": ["--output-format", "json"],
         "envelope": "json",
         "result_key": "result",
@@ -92,6 +104,11 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # item.completed event whose item.type is "agent_message".
         "command": "codex",
         "headless_args": ["exec"],
+        # Read-only sandbox: no file writes or shell side effects. Codex's web
+        # search is off unless --search is passed. --skip-git-repo-check
+        # because it runs in an empty scratch directory (see cli_transport).
+        # From Codex's docs, not verified live.
+        "isolation_args": ["--sandbox", "read-only", "--skip-git-repo-check"],
         "json_args": ["--json"],
         "envelope": "jsonl",
         "result_key": "text",
@@ -104,6 +121,9 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # Single JSON object: {"response": ..., "stats": {...}}
         "command": "gemini",
         "headless_args": ["-p"],
+        # No verified flag to switch its tools off; it still runs in an empty
+        # scratch directory, so its file tools see nothing of the user's.
+        "isolation_args": [],
         "json_args": ["--output-format", "json"],
         "envelope": "json",
         "result_key": "response",

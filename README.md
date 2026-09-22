@@ -31,6 +31,8 @@ Type a task to build it, or /help for commands. /exit to leave.
 localforge>
 ```
 
+**Web access:** local models have no internet access. The frontier model does any research (`web_search`, `fetch_url`, built into localforge so it works the same with an API key or CLI login) and passes what it found into each subtask's instructions. When you orchestrate through a CLI login, that CLI's own tools (shell, file edits, web, connected apps) are switched off, and it runs in an empty scratch folder, so it can plan and delegate but can't touch your files. `fetch_url` refuses localhost and private-network addresses.
+
 While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.
 
 Type a task directly and it runs (shorthand for `/run <task>`), or use a
