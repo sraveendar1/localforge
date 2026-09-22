@@ -257,7 +257,7 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
                 if position:
                     console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
                 continue
-            if runner.busy and cmd in BUSY_BLOCKED:
+            if runner.busy and cmd in BUSY_BLOCKED and not (cmd == "model" and runner.waiting):
                 console.print(f"[warning]/{cmd} has to wait until the current task is done[/warning] (/summary to check on it, /stop to end it).")
                 continue
 

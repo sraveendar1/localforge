@@ -17,12 +17,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 from localforge import config
 from localforge.answer_stream import AnswerStreamer
@@ -30,6 +33,64 @@ from localforge.answer_stream import AnswerStreamer
 
 class CLINotAvailableError(RuntimeError):
     """The provider's CLI isn't installed, or isn't logged in."""
+
+
+class UsageLimitError(CLINotAvailableError):
+    """The account hit a usage/spend limit. Carries when it resets, if the
+    provider said -- a task can then wait and carry on instead of dying."""
+
+    def __init__(self, message: str, provider: str = "", reset_at: datetime | None = None):
+        super().__init__(message)
+        self.provider = provider
+        self.reset_at = reset_at
+
+
+LIMIT_MARKERS = (
+    "usage limit",
+    "spend limit",
+    "rate limit",
+    "rate_limit",
+    "quota",
+    "credit balance",
+    "out of credits",
+    "limit reached",
+    "exceeded your",
+    "too many requests",
+)
+_RESET = re.compile(r"reset[s]?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap]\.?m\.?)?\s*(?:\(([^)]+)\))?", re.I)
+
+
+def looks_like_limit(text: str) -> bool:
+    return any(marker in (text or "").lower() for marker in LIMIT_MARKERS)
+
+
+def parse_reset_time(text: str, now: datetime | None = None) -> datetime | None:
+    """When the provider says the limit resets, e.g. "your session limit
+    resets 11:10pm (Europe/Lisbon)". Returns a local-time datetime in the
+    future, or None when the message doesn't say (a monthly spend limit
+    usually doesn't -- and waiting for one would be pointless)."""
+    match = _RESET.search(text or "")
+    if not match:
+        return None
+    hour, minute, meridiem, zone = match.group(1), match.group(2), match.group(3), match.group(4)
+    hour, minute = int(hour), int(minute or 0)
+    if meridiem:
+        meridiem = meridiem.replace(".", "").lower()
+        hour = hour % 12 + (12 if meridiem == "pm" else 0)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return None
+    tz = None
+    if zone:
+        try:
+            tz = ZoneInfo(zone.strip())
+        except Exception:  # noqa: BLE001 - an unknown zone name just means "assume local"
+            tz = None
+    now = now or datetime.now(tz or timezone.utc).astimezone()
+    reference = now.astimezone(tz) if tz else now
+    reset = reference.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if reset <= reference:
+        reset += timedelta(days=1)  # the time given is tomorrow
+    return reset.astimezone(now.tzinfo)
 
 
 # --- response objects shaped like the LiteLLM ones the orchestrator expects ---
@@ -416,7 +477,10 @@ def complete(
         raise CLINotAvailableError(f"Could not run {spec['command']}: {exc}") from exc
 
     if proc.returncode != 0:
-        raise CLINotAvailableError(f"{spec['command']} exited {proc.returncode}: {_failure_detail(proc)}")
+        detail = _failure_detail(proc)
+        if looks_like_limit(detail):
+            raise UsageLimitError(f"{spec['command']}: {detail}", provider=provider, reset_at=parse_reset_time(detail))
+        raise CLINotAvailableError(f"{spec['command']} exited {proc.returncode}: {detail}")
 
     raw, usage, notional_cost = _unwrap_envelope(proc.stdout.strip(), spec)
 

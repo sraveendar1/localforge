@@ -52,6 +52,10 @@ class ActivityHooks:
     on_answer_text: Callable[[str], None] | None = None
     # notes the user added while the task runs (/tell), fetched each step
     poll_notes: Callable[[], list[str]] | None = None
+    # the account hit a usage limit: return "retry" to try again (after
+    # waiting), ("switch", model, provider) to carry on with another
+    # orchestrator, or None to give up. Without this hook the run fails.
+    on_limit: Callable[[Exception], object] | None = None
 
 
 # Modality -> tool name + description. Each delegate tool takes

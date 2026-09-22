@@ -282,30 +282,64 @@ def run(
         raise TaskCancelled(stats) from None
 
 
-def _call_frontier(frontier_model, cli_provider, hooks, messages, tools):
-    """One orchestrator turn, retried once if the failure looks transient
-    (a dropped connection, a server hiccup, an intermittent CLI exit).
-    Limits, sign-in problems and missing tools are not retried: waiting
-    two seconds fixes none of them."""
-    for attempt in (1, 2):
+def _call_frontier(orchestrator: dict, hooks, messages, tools):
+    """One orchestrator turn.
+
+    Retried once if the failure looks transient (a dropped connection, a
+    server hiccup, an intermittent CLI exit). A usage limit is different:
+    the work so far is fine, the account just can't be used right now, so
+    `hooks.on_limit` decides -- wait for the reset and retry, switch to
+    another orchestrator (`orchestrator` is updated in place, so the task
+    carries on from exactly where it stopped), or give up. Sign-in problems
+    and missing tools are still raised straight away.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
         try:
+            model, cli_provider = orchestrator["model"], orchestrator["provider"]
             on_text = hooks.on_answer_text
-            if frontier_model.startswith(local_transport.PREFIXES):
+            if model.startswith(local_transport.PREFIXES):
                 # An open-weight orchestrator on this machine: straight to Ollama,
                 # never through a provider CLI, whatever else is configured.
-                return local_transport.complete(frontier_model, messages, tools, on_text=on_text)
+                return local_transport.complete(model, messages, tools, on_text=on_text)
             if cli_provider:
-                return cli_transport.complete(cli_provider, messages, tools, model=frontier_model, on_text=on_text)
+                return cli_transport.complete(cli_provider, messages, tools, model=model, on_text=on_text)
             if on_text is not None:
-                return _complete_streaming(frontier_model, messages, tools, on_text)
-            return completion(model=frontier_model, messages=messages, tools=tools)
-        except Exception as exc:  # noqa: BLE001 - classified below; re-raised unless worth one retry
-            if attempt == 2 or not _is_transient(exc):
+                return _complete_streaming(model, messages, tools, on_text)
+            return completion(model=model, messages=messages, tools=tools)
+        except Exception as exc:  # noqa: BLE001 - classified below
+            limit = _as_usage_limit(exc, orchestrator)
+            if limit is not None and hooks.on_limit is not None:
+                decision = hooks.on_limit(limit)
+                if decision == "retry":
+                    attempt = 0  # a fresh start after the wait, not a retry of a broken call
+                    continue
+                if isinstance(decision, tuple) and decision and decision[0] == "switch":
+                    _, orchestrator["model"], orchestrator["provider"] = decision
+                    attempt = 0
+                    continue
+                raise limit from None
+            if limit is not None or attempt >= 2 or not _is_transient(exc):
                 raise
             if hooks.on_tool is not None:
                 hooks.on_tool("retry", f"the orchestrator call failed ({str(exc)[:120]}); retrying once")
             time.sleep(RETRY_DELAY_SECONDS)
-    raise AssertionError("unreachable")
+
+
+def _as_usage_limit(exc: Exception, orchestrator: dict) -> cli_transport.UsageLimitError | None:
+    """The same failure arrives differently per transport: a typed error from
+    the CLI transport, a RateLimitError from LiteLLM, or just a message."""
+    if isinstance(exc, cli_transport.UsageLimitError):
+        return exc
+    if isinstance(exc, cli_transport.CLINotAvailableError) and not cli_transport.looks_like_limit(str(exc)):
+        return None
+    text = str(exc)
+    if type(exc).__name__ in ("RateLimitError", "BudgetExceededError") or cli_transport.looks_like_limit(text):
+        return cli_transport.UsageLimitError(
+            text, provider=orchestrator.get("provider") or "", reset_at=cli_transport.parse_reset_time(text)
+        )
+    return None
 
 
 RETRY_DELAY_SECONDS = 2.0
@@ -340,6 +374,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     # local orchestrators loop, re-issuing the same call after it succeeded
     # (seen live: one file delegated three times); re-running it wastes a
     # local generation and, for writes, another approval prompt.
+    orchestrator = {"model": frontier_model, "provider": cli_provider}
     done_calls: dict[tuple[str, str], str] = {}  # successful calls only
     failures: dict[tuple[str, str], int] = {}  # failed attempts per identical call
     last_error: dict[tuple[str, str], str] = {}
@@ -350,7 +385,8 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
             hooks.on_frontier(round_number)
         for note in hooks.poll_notes() if hooks.poll_notes is not None else []:
             messages.append({"role": "user", "content": f"[Note from the user, added while you were working]: {note}"})
-        response = _call_frontier(frontier_model, cli_provider, hooks, messages, tools)
+        response = _call_frontier(orchestrator, hooks, messages, tools)
+        frontier_model = orchestrator["model"]  # may have been switched while waiting out a limit
         _record_frontier_usage(response, stats)
         message = response.choices[0].message
         messages.append(message.model_dump())

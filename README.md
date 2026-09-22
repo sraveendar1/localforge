@@ -101,6 +101,14 @@ full diff. Claude also orchestrates at medium thinking effort
 (`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows an estimate of
 what the local models' work would have cost from the frontier model.
 
+**If the paid model runs out mid-task:** the task doesn't die. localforge
+reads the reset time from the provider's message, pauses with a countdown in
+the status bar, and then carries on exactly where it stopped: nothing you've
+already done is lost and you don't have to retype the task. While it's
+paused you can `/model` to switch to a local model and continue right away,
+or `/stop` to give up. If the provider doesn't say when the limit resets, or
+it's hours away, localforge says so instead of waiting.
+
 **Fully local, no account:** pick "local" in `localforge setup`, or type
 `/model` in a session and choose a model you already have in Ollama (e.g.
 `/model ollama/qwen2.5:7b`). The orchestrator then runs on your machine too,

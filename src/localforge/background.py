@@ -51,6 +51,7 @@ class TaskState:
     local_started: float = 0.0
     answer_words: int = 0
     downloading: str = ""
+    waiting_for: str = ""  # e.g. "usage limit resets in 2h 14m"
     todos: list[dict] = field(default_factory=list)
     steps: collections.deque = field(default_factory=lambda: collections.deque(maxlen=12))
 
@@ -77,6 +78,12 @@ class TaskRunner:
     @property
     def busy(self) -> bool:
         return self._running
+
+    @property
+    def waiting(self) -> bool:
+        """Paused on a usage limit: the task is alive but doing nothing, so
+        settings commands (/model) are safe and useful right now."""
+        return bool(self.state.waiting_for)
 
     def submit(self, task: str) -> int:
         """Start `task`, or queue it behind the running one. Returns its
@@ -176,6 +183,8 @@ class TaskRunner:
     def toolbar(self) -> str:
         if self.approval is not None:
             return f" ⏸ waiting for you: {self.approval.title} — answer (y)es / (n)o / (a)lways below"
+        if self.state.waiting_for:  # before the busy check: a paused task is still a task
+            return f" ⏸ {self.state.waiting_for} — /model to switch and continue now · /stop"
         if not self.busy:
             return " ready — type a task, or / for commands" + (f" · queue: {len(self.queue)}" if self.queue else "")
         s = self.state
@@ -194,11 +203,13 @@ class TaskRunner:
 
     def summary(self) -> list[str]:
         """Plain lines for /summary: instant, from state -- no model call."""
-        if not self.busy:
+        if not self.busy and not self.state.waiting_for:
             lines = ["Nothing is running."]
         else:
             s = self.state
             lines = [f"Task: {s.task}  ({_elapsed(s.started)})", f"Orchestrator: {s.orchestrator} — {s.phase or 'starting'}"]
+            if s.waiting_for:
+                lines.append(f"Paused: {s.waiting_for} (the task continues by itself; /model to switch now)")
             if s.local_model:
                 lines.append(f"Local model: {s.local_model} {s.local_what} — {s.local_tokens} tokens so far")
             elif s.downloading:

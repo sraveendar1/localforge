@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
 import litellm
@@ -942,6 +943,19 @@ def run(
         _print_usage_panel(result.stats, frontier_model)
 
 
+LIMIT_POLL_SECONDS = 5.0
+
+
+def _human_duration(seconds: float) -> str:
+    """"2h 14m" / "45s" -- for countdowns the user reads at a glance."""
+    seconds = int(max(seconds, 0))
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m {seconds % 60:02d}s"
+    return f"{seconds}s"
+
+
 class _LiveActivity:
     """Shows a run as it happens: a spinner only while the frontier model is
     thinking, and each local model's output streamed as it's generated, so
@@ -961,6 +975,11 @@ class _LiveActivity:
         # True once the current reply's answer has been streamed to screen,
         # so run() doesn't print it a second time.
         self.reply_streamed = False
+        self.limit_waits = 0
+
+    # Waiting out a usage limit (see on_limit).
+    MAX_LIMIT_WAIT_SECONDS = 6 * 3600
+    MAX_LIMIT_WAITS = 3
 
     def hooks(self) -> ActivityHooks:
         return ActivityHooks(
@@ -973,6 +992,7 @@ class _LiveActivity:
             on_tool_result=self._on_tool_result,
             on_todos=self._on_todos,
             on_answer_text=self._on_answer_text,
+            on_limit=self.on_limit,
         )
 
     def _stop_spinner(self) -> None:
@@ -1154,6 +1174,60 @@ class _LiveActivity:
             self._pull_shown[model_name] = pct
             console.print(f"    [warning]↓[/warning] downloading {model_name} ({total / 1e9:.1f} GB): {pct}%")
 
+    def on_limit(self, exc):
+        """The account hit its usage limit. The work so far is fine, so wait
+        for the reset and carry on rather than throwing the task away. While
+        waiting, /model (or `localforge model` in another window) switches
+        the orchestrator and the task continues straight away."""
+        self._stop_spinner()
+        self.limit_waits += 1
+        who = exc.provider or self.frontier_model
+        reset_at = getattr(exc, "reset_at", None)
+        seconds = (reset_at - datetime.now(reset_at.tzinfo)).total_seconds() if reset_at else 0
+        if reset_at is None or seconds > self.MAX_LIMIT_WAIT_SECONDS or self.limit_waits > self.MAX_LIMIT_WAITS:
+            console.print(
+                f"[bold error]{escape(who)} hit its usage limit[/bold error] and "
+                + ("didn't say when it resets." if reset_at is None else f"it doesn't reset until {reset_at:%d %b %H:%M}.")
+                + " The work so far is kept — switch with /model (e.g. /model ollama/qwen2.5:7b) and say continue, "
+                "or come back after the reset.",
+                highlight=False,
+            )
+            return None
+        console.print(
+            f"[warning]⏸ {escape(who)} hit its usage limit.[/warning] Waiting until "
+            f"{reset_at:%H:%M} ({_human_duration(seconds)}) and then carrying on. "
+            "/model switches the orchestrator to continue now; /stop gives up.",
+            highlight=False,
+        )
+        switched = self._sleep_until(reset_at)
+        if switched is not None:
+            return switched
+        console.print(f"[success]▶ {escape(who)} should be available again — continuing.[/success]", highlight=False)
+        return "retry"
+
+    def _sleep_until(self, reset_at):
+        """Wait, checking every few seconds whether the user switched the
+        orchestrator (then the task continues on that one instead)."""
+        started_with = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+        while True:
+            remaining = (reset_at - datetime.now(reset_at.tzinfo)).total_seconds()
+            if remaining <= 0:
+                return None
+            self._limit_tick(remaining)
+            time.sleep(min(LIMIT_POLL_SECONDS, max(remaining, 0.1)))
+            current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+            if current and current != started_with:
+                console.print(f"[success]▶ switching to {escape(current)} and carrying on.[/success]", highlight=False)
+                return ("switch", current, _cli_provider_for(current, explicit=False))
+
+    def _limit_tick(self, remaining: float) -> None:
+        """Foreground: a spinner with the countdown (the background display
+        puts it in the status bar instead)."""
+        if self._status is None:
+            self._status = console.status("")
+            self._status.start()
+        self._status.update(f"[warning]waiting for the usage limit to reset — {_human_duration(remaining)} left[/warning]")
+
     def close(self) -> None:
         self._stop_spinner()
 
@@ -1243,6 +1317,16 @@ class _BackgroundActivity(_LiveActivity):
         # Collected, not streamed: run() prints it formatted once it's done.
         self._answer += text
         self.runner.state.answer_words = len(self._answer.split())
+
+    def _limit_tick(self, remaining: float) -> None:
+        self.runner.check_cancel()
+        self.runner.state.waiting_for = f"usage limit resets in {_human_duration(remaining)}"
+
+    def _sleep_until(self, reset_at):
+        try:
+            return super()._sleep_until(reset_at)
+        finally:
+            self.runner.state.waiting_for = ""
 
     def approve(self, kind: str, title: str, detail: str) -> bool:
         if _session.auto_approve or kind in _session.always_allow:
