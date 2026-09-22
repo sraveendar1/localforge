@@ -37,6 +37,10 @@ from localforge.backends import BACKENDS
 from localforge.catalog import NoFittingModelError
 
 COMPACT_AT_CHARS = 60_000  # compact before a turn once history passes this
+# An open-weight orchestrator has a far smaller context window, so its
+# history is condensed much sooner (a too-big prompt is silently cut by
+# Ollama, which corrupts what the model reads).
+COMPACT_AT_CHARS_LOCAL = 20_000
 KEEP_RECENT_TURNS = 1  # most recent user turns kept verbatim
 MAX_TRANSCRIPT_CHARS = 40_000  # what a small local model is given to fold in per pass
 MEMORY_MODALITIES = ("general", "docs", "coding")  # first that fits does the summarizing

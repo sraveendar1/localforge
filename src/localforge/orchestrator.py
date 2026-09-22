@@ -259,7 +259,8 @@ def run(
         if not conversation.project_snapshot:
             conversation.project_snapshot = workspace.snapshot()
         conversation.facts = memory.facts_for_prompt(workspace.root)  # may have changed via remember/forget
-    if conversation.chars() > memory.COMPACT_AT_CHARS:
+    compact_at = memory.COMPACT_AT_CHARS_LOCAL if frontier_model.startswith(local_transport.PREFIXES) else memory.COMPACT_AT_CHARS
+    if conversation.chars() > compact_at:
         memory.compact(conversation, dispatcher, hooks)
     if not conversation.messages:
         conversation.messages.append(conversation.system_message())

@@ -31,6 +31,7 @@ from localforge.orchestrator import Conversation, OrchestrationError, RunStats, 
 from localforge.orchestrator import run as run_orchestrator
 from localforge.tools import ActivityHooks, Dispatcher
 from localforge.background import TaskRunner
+from localforge import workspace as workspace_module
 from localforge.scratchpad import Scratchpad
 from localforge.workspace import Workspace
 
@@ -888,7 +889,13 @@ def run(
             raise typer.Exit(code=1)
     activity = _session.make_activity(frontier_model)
     scratch = _session.scratchpad_for(folder)
-    workspace = Workspace(folder, approver=activity.approve, scratch=scratch.root)
+    workspace = Workspace(
+        folder,
+        approver=activity.approve,
+        scratch=scratch.root,
+        # A local orchestrator reads into a much smaller context window.
+        max_read_chars=LOCAL_ORCHESTRATOR_READ_CHARS if _is_local_model(frontier_model) else workspace_module.MAX_READ_CHARS,
+    )
     conversation = _session.conversation_for(workspace.root)
     try:
         try:
@@ -944,6 +951,8 @@ def run(
 
 
 LIMIT_POLL_SECONDS = 5.0
+# What one read_file may return when an open-weight model is orchestrating.
+LOCAL_ORCHESTRATOR_READ_CHARS = 12_000
 
 
 def _human_duration(seconds: float) -> str:
@@ -1022,8 +1031,8 @@ class _LiveActivity:
     def _on_frontier(self, round_number: int) -> None:
         self._stop_spinner()
         self.reply_streamed = False  # a new reply starts
-        doing = "planning" if round_number == 1 else "reviewing results"
-        self._status = console.status(f"[bold success]{self.frontier_model} is {doing}...")
+        doing = "thinking about the plan" if round_number == 1 else "thinking about the results"
+        self._status = console.status(f"[bold success]Forging with {self.frontier_model}… ({doing})")
         self._status.start()
 
     def _on_delegate(self, modality: str, entry) -> None:
@@ -1033,7 +1042,7 @@ class _LiveActivity:
         self._first_token_at = None
         # Nothing streams while the model loads into memory, which can take
         # tens of seconds for a big model; keep that visible too.
-        self._status = console.status(f"[dim]{entry.name} is loading / thinking...[/dim]")
+        self._status = console.status(f"[dim]Forging with {entry.name}… (loading the model)[/dim]")
         self._status.start()
 
     def _on_token(self, chunk: str) -> None:
@@ -1243,6 +1252,11 @@ class _BackgroundActivity(_LiveActivity):
         super().__init__(frontier_model)
         self.runner = runner
         runner.state.orchestrator = frontier_model
+        # Effort only applies to a provider CLI; worth showing, since it's
+        # what the orchestrator's thinking costs.
+        provider = _cli_provider_for(frontier_model, explicit=False)
+        effort = os.environ.get(config.ORCHESTRATOR_EFFORT_ENV_VAR) or config.DEFAULT_ORCHESTRATOR_EFFORT
+        self._effort = f" with {effort} effort" if provider and config.FRONTIER_CLI_AUTH.get(provider, {}).get("effort_flag") else ""
 
     def hooks(self) -> ActivityHooks:
         hooks = super().hooks()
@@ -1252,16 +1266,19 @@ class _BackgroundActivity(_LiveActivity):
 
     def _step(self, line: str) -> None:
         self.runner.state.steps.append(line)
+        self.runner.note_event()
 
     def _stop_spinner(self) -> None:  # nothing live to stop in background mode
         return
 
     def _on_frontier(self, round_number: int) -> None:
         self.runner.check_cancel()
+        self.runner.note_event()
         state = self.runner.state
         state.local_model = state.downloading = ""
         state.answer_words = 0
-        state.phase = "planning" if round_number == 1 else f"reviewing results (step {round_number})"
+        thinking = "thinking" + self._effort
+        state.phase = f"{thinking} about the plan" if round_number == 1 else f"{thinking} about the results (step {round_number})"
         self.reply_streamed = False
 
     def _poll_notes(self) -> list[str]:
@@ -1280,7 +1297,10 @@ class _BackgroundActivity(_LiveActivity):
 
     def _on_token(self, chunk: str) -> None:
         self.runner.check_cancel()
-        self.runner.state.local_tokens += 1
+        state = self.runner.state
+        state.local_tokens += 1
+        state.local_total += 1
+        self.runner.note_event()
 
     def _on_done(self, modality: str, entry, tokens: int, seconds: float) -> None:
         state = self.runner.state
@@ -1316,7 +1336,10 @@ class _BackgroundActivity(_LiveActivity):
     def _on_answer_text(self, text: str) -> None:
         # Collected, not streamed: run() prints it formatted once it's done.
         self._answer += text
-        self.runner.state.answer_words = len(self._answer.split())
+        state = self.runner.state
+        state.answer_words = len(self._answer.split())
+        state.answer_chars = len(self._answer)
+        self.runner.note_event()
 
     def _limit_tick(self, remaining: float) -> None:
         self.runner.check_cancel()

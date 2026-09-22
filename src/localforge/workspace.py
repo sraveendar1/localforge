@@ -49,9 +49,14 @@ def _deny_all(kind: str, title: str, detail: str) -> bool:
 
 
 class Workspace:
-    def __init__(self, root: Path, approver: Approver | None = None, scratch: Path | None = None):
+    def __init__(
+        self, root: Path, approver: Approver | None = None, scratch: Path | None = None, max_read_chars: int = MAX_READ_CHARS
+    ):
         self.root = Path(root).resolve()
         self.approver = approver or _deny_all
+        # A small local orchestrator has a small context window; one huge
+        # read would fill it (and Ollama would then truncate the prompt).
+        self.max_read_chars = max_read_chars
         # This session's scratchpad (see scratchpad.py), reached as
         # "scratchpad/...". Changes inside it need no approval.
         self.scratch = Path(scratch).resolve() if scratch is not None else None
@@ -108,9 +113,15 @@ class Workspace:
         offset = max(1, int(offset or 1))
         limit = max(1, min(int(limit or MAX_READ_LINES), MAX_READ_LINES))
         chunk = lines[offset - 1 : offset - 1 + limit]
-        body = "\n".join(f"{n:>5}  {line}" for n, line in enumerate(chunk, offset))[:MAX_READ_CHARS]
-        end = offset + len(chunk) - 1
-        more = f"\n[lines {offset}-{end} of {len(lines)}; pass offset={end + 1} to read on]" if end < len(lines) else ""
+        body = "\n".join(f"{n:>5}  {line}" for n, line in enumerate(chunk, offset))
+        cut = len(body) > self.max_read_chars
+        body = body[: self.max_read_chars]
+        end = offset - 1 + (body.count("\n") + 1 if body else 0)
+        more = (
+            f"\n[lines {offset}-{end} of {len(lines)}; pass offset={end + 1} to read on]"
+            if end < len(lines) or cut
+            else ""
+        )
         return f"{self.rel(target)} ({len(lines)} lines)\n{body}{more}"
 
     def list_files(self, path: str = ".", pattern: str = "") -> str:

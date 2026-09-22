@@ -20,12 +20,23 @@ One-off `localforge run` and every non-terminal path stay synchronous.
 from __future__ import annotations
 
 import collections
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Callable
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+# A little forge: the hammer swings while work is happening, so an idle-
+# looking moment (a slow local model, a long frontier turn) still visibly
+# ticks. Falls back to ASCII where the terminal can't do emoji.
+FORGE_FRAMES = ("🔨 ⚒️", "⚒️ 🔨")
+FORGE_ASCII = (">- ", " -<")
+IDLE_ICON = "🛠️"
+IDLE_ASCII = "[*]"
+# After this long with no new step, the toolbar says how long it's been --
+# "still working" beats a frozen-looking line.
+QUIET_AFTER_SECONDS = 20
 
 
 @dataclass
@@ -47,11 +58,19 @@ class TaskState:
     phase: str = ""
     local_model: str = ""
     local_what: str = ""
-    local_tokens: int = 0
+    local_tokens: int = 0  # the delegation running right now
+    local_total: int = 0  # every local token this task has produced
     local_started: float = 0.0
     answer_words: int = 0
+    answer_chars: int = 0
+
+    def tokens(self) -> int:
+        """Tokens produced so far: local models exactly, the orchestrator's
+        own answer approximated from its length (~4 characters a token)."""
+        return self.local_total + self.answer_chars // 4
     downloading: str = ""
     waiting_for: str = ""  # e.g. "usage limit resets in 2h 14m"
+    last_event: float = 0.0  # when the last step/token landed, for the "quiet for Xs" note
     todos: list[dict] = field(default_factory=list)
     steps: collections.deque = field(default_factory=lambda: collections.deque(maxlen=12))
 
@@ -138,7 +157,11 @@ class TaskRunner:
     def _begin(self, task: str) -> None:
         self.cancel_event.clear()
         self._notes.clear()
-        self.state = TaskState(task=task, started=time.monotonic())
+        self.state = TaskState(task=task, started=time.monotonic(), last_event=time.monotonic())
+
+    def note_event(self) -> None:
+        """Something happened (a step, a token): resets the quiet timer."""
+        self.state.last_event = time.monotonic()
 
     def _work(self, task: str) -> None:
         while True:
@@ -180,26 +203,42 @@ class TaskRunner:
 
     # --- what the user sees -------------------------------------------------------
 
-    def toolbar(self) -> str:
+    def toolbar(self, unicode: bool | None = None) -> str:
+        """The live status line, in the shape Claude Code uses:
+
+            🔨 Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s)
+
+        Always moving while a task runs, so a slow step never looks like a hang.
+        """
+        emoji = _unicode_ok() if unicode is None else unicode
+        forge, idle = (FORGE_FRAMES, IDLE_ICON) if emoji else (FORGE_ASCII, IDLE_ASCII)
         if self.approval is not None:
             return f" ⏸ waiting for you: {self.approval.title} — answer (y)es / (n)o / (a)lways below"
         if self.state.waiting_for:  # before the busy check: a paused task is still a task
             return f" ⏸ {self.state.waiting_for} — /model to switch and continue now · /stop"
         if not self.busy:
-            return " ready — type a task, or / for commands" + (f" · queue: {len(self.queue)}" if self.queue else "")
+            return f" {idle} ready — type a task, or / for commands" + (f" · queue: {len(self.queue)}" if self.queue else "")
+
         s = self.state
-        spin = SPINNER[int(time.monotonic() * 8) % len(SPINNER)]
+        now = time.monotonic()
+        icon = SPINNER[int(now * 8) % len(SPINNER)] + " " + forge[int(now * 2.5) % len(forge)]
+        # One verb, and the model doing the work right now -- so the line
+        # always answers "who is working?" at a glance.
         if s.downloading:
-            doing = s.downloading
+            who, detail = s.orchestrator, s.downloading
         elif s.local_model:
-            elapsed = max(time.monotonic() - s.local_started, 0.001)
-            doing = f"{s.local_model} {s.local_what} · {s.local_tokens} tokens · {s.local_tokens / elapsed:.0f} tok/s"
+            rate = s.local_tokens / max(now - s.local_started, 0.001)
+            who, detail = s.local_model, f"{s.local_what}, {rate:.0f} tok/s"
         elif s.answer_words:
-            doing = f"{s.orchestrator} writing the answer · {s.answer_words} words"
+            who, detail = s.orchestrator, f"writing the answer, {s.answer_words} words"
         else:
-            doing = s.phase or "starting"
+            who, detail = s.orchestrator, s.phase or "starting"
+        quiet = now - (s.last_event or s.started)
+        if quiet > QUIET_AFTER_SECONDS:
+            detail += f", quiet for {_elapsed(now - quiet)}"
+        parts = [_elapsed(s.started), f"↓ {_thousands(s.tokens())} tokens", detail]
         queue = f" │ queue: {len(self.queue)}" if self.queue else ""
-        return f" {spin} {doing}{queue} │ /summary · /stop"
+        return f" {icon} Forging with {who or 'a model'}… ({' · '.join(parts)}){queue} │ /summary · /stop"
 
     def summary(self) -> list[str]:
         """Plain lines for /summary: instant, from state -- no model call."""
@@ -207,7 +246,10 @@ class TaskRunner:
             lines = ["Nothing is running."]
         else:
             s = self.state
-            lines = [f"Task: {s.task}  ({_elapsed(s.started)})", f"Orchestrator: {s.orchestrator} — {s.phase or 'starting'}"]
+            lines = [
+                f"Task: {s.task}  ({_elapsed(s.started)}, ↓ {_thousands(s.tokens())} tokens)",
+                f"Orchestrator: {s.orchestrator} — {s.phase or 'starting'}",
+            ]
             if s.waiting_for:
                 lines.append(f"Paused: {s.waiting_for} (the task continues by itself; /model to switch now)")
             if s.local_model:
@@ -228,6 +270,16 @@ class TaskRunner:
             lines.append(f"Queued ({len(self.queue)}):")
             lines += [f"  {i}. {task}" for i, task in enumerate(self.queue, 1)]
         return lines
+
+
+def _thousands(count: int) -> str:
+    return f"{count / 1000:.1f}k" if count >= 1000 else str(count)
+
+
+def _unicode_ok() -> bool:
+    """Emoji only where the terminal can show them."""
+    encoding = (getattr(sys.stdout, "encoding", "") or "").lower()
+    return "utf" in encoding
 
 
 def _elapsed(since: float) -> str:

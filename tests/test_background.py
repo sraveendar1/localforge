@@ -148,7 +148,7 @@ def test_summary_and_toolbar_describe_who_is_doing_what():
     assert "[x] write api" in text and "[~] write tests" in text
     assert "Queued (1):" in text and "1. then docs" in text
     bar = runner.toolbar()
-    assert "qwen2.5-coder:7b working on coding · 120 tokens" in bar and "queue: 1" in bar
+    assert "Forging with qwen2.5-coder:7b…" in bar and "working on coding" in bar and "queue: 1" in bar
     gate.set()
 
 
@@ -310,3 +310,79 @@ def test_ctrl_c_with_a_task_running_stops_the_task_not_the_session():
     repl._read_eval(MagicMock(), console, reader, runner)
     runner.cancel.assert_called_once()
     assert reader.read.call_count == 2  # the session kept going
+
+
+# --- the status line has to look alive ------------------------------------------------
+# Reported: "when nothing is happening, the user is confused" -- a slow step
+# used to look like a hang.
+
+
+def _running_runner(**state):
+    runner = TaskRunner(lambda t: None)
+    runner._running = True
+    runner._begin("build a todo API")
+    for key, value in state.items():
+        setattr(runner.state, key, value)
+    return runner
+
+
+def test_the_status_line_reads_like_claude_codes():
+    runner = _running_runner(orchestrator="claude-opus-5", phase="thinking with medium effort about the plan")
+    bar = runner.toolbar(unicode=True)
+    assert "Forging with claude-opus-5…" in bar and "thinking with medium effort about the plan" in bar
+    assert "↓ 0 tokens" in bar and "0s" in bar and "/stop" in bar
+
+
+def test_it_keeps_moving_while_a_step_is_slow():
+    runner = _running_runner(orchestrator="m", phase="planning")
+    frames = {runner.toolbar(unicode=True)[:6] for _ in _ticks()}
+    assert len(frames) > 1  # the spinner and hammer animate on their own
+
+
+def _ticks(n=12):
+    for _ in range(n):
+        time.sleep(0.06)
+        yield
+
+
+def test_tokens_add_up_across_delegations_and_the_answer():
+    runner = _running_runner(local_total=2500, answer_chars=400)
+    assert "↓ 2.6k tokens" in runner.toolbar(unicode=True)
+    assert runner.state.tokens() == 2600
+
+
+def test_a_quiet_step_says_how_long_it_has_been_quiet():
+    runner = _running_runner(orchestrator="m", phase="planning")
+    runner.state.last_event = time.monotonic() - 45
+    assert "quiet for 45s" in runner.toolbar(unicode=True)
+    runner.note_event()
+    assert "quiet for" not in runner.toolbar(unicode=True)
+
+
+def test_local_work_shows_the_model_and_speed():
+    runner = _running_runner(local_model="qwen2.5-coder:7b", local_what="writing app.py", local_tokens=600, local_started=time.monotonic() - 30)
+    bar = runner.toolbar(unicode=True)
+    assert "Forging with qwen2.5-coder:7b…" in bar and "writing app.py, 20 tok/s" in bar
+
+
+def test_plain_terminals_get_ascii_instead_of_emoji():
+    runner = _running_runner(orchestrator="m", phase="planning")
+    assert "🔨" not in runner.toolbar(unicode=False) and "🔨" in runner.toolbar(unicode=True)
+    runner._running = False
+    assert runner.toolbar(unicode=False).startswith(" [*] ready")
+
+
+def test_counters_and_the_quiet_timer_are_fed_by_the_hooks():
+    runner = TaskRunner(lambda t: None)
+    runner._running = True
+    runner._begin("t")
+    act = cli_module._BackgroundActivity("claude-opus-5", runner)
+    runner.state.last_event = time.monotonic() - 60
+    entry = MagicMock()
+    entry.name = "coder"
+    act._on_delegate("coding", entry)
+    assert "quiet for" not in runner.toolbar(unicode=True)
+    for _ in range(10):
+        act._on_token("x")
+    act._on_answer_text("hello there")
+    assert runner.state.local_total == 10 and runner.state.answer_chars == 11

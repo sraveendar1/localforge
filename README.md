@@ -101,6 +101,14 @@ full diff. Claude also orchestrates at medium thinking effort
 (`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows an estimate of
 what the local models' work would have cost from the frontier model.
 
+**Always visibly alive:** while a task runs, the bottom line shows a hammer
+and anvil working away, the model doing the work, how long it's been, a
+running token count, and, if a step goes quiet, how long for:
+
+```
+ 🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+```
+
 **If the paid model runs out mid-task:** the task doesn't die. localforge
 reads the reset time from the provider's message, pauses with a countdown in
 the status bar, and then carries on exactly where it stopped: nothing you've
