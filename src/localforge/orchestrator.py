@@ -7,12 +7,13 @@ the frontier model stops requesting tools.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 import litellm
 from litellm import completion
 
-from localforge import cli_transport, memory
+from localforge import cli_transport, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
@@ -94,6 +95,19 @@ def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[
         )
 
 
+# An answer that only announces work ("I will create...", "Let me write...").
+_PROMISE = re.compile(r"\b(I will|I'll|I am going to|I'm going to|Let me)\s+(now\s+)?(create|write|add|make|build|update|edit|run|fix|generate|implement|set up|delegate)\b", re.I)
+
+
+def _canonical_args(arguments: str | None) -> str:
+    """Tool-call arguments in a stable form, so the same call is recognised
+    regardless of key order or whitespace."""
+    try:
+        return json.dumps(json.loads(arguments or "{}"), sort_keys=True)
+    except (TypeError, ValueError):
+        return str(arguments)
+
+
 def _record_frontier_usage(response, stats: RunStats) -> None:
     usage = getattr(response, "usage", None)
     if usage is not None:
@@ -105,8 +119,9 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
     # for an attribute -- duck-typing here misfires on anything that
     # auto-creates attributes (mocks, proxies) and silently mis-bills.
     if isinstance(response, cli_transport.CLIResponse):
-        stats.frontier_cost_usd += response.notional_cost_usd or 0.0
-        stats.frontier_via_subscription = True
+        if not response.local:
+            stats.frontier_cost_usd += response.notional_cost_usd or 0.0
+            stats.frontier_via_subscription = True
         return
 
     try:
@@ -119,6 +134,7 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
 SYSTEM_PROMPT = """You are the orchestrator inside localforge, a coding harness in the user's terminal, working in their project folder. You plan, investigate and review; local open-weight models running on the user's machine write the code and docs.
 
 How to work:
+- Do only what the user asked. If the message is a greeting, a question, or a chat, just answer it -- don't create, change or run anything unless they asked for that.
 - Investigate before changing anything: list_files, search and read_file show you the project. Never guess at code you haven't read.
 - To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees ONLY your instructions plus the current file contents -- no other files, no conversation, no internet. So put everything it needs into `instructions`: the goal, the exact interfaces and names from other files, conventions, and any facts you looked up.
 - edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
@@ -210,10 +226,21 @@ def run(
     def _finish() -> None:
         stats.local_tokens_generated = dispatcher.local_tokens_generated
 
+    # Identical tool calls already made in this task -> their result. Small
+    # local orchestrators loop, re-issuing the same call after it succeeded
+    # (seen live: one file delegated three times); re-running it wastes a
+    # local generation and, for writes, another approval prompt.
+    done_calls: dict[tuple[str, str], str] = {}
+    used_tools = nudged = False
+
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
             hooks.on_frontier(round_number)
-        if cli_provider:
+        if frontier_model.startswith(local_transport.PREFIXES):
+            # An open-weight orchestrator on this machine: straight to Ollama,
+            # never through a provider CLI, whatever else is configured.
+            response = local_transport.complete(frontier_model, messages, tools)
+        elif cli_provider:
             response = cli_transport.complete(cli_provider, messages, tools)
         else:
             response = completion(model=frontier_model, messages=messages, tools=tools)
@@ -222,15 +249,37 @@ def run(
         messages.append(message.model_dump())
 
         if not message.tool_calls:
+            if not used_tools and not nudged and _PROMISE.search(message.content or ""):
+                # "Okay, I will create hello.py." with no tool call, then
+                # nothing -- small local orchestrators do this (seen live with
+                # gemma3:4b). Ask once to actually do it, or to just answer.
+                nudged = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "You said what you'll do but didn't call any tool, so nothing happened. "
+                        "Do it now with the tools, or if no action is needed, give your final answer.",
+                    }
+                )
+                continue
             _finish()
             return RunResult(answer=message.content or "", stats=stats)
+        used_tools = True
 
         for call in message.tool_calls:
-            try:
-                args = json.loads(call.function.arguments or "{}")
-                result = dispatcher.dispatch(call.function.name, args, on_delegate=on_delegate)
-            except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
-                result = f"Error running {call.function.name}: {exc}"
+            key = (call.function.name, _canonical_args(call.function.arguments))
+            if key in done_calls and call.function.name != "update_todos":
+                result = (
+                    f"You already made this exact {call.function.name} call in this task; it was not run again. "
+                    f"Its result was:\n{done_calls[key][:1500]}\n\nDon't repeat it: do the next step, or give your final answer."
+                )
+            else:
+                try:
+                    args = json.loads(call.function.arguments or "{}")
+                    result = dispatcher.dispatch(call.function.name, args, on_delegate=on_delegate)
+                except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
+                    result = f"Error running {call.function.name}: {exc}"
+                done_calls[key] = result
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
             conversation.tool_indices.append(len(messages) - 1)
 

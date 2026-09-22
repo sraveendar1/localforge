@@ -76,6 +76,9 @@ class CLIResponse:
     # login it's drawn from the account's subscription instead, so callers
     # must not present it as money separately billed.
     notional_cost_usd: float = 0.0
+    # True when an open-weight model on this machine produced it: no
+    # subscription, no billing, nothing notional to report.
+    local: bool = False
 
 
 def _spec(provider: str) -> dict:
@@ -93,12 +96,13 @@ def available(provider: str) -> bool:
         return False
 
 
-def logged_in(provider: str, timeout: float = 60.0) -> bool:
-    """Probe whether the CLI answers a trivial prompt, i.e. is authenticated.
-    Costs a negligible amount of the account's own subscription usage.
+def probe(provider: str, timeout: float = 60.0) -> tuple[bool, str]:
+    """(works, why not). Asks the CLI a trivial prompt; a failure's own
+    message is kept, because "not logged in" and "hit your usage limit" need
+    different fixes. Costs a negligible amount of the account's usage.
     """
     if not available(provider):
-        return False
+        return False, "not installed"
     spec = _spec(provider)
     try:
         proc = subprocess.run(
@@ -109,9 +113,18 @@ def logged_in(provider: str, timeout: float = 60.0) -> bool:
             check=False,
             stdin=subprocess.DEVNULL,
         )
-    except (subprocess.SubprocessError, OSError):
-        return False
-    return proc.returncode == 0 and "OK" in proc.stdout
+    except subprocess.TimeoutExpired:
+        return False, f"no answer within {timeout:.0f}s"
+    except (subprocess.SubprocessError, OSError) as exc:
+        return False, str(exc)
+    if proc.returncode == 0 and "OK" in proc.stdout:
+        return True, ""
+    return False, _failure_detail(proc)
+
+
+def logged_in(provider: str, timeout: float = 60.0) -> bool:
+    """Whether the CLI answers a trivial prompt, i.e. is usable right now."""
+    return probe(provider, timeout)[0]
 
 
 def requirements_message(provider: str) -> str:
@@ -158,7 +171,9 @@ def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
         + ("\n".join(tool_lines) if tool_lines else "(none)")
         + "\n\nConversation so far:\n"
         + "\n\n".join(transcript)
-        + "\n\nReply with ONLY a single JSON object, no prose and no code fence.\n"
+        + "\n\nIf the user's latest message doesn't ask you to build, change or look into something "
+        "(a greeting, a question, a chat), answer it directly with final_answer and use no tools.\n"
+        "Reply with ONLY a single JSON object, no prose and no code fence.\n"
         'To use tools (one or more): {"tool_calls": [{"name": "<tool>", "arguments": {"<arg>": <value>, ...}}]}\n'
         'When finished:  {"final_answer": "<your reply to the user>"}'
     )
@@ -248,6 +263,40 @@ def _unwrap_envelope(stdout: str, spec: dict) -> tuple[str, _Usage, float]:
     return stdout, _Usage(), 0.0
 
 
+def message_from_reply(raw: str) -> _Message:
+    """Turn a model's JSON decision ({"tool_calls": [...]} or
+    {"final_answer": ...}) into the LiteLLM-shaped message the orchestrator
+    consumes. Shared with the local (Ollama) orchestrator transport.
+    """
+    decision = _extract_json(raw)
+    if decision is None:
+        # Couldn't parse a decision -- treat the text as the final answer
+        # rather than failing the whole run.
+        message = _Message(content=raw, tool_calls=None)
+    elif decision.get("tool_calls"):
+        calls = []
+        for i, call in enumerate(decision["tool_calls"]):
+            name = call.get("name")
+            if not name:
+                continue
+            arguments = call.get("arguments")
+            if isinstance(arguments, str):
+                # some replies double-encode the arguments object
+                arguments = _extract_json(arguments) or {"instructions": arguments}
+            if not isinstance(arguments, dict):
+                arguments = {}
+            if "instructions" in call and "instructions" not in arguments:
+                arguments["instructions"] = call["instructions"]  # older flat form
+            calls.append(_ToolCall(id=f"cli_call_{i}", function=_Function(name=name, arguments=json.dumps(arguments))))
+        message = _Message(content=None, tool_calls=calls or None)
+        if not calls:
+            message = _Message(content=raw, tool_calls=None)
+    else:
+        message = _Message(content=decision.get("final_answer") or raw, tool_calls=None)
+
+    return message
+
+
 def _failure_detail(proc) -> str:
     """The useful part of a failed run: a JSON envelope's own error/result
     text if there is one, else stderr/stdout -- not the first 300 chars of a
@@ -295,30 +344,5 @@ def complete(provider: str, messages: list[dict], tools: list[dict], timeout: fl
 
     raw, usage, notional_cost = _unwrap_envelope(proc.stdout.strip(), spec)
 
-    decision = _extract_json(raw)
-    if decision is None:
-        # Couldn't parse a decision -- treat the text as the final answer
-        # rather than failing the whole run.
-        message = _Message(content=raw, tool_calls=None)
-    elif decision.get("tool_calls"):
-        calls = []
-        for i, call in enumerate(decision["tool_calls"]):
-            name = call.get("name")
-            if not name:
-                continue
-            arguments = call.get("arguments")
-            if isinstance(arguments, str):
-                # some replies double-encode the arguments object
-                arguments = _extract_json(arguments) or {"instructions": arguments}
-            if not isinstance(arguments, dict):
-                arguments = {}
-            if "instructions" in call and "instructions" not in arguments:
-                arguments["instructions"] = call["instructions"]  # older flat form
-            calls.append(_ToolCall(id=f"cli_call_{i}", function=_Function(name=name, arguments=json.dumps(arguments))))
-        message = _Message(content=None, tool_calls=calls or None)
-        if not calls:
-            message = _Message(content=raw, tool_calls=None)
-    else:
-        message = _Message(content=decision.get("final_answer") or raw, tool_calls=None)
-
+    message = message_from_reply(raw)
     return CLIResponse(choices=[_Choice(message=message)], usage=usage, notional_cost_usd=notional_cost)

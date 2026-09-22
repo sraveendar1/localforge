@@ -42,6 +42,13 @@ local model condenses the older turns into a session-memory note, which is
 also saved so your next session in the same folder picks up where you left
 off (`/compact` to do it now, `/clear` to start fresh).
 
+**Fully local, no account:** pick "local" in `localforge setup`, or type
+`/model` in a session and choose a model you already have in Ollama (e.g.
+`/model ollama/qwen2.5:7b`). The orchestrator then runs on your machine too,
+with no Claude/OpenAI/Gemini account and no billing, even if you set one up
+before. Models under ~7B work but plan unreliably, and localforge says so.
+If a cloud account hits its usage limit mid-session, `/model` is the way out.
+
 **Web access:** local models have no internet access. The frontier model does any research (`web_search`, `fetch_url`, built into localforge so it works the same with an API key or CLI login) and passes what it found into each subtask's instructions. When you orchestrate through a CLI login, that CLI's own tools (shell, file edits, web, connected apps) are switched off, and it runs in an empty scratch folder, so it can plan and delegate but can't touch your files. `fetch_url` refuses localhost and private-network addresses.
 
 While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.

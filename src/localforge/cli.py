@@ -17,7 +17,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, memory, repl, theme
+from localforge import cli_transport, config, local_transport, memory, repl, theme
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -438,13 +438,19 @@ def _prompt_for_model(provider: str) -> str:
     not just the curated list.
     """
     choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+    labels = {}
+    if provider == "local":
+        installed = _installed_model_names(OllamaBackend())
+        choices = local_transport.orchestrator_choices(detect_hardware(), installed)
+        labels = {c: "already downloaded" for c in choices if local_transport.model_name(c) in installed}
     if not choices:
         _drain_buffered_input()
         return _prompt_nonempty("Enter the exact frontier model id")
 
     console.print("\nWhich model should it use?")
     for i, model_id in enumerate(choices, start=1):
-        console.print(f"  {i}) {model_id}")
+        note = f"  ({labels[model_id]})" if model_id in labels else ""
+        console.print(f"  {i}) {model_id}{note}")
     other_idx = len(choices) + 1
     console.print(f"  {other_idx}) Other (type a model id)")
     if provider == "local":
@@ -543,7 +549,16 @@ def setup() -> None:
                 f"[success]✓[/success] Using {frontier_model} as the frontier orchestrator "
                 "(self-hosted, no API key needed).\n"
             )
-            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            # Overwrite the auth settings too: config.save() merges, so a
+            # cli_login left from an earlier setup would otherwise keep
+            # routing every turn through that provider's CLI.
+            config.save(
+                {
+                    config.FRONTIER_MODEL_ENV_VAR: frontier_model,
+                    config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL,
+                    config.FRONTIER_PROVIDER_ENV_VAR: "local",
+                }
+            )
             if frontier_model.startswith("ollama/"):
                 orchestrator_model_name = frontier_model.removeprefix("ollama/")
                 console.print(f"Pulling {orchestrator_model_name} for orchestration (this can take a while)...")
@@ -685,8 +700,18 @@ def doctor() -> None:
     chosen_model = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
     is_local_frontier = bool(chosen_model) and chosen_model.startswith("ollama/")
 
+    if is_local_frontier:
+        # An open-weight orchestrator needs no key or login, whatever other
+        # auth settings are lying around -- only that Ollama has the model.
+        name = local_transport.model_name(chosen_model)
+        on_disk = _installed_model_names(OllamaBackend())
+        if name in on_disk or f"{name}:latest" in on_disk:
+            console.print(f"[success]✓[/success] Orchestrator: {name} (local, via Ollama — no account needed)")
+        else:
+            ok = False
+            console.print(f"[error]✗[/error] Orchestrator {name} is not downloaded — run `ollama pull {name}`")
     # CLI login: no API key by design -- check the CLI instead.
-    if os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
+    elif os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
         cli_provider = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
         spec = config.FRONTIER_CLI_AUTH.get(cli_provider)
         if spec is None:
@@ -695,16 +720,17 @@ def doctor() -> None:
         elif not cli_transport.available(cli_provider):
             ok = False
             console.print(f"[error]✗[/error] {cli_transport.requirements_message(cli_provider)}")
-        elif cli_transport.logged_in(cli_provider):
-            console.print(
-                f"[success]✓[/success] Frontier via `{spec['command']}` login "
-                f"({cli_provider} subscription — no API key, no per-token billing)"
-            )
         else:
-            ok = False
-            console.print(
-                f"[error]✗[/error] `{spec['command']}` is installed but not logged in — {spec['login_hint']}"
-            )
+            works, why = cli_transport.probe(cli_provider)
+            if works:
+                console.print(
+                    f"[success]✓[/success] Frontier via `{spec['command']}` login "
+                    f"({cli_provider} subscription — no API key, no per-token billing)"
+                )
+            else:
+                ok = False
+                console.print(f"[error]✗[/error] `{spec['command']}` didn't answer: {escape(why)}")
+                console.print(f"  [warning]{escape(_cli_failure_advice(cli_provider, why))}[/warning]")
     elif chosen_model and (found_keys or is_local_frontier):
         via = "self-hosted, no API key needed" if is_local_frontier else f"via {', '.join(found_keys)}"
         console.print(f"[success]✓[/success] Frontier model configured: {chosen_model} ({via})")
@@ -733,8 +759,59 @@ def doctor() -> None:
     if ok:
         console.print(f"\n[bold success]Ready to go.[/bold success] {START_SESSION_HINT}", highlight=False)
     else:
-        console.print("\n[bold error]Fix the items above before running `localforge run`.[/bold error]")
+        console.print("\n[bold error]Fix the items above, then type localforge to start a session.[/bold error]")
         raise typer.Exit(code=1)
+
+
+def _is_local_model(model: str) -> bool:
+    return model.startswith(local_transport.PREFIXES)
+
+
+def _cli_provider_for(frontier_model: str, explicit: bool) -> str | None:
+    """Which provider CLI to orchestrate through, if any. Only a saved
+    CLI-login choice, only for the saved model, and never for an
+    open-weight model: a stale `cli_login` left over from an earlier setup
+    once made a local orchestrator call `claude` anyway.
+    """
+    if explicit or _is_local_model(frontier_model):
+        return None
+    if os.environ.get(config.AUTH_METHOD_ENV_VAR) != config.AUTH_CLI_LOGIN:
+        return None
+    return os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR) or None
+
+
+def _orchestrator_label(frontier_model: str, cli_provider: str | None) -> str:
+    if _is_local_model(frontier_model):
+        label = f"{local_transport.model_name(frontier_model)} (local, via Ollama — no account, no billing)"
+        size = local_transport.parameter_billions(frontier_model)
+        if size is not None and size < local_transport.MIN_RELIABLE_BILLIONS:
+            label += (
+                f". Heads-up: a {size:g}B model is often unreliable at planning; "
+                f"a {local_transport.MIN_RELIABLE_BILLIONS}B+ model or a cloud model works much better"
+            )
+        return label
+    if cli_provider:
+        return f"{frontier_model} via your `{config.FRONTIER_CLI_AUTH[cli_provider]['command']}` login (subscription)"
+    return f"{frontier_model} (API key)"
+
+
+_LIMIT_MARKERS = ("limit", "quota", "rate limit", "rate-limit", "credit balance", "billing", "exceeded", "spend")
+
+
+def _cli_failure_advice(cli_provider: str, error: str) -> str:
+    spec = config.FRONTIER_CLI_AUTH[cli_provider]
+    lowered = error.lower()
+    if any(marker in lowered for marker in _LIMIT_MARKERS):
+        return (
+            f"Your {cli_provider} account hit a usage limit. Wait for it to reset, or switch the orchestrator "
+            "to a local model with /model (e.g. /model ollama/qwen2.5:7b) or `localforge setup`."
+        )
+    if any(marker in lowered for marker in ("log in", "login", "logged", "auth", "api key", "credential", "unauthorized", "401", "expired")):
+        return (
+            f"`{spec['command']}` isn't signed in (or the sign-in expired) — {spec['login_hint']}, then try again. "
+            "Or switch the orchestrator with /model, or run `localforge setup` to use an API key."
+        )
+    return f"`{spec['command']}` failed. Check it works on its own (`{spec['command']} -p hi`), or switch with /model."
 
 
 @app.command()
@@ -761,20 +838,16 @@ def run(
 ) -> None:
     """Run a task in the current folder: the frontier model investigates and plans,
     local models write the code, and you approve each change."""
+    explicit_model = frontier_model
     frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
-
-    # An explicit --model always means "use the API path for this model";
-    # only a saved cli_login choice routes through the provider's CLI.
-    cli_provider = None
-    if os.environ.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN:
-        cli_provider = os.environ.get(config.FRONTIER_PROVIDER_ENV_VAR)
-        if cli_provider and not cli_transport.available(cli_provider):
+    cli_provider = _cli_provider_for(frontier_model, explicit=bool(explicit_model))
+    if cli_provider:
+        if not cli_transport.available(cli_provider):
             console.print(f"[error]Error:[/error] {cli_transport.requirements_message(cli_provider)}")
             raise typer.Exit(code=1)
-        if cli_provider and not _session.announced:
-            spec = config.FRONTIER_CLI_AUTH[cli_provider]
-            console.print(f"[dim]Orchestrating via your `{spec['command']}` login (subscription, not API billing)[/dim]")
-            _session.announced = True
+    if not _session.announced:
+        console.print(f"[dim]Orchestrator: {escape(_orchestrator_label(frontier_model, cli_provider))} · /model to change[/dim]")
+        _session.announced = True
 
     if yes:
         _session.auto_approve = True
@@ -794,15 +867,15 @@ def run(
         finally:
             activity.close()
     except cli_transport.CLINotAvailableError as exc:
-        # The provider CLI failed mid-run -- most often a session that expired
-        # since setup. Say how to fix it, in shell terms.
-        console.print(f"[bold error]Error:[/bold error] {exc}")
+        # The provider CLI failed mid-run. Say why in plain terms and what to
+        # do -- a usage limit is not an expired login, and advising
+        # `claude login` for one sent people in circles.
+        console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         if cli_provider:
-            spec = config.FRONTIER_CLI_AUTH[cli_provider]
-            console.print(
-                f"[warning]Your `{spec['command']}` session may have expired — {spec['login_hint']}, "
-                "then try again. Or run `localforge setup` to switch to an API key.[/warning]"
-            )
+            console.print(f"[warning]{escape(_cli_failure_advice(cli_provider, str(exc)))}[/warning]")
+        raise typer.Exit(code=1) from None
+    except local_transport.LocalOrchestratorError as exc:
+        console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         raise typer.Exit(code=1) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
@@ -956,7 +1029,7 @@ class _LiveActivity:
             console.print("[warning]  No terminal to ask on — declined. Use --yes to approve changes non-interactively.[/warning]")
             return False
         _drain_buffered_input()
-        what = "file changes" if kind == "write" else "commands"
+        what = {"write": "file changes", "command": "commands", "download": "model downloads"}.get(kind, kind)
         while True:
             # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
             answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
@@ -971,6 +1044,8 @@ class _LiveActivity:
     def _print_change(self, kind: str, title: str, detail: str) -> None:
         if kind == "command":
             body = f"[bold]$ {escape(detail)}[/bold]"
+        elif kind == "download":
+            body = f"[warning]↓[/warning] {escape(detail)}"
         else:
             styled = []
             for line in detail.splitlines():
@@ -1055,6 +1130,101 @@ def compact() -> None:
         activity.close()
     if done and conversation.memory:
         console.print(Panel(Markdown(conversation.memory), title="Session memory", border_style="panel.border"))
+
+
+_PROVIDER_PREFIXES = {"claude": "anthropic", "gpt": "openai", "o1": "openai", "o3": "openai", "o4": "openai", "gemini": "gemini"}
+
+
+def _cloud_provider(model: str) -> str | None:
+    for prefix, provider in _PROVIDER_PREFIXES.items():
+        if model.startswith(prefix):
+            return provider
+    return None
+
+
+def _model_choices() -> list[tuple[str, str, dict]]:
+    """(model id, label, config to save) for every orchestrator usable here:
+    each model already in Ollama, plus cloud models whose key or CLI exists.
+    """
+    choices = []
+    for name in sorted(_installed_model_names(OllamaBackend())):
+        choices.append(
+            (
+                f"ollama/{name}",
+                f"ollama/{name}  (local — no account, no billing)",
+                {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"},
+            )
+        )
+    for provider, models in config.FRONTIER_MODEL_CHOICES.items():
+        if provider == "local":
+            continue
+        env_var = FRONTIER_PROVIDERS.get(provider)
+        spec = config.FRONTIER_CLI_AUTH.get(provider)
+        if env_var and os.environ.get(env_var):
+            auth, how = config.AUTH_API_KEY, f"API key {env_var}"
+        elif spec and cli_transport.available(provider):
+            auth, how = config.AUTH_CLI_LOGIN, f"your `{spec['command']}` login"
+        else:
+            continue
+        for model in models:
+            choices.append(
+                (model, f"{model}  ({how})", {config.AUTH_METHOD_ENV_VAR: auth, config.FRONTIER_PROVIDER_ENV_VAR: provider})
+            )
+    return choices
+
+
+def _set_orchestrator(model: str, auth: dict) -> None:
+    config.save({config.FRONTIER_MODEL_ENV_VAR: model, **auth})
+    _session.announced = False
+    console.print(f"[success]✓[/success] Orchestrator is now {escape(_orchestrator_label(model, _cli_provider_for(model, explicit=False)))}")
+
+
+@app.command(name="model")
+def model_command(
+    model: str = typer.Argument(None, help="Model id, e.g. ollama/qwen2.5:7b or claude-opus-5. Omit to pick from a list."),
+) -> None:
+    """Show or switch the orchestrator model (a local Ollama model or a cloud one)."""
+    current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
+    choices = _model_choices()
+
+    if model:
+        for model_id, _, auth in choices:
+            if model_id == model:
+                _set_orchestrator(model_id, auth)
+                return
+        if _is_local_model(model):
+            console.print(
+                f"[error]{escape(local_transport.model_name(model))} isn't downloaded.[/error] "
+                f"Run `ollama pull {escape(local_transport.model_name(model))}` first, then /model {escape(model)}."
+            )
+        elif _cloud_provider(model):
+            provider = _cloud_provider(model)
+            console.print(
+                f"[error]No API key or CLI login for {provider} on this machine.[/error] "
+                "Run /setup to add one, or pick a local model with /model."
+            )
+        else:
+            console.print(f"[error]Unknown model {escape(model)!r}.[/error] Run /model to see what's available.")
+        raise typer.Exit(code=1)
+
+    console.print(f"Current orchestrator: [accent]{escape(_orchestrator_label(current, _cli_provider_for(current, explicit=False)))}[/accent]")
+    if not choices:
+        console.print("Nothing else is available: no models in Ollama and no cloud key or login. Run /setup.")
+        return
+    for i, (_, label, _) in enumerate(choices, 1):
+        console.print(f"  {i}) {escape(label)}", highlight=False)
+    if not sys.stdin.isatty():
+        console.print("Switch with: /model <id>")
+        return
+    _drain_buffered_input()
+    answer = console.input("Pick a number, or press Enter to keep the current one: ").strip()
+    if not answer:
+        return
+    if answer.isdigit() and 1 <= int(answer) <= len(choices):
+        model_id, _, auth = choices[int(answer) - 1]
+        _set_orchestrator(model_id, auth)
+    else:
+        console.print("[warning]Not a number from the list — nothing changed.[/warning]")
 
 
 @app.command()

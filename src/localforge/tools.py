@@ -165,6 +165,9 @@ DIRECT_TOOLS = {
     },
 }
 
+# Modalities whose models are interchangeable in a pinch: all produce text.
+TEXT_MODALITIES = ("coding", "docs", "general")
+
 # kept for callers that only care about the web pair
 WEB_TOOLS = {name: DIRECT_TOOLS[name] for name in ("web_search", "fetch_url")}
 
@@ -282,7 +285,22 @@ class Dispatcher:
 
     def resolve(self, modality: str) -> ModelEntry:
         if modality not in self._resolved_models:
-            self._resolved_models[modality] = best_match(modality, self.hardware, self.catalog, installed=self.installed)
+            entry = best_match(modality, self.hardware, self.catalog, installed=self.installed)
+            if self.installed is not None and entry.name not in self.installed and modality in TEXT_MODALITIES:
+                # Nothing installed for this modality: an installed model of
+                # another text modality can do the job (a coder writes a fine
+                # README) rather than pulling gigabytes mid-task. Seen live: a
+                # "general" subtask silently downloaded qwen2.5:3b.
+                stand_ins = [
+                    m
+                    for other in TEXT_MODALITIES
+                    if other != modality
+                    for m in candidates(other, self.hardware, self.catalog, self.installed)
+                    if m.name in self.installed and m.runtime == entry.runtime
+                ]
+                if stand_ins:
+                    entry = max(stand_ins, key=lambda m: m.quality_tier)
+            self._resolved_models[modality] = entry
         return self._resolved_models[modality]
 
     def _retry_candidate(self, modality: str, current: ModelEntry) -> ModelEntry | None:
@@ -316,6 +334,16 @@ class Dispatcher:
             on_delegate(modality, entry)
         backend = BACKENDS[entry.runtime]
         on_pull = (lambda event: hooks.on_pull(entry.name, event)) if hooks.on_pull else None
+        if self.installed is not None and entry.name not in self.installed and entry.runtime == "ollama":
+            # A download is a big, visible change: ask like any other.
+            approver = self.workspace.approver if self.workspace is not None else None
+            size = f"about {entry.disk_gb:g} GB" if entry.disk_gb else "a large download"
+            if approver is None or not approver("download", f"Download {entry.name}", f"{entry.name} ({size}) for {modality} work"):
+                raise RuntimeError(
+                    f"{entry.name} isn't downloaded and the download wasn't approved; no {modality} model is available. "
+                    "Tell the user, or use a different tool."
+                )
+            self.installed.add(entry.name)
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
         if hooks.on_token is not None:

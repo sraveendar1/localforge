@@ -20,6 +20,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /clear            start a fresh conversation (/clear --forget also drops saved memory)
   /compact          have a local model condense the conversation into session memory
   /auto <on|off>    approve file changes and commands without asking
+  /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
   /wizard           setup as a terminal UI
@@ -63,6 +64,12 @@ def run_repl(app: typer.Typer, console: Console) -> None:
         "[accent]/exit[/accent] to leave.\n",
         highlight=False,
     )
+    if Path.cwd().resolve() in (Path.home().resolve(), Path("/")):
+        console.print(
+            "[warning]You're in your home folder, so localforge can see all of it. "
+            "For a project, /exit, cd into its folder, and run localforge there.[/warning]\n",
+            highlight=False,
+        )
 
     while True:
         try:

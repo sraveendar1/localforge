@@ -291,3 +291,4 @@ def test_run_explains_how_to_fix_an_expired_cli_session():
     normalized = " ".join(result.output.split())
     assert "claude login" in normalized
     assert "localforge setup" in normalized  # offers the API-key escape hatch
+    assert "/model" in normalized  # and switching the orchestrator

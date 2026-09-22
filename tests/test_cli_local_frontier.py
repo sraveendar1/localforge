@@ -78,9 +78,31 @@ def test_doctor_reports_configured_for_local_frontier_without_any_api_key(monkey
         patch.object(cli_module, "shutil") as mock_shutil,
         patch.object(cli_module.OllamaBackend, "is_running", return_value=True),
         patch.object(cli_module, "detect_hardware", return_value=hw),
+        patch.object(cli_module, "_installed_model_names", return_value={"qwen2.5:72b"}),
     ):
         mock_shutil.which.return_value = "/usr/bin/ollama"
         result = CliRunner().invoke(cli_module.app, ["doctor"])
 
-    assert "Frontier model configured: ollama/qwen2.5:72b" in result.output
-    assert "self-hosted, no API key needed" in result.output
+    assert "Orchestrator: qwen2.5:72b (local, via Ollama — no account needed)" in result.output
+
+
+def test_doctor_local_orchestrator_ignores_a_stale_claude_login_but_needs_the_model(monkeypatch):
+    """Reported: with a local orchestrator chosen, doctor still checked
+    `claude` (left over from an earlier Claude-login setup)."""
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "ollama/gemma3:4b")
+    monkeypatch.setenv("LOCALFORGE_AUTH_METHOD", "cli_login")
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_PROVIDER", "anthropic")
+    hw = HardwareProfile(os="Linux", arch="x86_64", cpu_cores=8, ram_gb=32, free_disk_gb=100, gpus=[])
+    with (
+        patch.object(cli_module, "shutil") as mock_shutil,
+        patch.object(cli_module.OllamaBackend, "is_running", return_value=True),
+        patch.object(cli_module, "detect_hardware", return_value=hw),
+        patch.object(cli_module, "_installed_model_names", return_value=set()),
+        patch.object(cli_module.cli_transport, "probe") as probe,
+    ):
+        mock_shutil.which.return_value = "/usr/bin/ollama"
+        result = CliRunner().invoke(cli_module.app, ["doctor"])
+
+    probe.assert_not_called()
+    assert "claude" not in result.output
+    assert "Orchestrator gemma3:4b is not downloaded — run `ollama pull gemma3:4b`" in result.output

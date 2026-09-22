@@ -17,7 +17,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import Button, Checkbox, Footer, Header, Input, Log, RadioButton, RadioSet, Select, Static
 
-from localforge import config
+from localforge import config, local_transport
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import ModelEntry, recommendations
@@ -136,6 +136,13 @@ class ApiKeyScreen(Screen):
 
     def _populate_models(self, provider: str) -> None:
         choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+        if provider == "local":
+            # models this machine can actually run, downloaded ones first
+            try:
+                installed = {m["name"] for m in OllamaBackend().list_installed()}
+            except Exception:  # noqa: BLE001 - Ollama may not be up yet on this screen
+                installed = set()
+            choices = local_transport.orchestrator_choices(detect_hardware(), installed)
         select = self.query_one("#model-select", Select)
         select.set_options([(model_id, model_id) for model_id in choices] + [("Other (type a model id)", self.OTHER)])
         select.value = choices[0] if choices else self.OTHER
@@ -193,13 +200,20 @@ class ApiKeyScreen(Screen):
         else:
             frontier_model = model_choice
 
+        # Always write the auth method and provider too: config.save() merges,
+        # so a cli_login left from an earlier setup would otherwise keep
+        # routing turns through that provider's CLI.
         if env_var is None:
-            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            auth = {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"}
+        else:
+            auth = {config.AUTH_METHOD_ENV_VAR: config.AUTH_API_KEY, config.FRONTIER_PROVIDER_ENV_VAR: provider}
+        if env_var is None:
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model, **auth})
         elif api_key:
-            config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            config.save({env_var: api_key, config.FRONTIER_MODEL_ENV_VAR: frontier_model, **auth})
             os.environ[env_var] = api_key
         elif os.environ.get(env_var):
-            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model})
+            config.save({config.FRONTIER_MODEL_ENV_VAR: frontier_model, **auth})
         else:
             status.update(f"[red]No {env_var} found — enter an API key.[/red]")
             return

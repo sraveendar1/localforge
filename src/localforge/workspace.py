@@ -29,6 +29,7 @@ MAX_READ_LINES = 400
 MAX_READ_CHARS = 40_000
 MAX_LIST = 300
 MAX_MATCHES = 100
+MAX_FILES_SCANNED = 20_000  # a search started in a huge folder (e.g. home) must still end
 MAX_OUTPUT_CHARS = 12_000
 MAX_DIFF_LINES = 80
 COMMAND_TIMEOUT = 300
@@ -109,9 +110,14 @@ class Workspace:
         start = self.resolve(path or ".")
         files = [start] if start.is_file() else self._walk(start)
         matches = []
+        scanned = 0
         for file in files:
             if glob and not fnmatch.fnmatch(file.name, glob):
                 continue
+            scanned += 1
+            if scanned > MAX_FILES_SCANNED:
+                matches.append(f"[stopped after scanning {MAX_FILES_SCANNED} files; narrow the search with path or glob]")
+                break
             try:
                 raw = file.read_bytes()
             except OSError:
@@ -188,6 +194,12 @@ class Workspace:
 
     # --- context for the orchestrator -------------------------------------------
 
+    def is_broad(self) -> bool:
+        """True for the home folder or the filesystem root: fine to work in,
+        but tools see far more than one project and searches get slow.
+        """
+        return self.root in (Path.home().resolve(), Path(self.root.anchor))
+
     def snapshot(self, max_entries: int = 60) -> str:
         """A short picture of the project, given to the orchestrator once per
         session, like Claude Code's own environment preamble.
@@ -206,4 +218,10 @@ class Workspace:
             ref = head.read_text().strip()
             branch = f"\nGit branch: {ref.rsplit('/', 1)[-1]}" if ref.startswith("ref:") else "\nGit: detached HEAD"
         listing = "\n".join(f"  {e}" for e in entries) or "  (empty folder)"
-        return f"Project folder: {self.root}{branch}\nTop-level entries:\n{listing}"
+        note = (
+            "\nNote: this is the user's home folder, not a single project. Ask which project folder to work in, "
+            "or create one (e.g. with run_command mkdir), before searching or writing broadly."
+            if self.is_broad()
+            else ""
+        )
+        return f"Project folder: {self.root}{branch}\nTop-level entries:\n{listing}{note}"

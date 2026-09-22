@@ -61,6 +61,7 @@ AUTH_METHOD_ENV_VAR = "LOCALFORGE_AUTH_METHOD"
 FRONTIER_PROVIDER_ENV_VAR = "LOCALFORGE_FRONTIER_PROVIDER"
 AUTH_API_KEY = "api_key"
 AUTH_CLI_LOGIN = "cli_login"
+AUTH_LOCAL = "local"  # an open-weight orchestrator: no key, no login
 
 # Per-provider first-party CLI that supports account/subscription login.
 #   command       : executable to look for on PATH
@@ -170,3 +171,7 @@ def save(values: dict[str, str]) -> None:
     existing.update(values)
     CONFIG_FILE.write_text("".join(f"{k}={v}\n" for k, v in existing.items()))
     CONFIG_FILE.chmod(0o600)  # contains API keys
+    # Apply to this process too: load() never overrides what's already in the
+    # environment, so inside a session /setup or /model would otherwise keep
+    # using the old values until localforge restarts.
+    os.environ.update(values)

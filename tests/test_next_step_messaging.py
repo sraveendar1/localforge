@@ -60,6 +60,7 @@ def test_doctor_ready_message_points_to_the_session(monkeypatch):
         patch.object(cli_module, "shutil") as mock_shutil,
         patch.object(cli_module.OllamaBackend, "is_running", return_value=True),
         patch.object(cli_module, "detect_hardware", return_value=hw),
+        patch.object(cli_module, "_installed_model_names", return_value={"qwen2.5:72b"}),
     ):
         mock_shutil.which.return_value = "/usr/bin/ollama"
         out = _flat(CliRunner().invoke(cli_module.app, ["doctor"]).output)
