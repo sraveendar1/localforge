@@ -102,5 +102,5 @@ def test_help_command_matches_top_level_help():
     help_command = runner.invoke(cli_module.app, ["help"])
     assert help_command.exit_code == 0
     assert "Usage: localforge" in help_command.output
-    assert "delete" in help_command.output and "wizard" in help_command.output
+    assert "delete" in help_command.output and "setup" in help_command.output
     assert help_command.output == help_flag.output

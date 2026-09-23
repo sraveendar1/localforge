@@ -368,11 +368,13 @@ def test_local_work_shows_the_model_and_speed():
     assert "Forging with qwen2.5-coder:7b…" in bar and "writing app.py, 20 tok/s" in bar
 
 
-def test_plain_terminals_get_ascii_instead_of_emoji():
+def test_plain_terminals_get_an_ascii_spinner():
     runner = _running_runner(orchestrator="m", phase="planning")
-    assert "🔨" not in runner.toolbar(unicode=False) and "🔨" in runner.toolbar(unicode=True)
+    assert runner.toolbar(unicode=False).strip()[0] in "|/-\\"
+    assert runner.toolbar(unicode=True).strip()[0] in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    assert "🔨" not in runner.toolbar(unicode=True)  # no emoji: plain text in the session's colors
     runner._running = False
-    assert runner.toolbar(unicode=False).startswith(" [*] ready")
+    assert runner.toolbar(unicode=False).startswith(" ready")
 
 
 def test_counters_and_the_quiet_timer_are_fed_by_the_hooks():
@@ -404,17 +406,18 @@ def test_code_being_written_shows_under_the_status_line():
     runner = _running_runner(local_model="coder", local_what="writing app.py", local_started=time.monotonic())
     for chunk in ["def main():\n", "    app = FastAPI()\n", "    return ", "app\n", "# tail"]:
         runner.note_output(chunk)
-    lines = runner.toolbar(unicode=False).splitlines()
-    assert len(lines) == 1 + 3  # status + the last three lines
-    assert lines[-1].strip() == "│ # tail"  # the unfinished line shows as it grows
-    assert "def main():" not in "\n".join(lines)  # older lines scroll out of the preview
+    lines = runner.status_lines(unicode=False)
+    assert [kind for kind, _ in lines] == ["status", "preview", "preview", "preview"]
+    assert lines[-1][1].strip() == "│ # tail"  # the unfinished line shows as it grows
+    assert "def main():" not in "\n".join(text for _, text in lines)  # older lines scroll out
 
 
 def test_the_preview_is_cleared_between_delegations():
     runner = _running_runner(local_model="coder")
     runner.note_output("secret_draft = 1\n")
+    assert len(runner.status_lines(unicode=False)) == 2
     runner.clear_preview()
-    assert runner.toolbar(unicode=False).count("\n") == 0
+    assert len(runner.status_lines(unicode=False)) == 1
 
 
 def test_stream_on_prints_everything_as_well(monkeypatch, capsys):

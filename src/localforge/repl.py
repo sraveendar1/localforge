@@ -6,6 +6,7 @@ subcommand in an interactive terminal (see cli.py's root callback).
 
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from contextlib import nullcontext
@@ -17,18 +18,20 @@ from pathlib import Path
 import typer
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markup import escape
 
-from localforge import banner
+from localforge import banner, config, theme
 
 SLASH_HELP = """[bold]Commands:[/bold]
   /run <task>       work on a task in this folder (or just type it directly)
   /clear            start a fresh conversation (/clear --forget also drops saved memory)
   /compact          have a local model condense the conversation into session memory
+  /init             write LOCALFORGE.md: what this project is, for future sessions
   /memory           show this folder's memory (/memory forget <name>, /memory clear)
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
@@ -41,7 +44,6 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /tell <note>      add a note to the running task
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
-  /wizard           setup as a terminal UI
   /doctor           check everything's configured correctly
   /scan             show detected hardware
   /models           best-fit local model per modality
@@ -105,8 +107,10 @@ class LineReader:
                     history = None
             extra = {}
             if runner is not None:
-                # the live status line, redrawn while a task runs in the background
-                extra = {"bottom_toolbar": runner.toolbar, "refresh_interval": 0.25}
+                # Redraw while a task runs. The status goes *in* the prompt
+                # (see _message), not in bottom_toolbar: a pinned bottom bar
+                # left the typing line stranded mid-screen with a gap below.
+                extra = {"refresh_interval": 0.25, "style": status_style(os.environ.get(config.THEME_ENV_VAR, theme.DEFAULT_THEME))}
             self.session = PromptSession(
                 history=history or InMemoryHistory(),
                 completer=SlashCompleter(),
@@ -121,12 +125,19 @@ class LineReader:
         return self.session.prompt(self._message)
 
     def _message(self):
-        """The prompt text; while the task waits for a permission answer it
-        becomes that question (re-evaluated on every redraw)."""
+        """What's drawn at the prompt, top to bottom: the live status and the
+        code preview (while a task runs), then the line you type on. Rebuilt
+        on every redraw, so it animates."""
+        fragments: list[tuple[str, str]] = []
+        if self.runner is not None:
+            for kind, text in self.runner.status_lines():
+                fragments.append((f"class:{kind}", text + "\n"))
         approval = self.runner.approval if self.runner is not None else None
         if approval is not None:
-            return HTML(f"<b><ansiyellow>Allow {_html(approval.title)}? (y)es / (n)o / (a)lways &gt;</ansiyellow></b> ")
-        return HTML("<b><ansigreen>localforge&gt;</ansigreen></b> ")
+            fragments.append(("class:ask", f"Allow {approval.title}? (y)es / (n)o / (a)lways > "))
+        else:
+            fragments.append(("class:prompt", "localforge> "))
+        return FormattedText(fragments)
 
 
 def _html(text: str) -> str:
@@ -135,7 +146,29 @@ def _html(text: str) -> str:
 
 # Commands that change the conversation, the settings or the models a running
 # task is using -- refused while one runs rather than risking a corrupted turn.
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "wizard", "uninstall", "delete", "run"}
+# The prompt block follows the session's theme (localforge theme), so the
+# status and the code preview are in the same colors as everything else --
+# no grey lines pasted into a green session.
+THEME_COLORS = {
+    "matrix": {"main": "ansibrightgreen", "soft": "ansigreen", "alert": "ansibrightyellow"},
+    "dark": {"main": "ansibrightcyan", "soft": "ansicyan", "alert": "ansibrightyellow"},
+    "light": {"main": "ansiblue", "soft": "ansiblue", "alert": "ansibrightred"},
+}
+
+
+def status_style(theme_name: str) -> Style:
+    colors = THEME_COLORS.get(theme_name, THEME_COLORS["matrix"])
+    return Style.from_dict(
+        {
+            "status": colors["main"],
+            "attention": f"{colors['alert']} bold",
+            "preview": colors["soft"],
+            "prompt": f"{colors['main']} bold",
+            "ask": f"{colors['alert']} bold",
+        }
+    )
+
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init"}
 HELP_COMMANDS = {"/help", "/?"}
 
 

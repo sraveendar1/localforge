@@ -19,7 +19,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 # (kind, title, detail) -> allowed? kind is "write", "delete", "command" or
 # "download"; detail is a diff, a listing or the command line. Without an

@@ -1,6 +1,5 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 from rich.console import Console
 
 from localforge import banner
@@ -101,7 +100,7 @@ def test_repl_exits_on_all_exit_spellings():
         app = MagicMock()
         console = _fake_console()
         lines = iter([spelling])
-        console.input = lambda prompt="": next(lines)
+        console.input = lambda prompt="", lines=lines: next(lines)  # bind this loop's iterator
         run_repl(app, console)  # must return, not hang or raise
         app.assert_not_called()
 

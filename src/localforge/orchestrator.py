@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import cli_transport, local_transport, memory
+from localforge import brief, cli_transport, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
@@ -71,7 +71,18 @@ class OrchestrationError(RuntimeError):
         self.stats = stats
 
 
-MAX_ROUNDS = 40
+# A long task isn't cut off at a fixed step count (reported with a
+# screenshot: "did not converge within 40 rounds", then the user had to type
+# "continue"). Every CHECKPOINT_EVERY steps the orchestrator is asked to keep
+# going if it's making progress or stop and explain if it's stuck, and the
+# task carries on by itself -- unless the last stretch achieved nothing new
+# (only repeated or failing calls), which localforge stops on its own.
+# MAX_ROUNDS is the hard ceiling behind that.
+CHECKPOINT_EVERY = 40
+MAX_ROUNDS = 120
+# This many steps before MAX_ROUNDS, the orchestrator is told to wrap up, so
+# even the ceiling ends with a summary of what's done and what's left.
+WRAP_UP_ROUNDS = 3
 # An identical tool call that keeps failing is retried at most this many
 # times; after that the orchestrator is told to try something else.
 MAX_ATTEMPTS_PER_CALL = 3
@@ -86,18 +97,60 @@ MAX_ATTEMPTS_PER_CALL = 3
 KEEP_RECENT_TOOL_RESULTS = 4
 
 
+def _call_labels(messages: list[dict]) -> dict[str, str]:
+    """tool_call_id -> "read_file src/app.py", from the assistant messages'
+    own tool calls (API path; the CLI transport's ids aren't unique)."""
+    from localforge.tools import _summarize
+
+    labels = {}
+    for m in messages:
+        for call in m.get("tool_calls") or []:
+            function = call.get("function") or {} if isinstance(call, dict) else {}
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except (TypeError, ValueError):
+                args = {}
+            name = function.get("name") or ""
+            summary = _summarize(name, args) if isinstance(args, dict) else ""
+            if call.get("id") and name:
+                labels[call["id"]] = f"{name} {summary}".strip()[:120]
+    return labels
+
+
 def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[int]) -> None:
     excess = len(tool_message_indices) - KEEP_RECENT_TOOL_RESULTS
     if excess <= 0:
         return
+    labels = None
     for idx in tool_message_indices[:excess]:
         content = messages[idx]["content"]
         if content.startswith("[superseded:"):
             continue  # already collapsed on a previous round
+        # The first line says how the step went ("Updated app.py (+12 -3...)",
+        # an error, a decline); keeping it means the orchestrator doesn't
+        # re-read or re-delegate just to find out.
+        first = content.strip().splitlines()[0][:200] if content.strip() else ""
+        if labels is None:
+            labels = _call_labels(messages)
+        label = labels.get(messages[idx].get("tool_call_id") or "")
         messages[idx]["content"] = (
-            f"[superseded: earlier result, {len(content)} chars -- no longer kept in full in context]"
+            f"[superseded: earlier result{f' of {label}' if label else ''}, {len(content)} chars -- "
+            "no longer kept in full in context]"
+            + (f" It began: {first}" if first else "")
         )
 
+
+# User-role messages localforge adds itself, which aren't the user starting
+# a new turn: /tell notes and the nudge below. Compaction must not mistake
+# them for turn boundaries (it would keep the nudge verbatim and fold the
+# real request away).
+NOTE_PREFIX = "[Note from the user, added while you were working]: "
+STEPS_LEFT_PREFIX = "[localforge: step limit] "
+CHECKPOINT_PREFIX = "[localforge: checkpoint] "
+NUDGE = (
+    "You said what you'll do but didn't call any tool, so nothing happened. "
+    "Do it now with the tools, or if no action is needed, give your final answer."
+)
 
 # An answer that only announces work ("I will create...", "Let me write...").
 _PROMISE = re.compile(r"\b(I will|I'll|I am going to|I'm going to|Let me)\s+(now\s+)?(create|write|add|make|build|update|edit|run|fix|generate|implement|set up|delegate)\b", re.I)
@@ -175,7 +228,8 @@ How to work:
 - To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees only your instructions, the current file, and any `context_files` -- no conversation, no internet -- so give it what it needs through those (and any facts you looked up), not by pasting.
 - edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
 - make_dir, move_path and delete_path create folders, move/rename, and delete. The user has trusted this folder, and still approves each change; only delete what the task needs.
-- run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them.
+- run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them. Don't use it to look at files (cat, ls, grep, find): read_file, list_files and search do that without an approval prompt. Paths are relative to the project folder; don't cd elsewhere.
+- Earlier tool results are shortened to one line as the task goes on ("[superseded: earlier result of read_file x ...]"). Note what you learn as you go; re-read something only if you actually need its details again.
 - The local models have no internet access. When the task needs anything current or external -- library docs, API details, versions, a URL the user mentioned -- use web_search and fetch_url yourself and pass the relevant facts along.
 - For any task with more than two steps, call update_todos first with your plan, and update it as steps complete.
 - scratchpad/ is this session's private temp folder, outside the project and git, deleted when the session ends. Use it for pseudo-code, plans, experiments and drafts: delegate with a path like scratchpad/draft.py (no approval needed there), review it, then move_path it to its real location, which shows the user the diff for approval.
@@ -200,11 +254,14 @@ class Conversation:
     memory: str = ""
     project_snapshot: str = ""
     facts: str = ""
+    brief: str = ""  # the project brief (LOCALFORGE.md), if the project has one
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
         if self.project_snapshot:
             content += "\n\n" + self.project_snapshot
+        if self.brief:
+            content += "\n\nProject brief (from the project itself; trust it over guesswork, and say so if it's wrong):\n" + self.brief
         if self.facts:
             content += "\n\nRemembered for this project:\n" + self.facts
         if self.memory:
@@ -259,6 +316,7 @@ def run(
         if not conversation.project_snapshot:
             conversation.project_snapshot = workspace.snapshot()
         conversation.facts = memory.facts_for_prompt(workspace.root)  # may have changed via remember/forget
+        conversation.brief = brief.brief_for_prompt(workspace.root)  # may have been written/edited since
     compact_at = memory.COMPACT_AT_CHARS_LOCAL if frontier_model.startswith(local_transport.PREFIXES) else memory.COMPACT_AT_CHARS
     if conversation.chars() > compact_at:
         memory.compact(conversation, dispatcher, hooks)
@@ -380,12 +438,22 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     failures: dict[tuple[str, str], int] = {}  # failed attempts per identical call
     last_error: dict[tuple[str, str], str] = {}
     used_tools = nudged = False
+    progress = 0  # new, successful steps since the last checkpoint
 
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
             hooks.on_frontier(round_number)
         for note in hooks.poll_notes() if hooks.poll_notes is not None else []:
-            messages.append({"role": "user", "content": f"[Note from the user, added while you were working]: {note}"})
+            messages.append({"role": "user", "content": NOTE_PREFIX + note})
+        if round_number == MAX_ROUNDS - WRAP_UP_ROUNDS + 1:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": STEPS_LEFT_PREFIX + f"You have {WRAP_UP_ROUNDS} steps left in this task. Finish the step "
+                    "you're on, then give your final answer: what's done, what isn't, and what to do next. "
+                    "The user can say \"continue\" to carry on from there.",
+                }
+            )
         response = _call_frontier(orchestrator, hooks, messages, tools)
         frontier_model = orchestrator["model"]  # may have been switched while waiting out a limit
         _record_frontier_usage(response, stats)
@@ -398,13 +466,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                 # nothing -- small local orchestrators do this (seen live with
                 # gemma3:4b). Ask once to actually do it, or to just answer.
                 nudged = True
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": "You said what you'll do but didn't call any tool, so nothing happened. "
-                        "Do it now with the tools, or if no action is needed, give your final answer.",
-                    }
-                )
+                messages.append({"role": "user", "content": NUDGE})
                 continue
             _finish()
             return RunResult(answer=message.content or "", stats=stats)
@@ -435,6 +497,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                     result = None
                 if error is None:
                     done_calls[key] = result  # only successes are cached; failures may be retried
+                    progress += name != "update_todos"
                 else:
                     failures[key] = failures.get(key, 0) + 1
                     last_error[key] = error[:300]
@@ -453,5 +516,38 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
 
         _collapse_old_tool_results(messages, conversation.tool_indices)
 
-    _finish()
-    raise OrchestrationError(f"Orchestration did not converge within {MAX_ROUNDS} rounds.", stats)
+        if round_number % CHECKPOINT_EVERY == 0 and round_number < MAX_ROUNDS:
+            if not progress:
+                return _stop(
+                    messages,
+                    stats,
+                    _finish,
+                    f"Stopped after {round_number} steps: the last {CHECKPOINT_EVERY} only repeated or failed "
+                    "earlier steps, so it looked stuck.",
+                )
+            progress = 0
+            if hooks.on_tool is not None:
+                hooks.on_tool("checkpoint", f"{round_number} steps so far and still making progress; continuing")
+            messages.append(
+                {
+                    "role": "user",
+                    "content": CHECKPOINT_PREFIX + f"You've taken {round_number} steps on this task. If you're making "
+                    "progress, carry on with the next step -- no need to stop and ask. If you're stuck or going in "
+                    "circles, stop now and give your final answer: what's done, what's blocking, what you tried.",
+                }
+            )
+
+    return _stop(messages, stats, _finish, f"Stopped after {MAX_ROUNDS} steps without finishing.")
+
+
+def _stop(messages, stats, finish, why: str):
+    finish()
+    # Leave the conversation ready to pick up from: the history ends with
+    # this note instead of bare tool results, so "continue" carries on.
+    messages.append(
+        {
+            "role": "assistant",
+            "content": f"({why} The work above is kept; if the user says to continue, carry on from the last step.)",
+        }
+    )
+    raise OrchestrationError(f'{why} Nothing was lost: type "continue" to carry on from where it stopped.', stats)

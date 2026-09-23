@@ -50,24 +50,33 @@ def test_prefers_installed_model_over_higher_tier_download():
     assert pick.name == "qwen2.5-coder:7b"  # reused, not the 9 GB 14b
 
 
+# A machine where the 14b fits with room to spare (the reporter's 16 GB Mac
+# can't run it without squeezing everything else; see test_catalog_balance.py).
+HW_32 = HardwareProfile(
+    os="Darwin", arch="arm64", cpu_cores=12, ram_gb=32, free_disk_gb=100,
+    gpus=[{"name": "Apple M4 Pro", "vram_gb": 24, "backend": "metal"}], memory_bandwidth_gbps=273,
+)
+
+
 def test_without_installed_info_behaviour_is_unchanged():
-    """Callers that don't pass `installed` get exactly the old result."""
-    assert best_match("coding", HW_WITH_GPU, CATALOG).name == "qwen2.5-coder:14b"
+    """Callers that don't pass `installed` get the plain best fit."""
+    assert best_match("coding", HW_32, CATALOG).name == "qwen2.5-coder:14b"
 
 
 def test_falls_back_to_best_tier_when_nothing_installed_fits():
     installed = {"some-unrelated-model:latest"}
-    assert best_match("coding", HW_WITH_GPU, CATALOG, installed=installed).name == "qwen2.5-coder:14b"
+    assert best_match("coding", HW_32, CATALOG, installed=installed).name == "qwen2.5-coder:14b"
 
 
 def test_installed_model_that_does_not_fit_hardware_is_not_preferred():
     """Being on disk isn't enough -- it still has to run on this machine.
-    32b needs 32 GB RAM; this machine has 16.
+    32b needs 32 GB RAM; this machine has 16 (and the 14b doesn't leave
+    the system enough room either).
     """
     installed = {"qwen2.5-coder:32b"}
     pick = best_match("coding", HW_WITH_GPU, CATALOG, installed=installed)
     assert pick.name != "qwen2.5-coder:32b"
-    assert pick.name == "qwen2.5-coder:14b"
+    assert pick.name == "qwen2.5-coder:7b"
 
 
 def test_among_several_installed_picks_the_highest_tier():
@@ -130,7 +139,7 @@ def test_advisor_can_still_choose_an_upgrade_when_it_judges_it_worthwhile():
     response = MagicMock()
     response.choices[0].message.tool_calls[0].function.arguments = '{"coding": "qwen2.5-coder:14b"}'
     with patch("localforge.advisor.completion", return_value=response):
-        recs = recommend_models(HW_WITH_GPU, "claude-opus-5", catalog=CATALOG, installed={"qwen2.5-coder:7b"})
+        recs = recommend_models(HW_32, "claude-opus-5", catalog=CATALOG, installed={"qwen2.5-coder:7b"})
     assert recs["coding"].name == "qwen2.5-coder:14b"
 
 
@@ -190,16 +199,18 @@ def test_setup_does_not_pull_models_that_are_already_installed(tmp_path, monkeyp
 
 
 def test_an_installed_model_is_not_rejected_for_lack_of_free_disk():
-    """Reported machine after a surprise 9 GB pull: 16 GB RAM, 12 GB VRAM,
-    5.8 GB free. The installed 14b needs no more disk, so it must still fit;
-    a model that would have to be downloaded still needs the space.
+    """Reported after a surprise 9 GB pull left 5.8 GB free. The installed
+    14b needs no more disk, so it must still fit; a model that would have to
+    be downloaded still needs the space. (On the reporter's 16 GB Mac the
+    14b no longer counts as fitting at all -- it leaves the system too
+    little memory -- so this uses a machine it does fit.)
     """
     from localforge.catalog import best_match, candidates, load_catalog
     from localforge.hardware import GPU, HardwareProfile
 
     hw = HardwareProfile(
-        os="Darwin", arch="arm64", cpu_cores=10, ram_gb=16, free_disk_gb=5.8,
-        gpus=[GPU(name="Apple M4", vram_gb=12, backend="metal")],
+        os="Darwin", arch="arm64", cpu_cores=12, ram_gb=32, free_disk_gb=5.8,
+        gpus=[GPU(name="Apple M4 Pro", vram_gb=24, backend="metal")], memory_bandwidth_gbps=273,
     )
     catalog = load_catalog()
     installed = {"qwen2.5-coder:14b", "qwen2.5-coder:7b"}

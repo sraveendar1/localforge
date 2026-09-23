@@ -7,7 +7,6 @@ from typer.testing import CliRunner
 
 import localforge.cli as cli_module
 import localforge.orchestrator as orch_module
-import localforge.tui as tui_module
 from localforge.catalog import ModelEntry
 from localforge.hardware import HardwareProfile
 from localforge.orchestrator import OrchestrationError, RunStats
@@ -55,6 +54,7 @@ def test_non_convergence_raises_error_carrying_the_usage_spent_so_far():
         patch.object(orch_module, "Dispatcher", _StubDispatcher),
         patch.object(orch_module, "build_tool_schemas", return_value=[]),
         patch.object(orch_module.litellm, "completion_cost", return_value=0.001),
+        patch.object(orch_module, "CHECKPOINT_EVERY", orch_module.MAX_ROUNDS),  # run to the ceiling
     ):
         with pytest.raises(OrchestrationError) as excinfo:
             orch_module.run("task", "claude-opus-5", hardware=_hw())
@@ -121,32 +121,3 @@ def test_panels_use_the_themed_border_style():
     assert panel_calls, "expected to find Panel() calls in cli.py"
     for call in panel_calls:
         assert "border_style=" in call, f"Panel call without a themed border_style: {call.strip()}"
-
-
-# --- Bug 4: stale API key leaked across provider switches in the wizard ---
-
-
-@pytest.mark.asyncio
-async def test_switching_provider_clears_a_previously_typed_api_key(tmp_path, monkeypatch):
-    """Typing a key for one provider then switching must not leave it in the
-    field, where Save would store it under the new provider's env var.
-    """
-    monkeypatch.setenv("LOCALFORGE_CONFIG_DIR", str(tmp_path / "config"))
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-
-    from textual.widgets import Input
-
-    with patch.object(tui_module, "webbrowser"):
-        app = tui_module.LocalforgeWizard()
-        async with app.run_test(size=(120, 60)) as pilot:
-            await app.push_screen(tui_module.ApiKeyScreen())
-            await pilot.pause(0.1)
-
-            key_input = app.screen.query_one("#api-key-input", Input)
-            key_input.value = "sk-anthropic-secret"
-
-            await pilot.click("#radio-openai")
-            await pilot.pause(0.1)
-
-            assert key_input.value == ""

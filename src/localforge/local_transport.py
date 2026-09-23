@@ -15,14 +15,20 @@ among others) have no tool-calling template in Ollama at all. Ollama's
 from __future__ import annotations
 
 import json
-import os
 import re
 
 import httpx
 
 from localforge import cli_transport
 from localforge.answer_stream import AnswerStreamer
-from localforge.backends.ollama import OLLAMA_BASE_URL, OllamaBackend
+from localforge.backends.ollama import (
+    CHARS_PER_TOKEN,
+    MAX_NUM_CTX_ENV_VAR,  # noqa: F401 - re-exported: the documented setting lives with the orchestrator
+    MIN_NUM_CTX,
+    OLLAMA_BASE_URL,
+    OllamaBackend,
+    max_context,
+)
 
 PREFIXES = ("ollama/", "ollama_chat/")
 # Ollama's default context (2-4k tokens) would silently cut off the tool list
@@ -33,10 +39,7 @@ PREFIXES = ("ollama/", "ollama_chat/")
 # 1276, so the orchestrator re-read the same files and refused to write).
 # So: size the window to the prompt, and if the prompt is bigger than the
 # model can hold, trim it here -- visibly -- instead.
-MIN_NUM_CTX = 8192
-MAX_NUM_CTX_ENV_VAR = "LOCALFORGE_LOCAL_CONTEXT"
-DEFAULT_MAX_NUM_CTX = 32768
-CHARS_PER_TOKEN = 3  # code packs tighter than prose; erring small keeps us inside the window
+# (The window sizes are shared with delegated calls; see backends/ollama.py.)
 RESERVED_TOKENS = 1024  # room for the reply
 TIMEOUT = 600.0
 # Below this, open-weight models tend to misread the task as orchestrators
@@ -107,11 +110,24 @@ def model_name(frontier_model: str) -> str:
     return frontier_model
 
 
-def max_context() -> int:
-    try:
-        return max(MIN_NUM_CTX, int(os.environ.get(MAX_NUM_CTX_ENV_VAR, DEFAULT_MAX_NUM_CTX)))
-    except ValueError:
-        return DEFAULT_MAX_NUM_CTX
+_windows: dict[str, int | None] = {}
+
+
+def context_window(name: str) -> int:
+    """The window this orchestrator model gets: what it can run with on this
+    machine while leaving room for everything else (catalog.context_limit),
+    for a model localforge knows; max_context() otherwise."""
+    from localforge.catalog import context_limit, load_catalog
+    from localforge.hardware import detect_hardware
+
+    if name not in _windows:  # hardware doesn't change mid-session; don't re-detect every turn
+        try:
+            entry = next((e for e in load_catalog() if e.name == name), None)
+            _windows[name] = context_limit(entry, detect_hardware()) if entry is not None else None
+        except Exception:  # noqa: BLE001 - sizing is best-effort; the default cap still protects the prompt
+            _windows[name] = None
+    limit = _windows[name]
+    return min(limit, max_context()) if limit else max_context()
 
 
 def _estimate_tokens(text: str) -> int:
@@ -177,11 +193,12 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
     except Exception as exc:  # noqa: BLE001 - reported with a clear next step
         raise LocalOrchestratorError(f"Could not get {name} from Ollama: {exc}") from exc
 
-    budget = max_context() - RESERVED_TOKENS
+    window = context_window(name)
+    budget = window - RESERVED_TOKENS
     prompt, trimmed = fit_to_context(messages, lambda msgs: cli_transport._render_prompt(msgs, tools), budget)
     # Ask for exactly as much context as this prompt needs (capped): too
     # small silently corrupts it, too large wastes memory on the user's machine.
-    num_ctx = min(max_context(), max(MIN_NUM_CTX, _estimate_tokens(prompt) + RESERVED_TOKENS))
+    num_ctx = min(window, max(MIN_NUM_CTX, _estimate_tokens(prompt) + RESERVED_TOKENS))
     body = {
         "model": name,
         "messages": [{"role": "user", "content": prompt}],

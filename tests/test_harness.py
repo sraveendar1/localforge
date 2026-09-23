@@ -10,7 +10,6 @@ a tool to clone/download a git repository") and forgot the previous message
 
 import json
 import os
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

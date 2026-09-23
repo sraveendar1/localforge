@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import litellm
 import typer
 from rich.console import Console
@@ -22,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
+from localforge import brief, cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -133,10 +135,11 @@ def _print_getting_started() -> None:
         )
     else:
         body = (
-            "[bold]Get started in one step:[/bold]\n\n"
-            "  [accent]localforge setup[/accent]   (or [accent]localforge wizard[/accent] for a terminal UI)\n\n"
-            "That installs Ollama, has a frontier model pick local models for your\n"
-            "hardware, and saves your API key. Then type [accent]localforge[/accent] to start a session."
+            "[bold]Get started:[/bold]\n\n"
+            "  [accent]localforge[/accent]\n\n"
+            "The first session walks you through it: installing Ollama, picking a model\n"
+            "for your hardware, and how you want to reach a frontier model (or staying\n"
+            "fully local). To do that part now instead: [accent]localforge setup[/accent]."
         )
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
@@ -201,11 +204,19 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
     """
     catalog = load_catalog()
     reuse, download, notes = [], [], []
+    # One model can cover several task types (on a smaller machine it's the
+    # same model for all text work): list it once, with every task it covers.
+    tasks: dict[str, list[str]] = {}
+    for modality, entry in recs.items():
+        if entry is not None and entry.runtime == "ollama":
+            tasks.setdefault(entry.name, []).append(modality)
     for modality, entry in recs.items():
         if entry is None or entry.runtime != "ollama":
             continue
+        covers = ", ".join(tasks[entry.name])
         if entry.name in installed:
-            reuse.append(f"{entry.name} ({modality})")
+            if tasks[entry.name][0] == modality:
+                reuse.append(f"{entry.name} ({covers})")
             try:
                 ideal = best_match(modality, hw, catalog)  # ignoring what's installed
             except NoFittingModelError:
@@ -215,8 +226,8 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
                     f"{modality}: {ideal.name} (higher tier, ~{ideal.disk_gb:g} GB) also fits — "
                     f"`ollama pull {ideal.name}` if you want the upgrade"
                 )
-        else:
-            download.append(f"{entry.name} ({modality}, ~{entry.disk_gb:g} GB)")
+        elif tasks[entry.name][0] == modality:
+            download.append(f"{entry.name} ({covers}, ~{entry.disk_gb:g} GB)")
 
     if reuse:
         console.print(f"[success]✓[/success] Reusing already-installed: {', '.join(reuse)}")
@@ -242,7 +253,7 @@ def installed() -> None:
     """List local models actually pulled via Ollama (not just the catalog)."""
     models_on_disk = _installed_ollama_models()
     if not models_on_disk:
-        console.print("No local models installed yet. Run `localforge setup` or `localforge wizard`.")
+        console.print("No local models installed yet. Run `localforge setup` to get some.")
         return
 
     table = Table(title="Installed local models")
@@ -338,16 +349,6 @@ def catalog() -> None:
             str(entry.min_vram_gb), str(entry.min_ram_gb), str(entry.disk_gb), str(entry.quality_tier),
         )
     console.print(table)
-
-
-@app.command()
-def wizard() -> None:
-    """Launch the interactive terminal getting-started wizard (same steps as
-    `setup`, but as a navigable screen-by-screen UI).
-    """
-    from localforge.tui import LocalforgeWizard
-
-    LocalforgeWizard().run()
 
 
 def _drain_buffered_input() -> None:
@@ -459,7 +460,7 @@ def _prompt_for_model(provider: str) -> str:
     text "Other" escape hatch so any LiteLLM-supported model id can be used,
     not just the curated list.
     """
-    choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+    choices = _provider_models(provider)
     labels = {}
     if provider == "local":
         installed = _installed_model_names(OllamaBackend())
@@ -519,8 +520,8 @@ def setup() -> None:
     and saves your frontier model API key so future runs just work.
     """
     console.print("[bold]localforge setup[/bold]\n")
-    console.print("This installs everything localforge needs automatically; the only")
-    console.print("thing you'll need to provide is a frontier model API key.\n")
+    console.print("This gets the machine ready: Ollama, local models that fit your hardware,")
+    console.print("and how you want to reach a frontier model — or stay fully local.\n")
 
     # 1. Ollama
     if shutil.which("ollama") is None:
@@ -865,7 +866,7 @@ def run(
     """Run a task in the current folder: the frontier model investigates and plans,
     local models write the code, and you approve each change."""
     explicit_model = frontier_model
-    frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
+    frontier_model = config.litellm_model_id(frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5")
     cli_provider = _cli_provider_for(frontier_model, explicit=bool(explicit_model))
     if cli_provider:
         if not cli_transport.available(cli_provider):
@@ -1128,6 +1129,7 @@ class _LiveActivity:
         "fetch_url": "Fetch",
         "compact": "Memory",
         "retry": "Retry",
+        "checkpoint": "Checkpoint",
         "remember": "Remember",
         "forget": "Forget",
     }
@@ -1167,6 +1169,10 @@ class _LiveActivity:
                 text = f"[dim strike]{text}[/dim strike]"
             console.print(f"      {mark} {text}", highlight=False)
 
+    def _note_change(self, kind: str, allowed: bool) -> None:
+        if allowed and kind in ("write", "delete"):
+            _session.files_changed += 1
+
     def approve(self, kind: str, title: str, detail: str) -> bool:
         """Claude-Code-style permission prompt: show the diff or command, then
         yes / no / always (for this kind, this session). Without a terminal
@@ -1175,6 +1181,7 @@ class _LiveActivity:
         self._stop_spinner()
         if _session.auto_approve or kind in _session.always_allow:
             self._print_change(kind, title, detail)
+            self._note_change(kind, True)
             return True
         self._print_change(kind, title, detail)
         if not sys.stdin.isatty():
@@ -1186,11 +1193,13 @@ class _LiveActivity:
             # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
             answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
             if answer in ("y", "yes"):
+                self._note_change(kind, True)
                 return True
             if answer in ("n", "no"):
                 return False
             if answer in ("a", "always"):
                 _session.always_allow.add(kind)
+                self._note_change(kind, True)
                 return True
 
     def _print_change(self, kind: str, title: str, detail: str) -> None:
@@ -1403,11 +1412,13 @@ class _BackgroundActivity(_LiveActivity):
     def approve(self, kind: str, title: str, detail: str) -> bool:
         if _session.auto_approve or kind in _session.always_allow:
             self._print_change(kind, title, detail)
+            self._note_change(kind, True)
             return True
         self._print_change(kind, title, detail)
         answer = self.runner.ask(kind, title, detail)
         if answer.always:
             _session.always_allow.add(kind)
+        self._note_change(kind, answer.allowed)
         return answer.allowed
 
     def close(self) -> None:
@@ -1426,6 +1437,7 @@ class _SessionState:
         self.always_allow: set[str] = set()
         self.stream_output = False  # /stream on: print local output in full as well
         self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
+        self.files_changed = 0  # approved writes/deletes, so the exit hook knows if the brief is stale
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
         self.runner = None  # background.TaskRunner when the session runs tasks in the background
@@ -1488,7 +1500,7 @@ def compact() -> None:
         console.print("Nothing to compact yet.")
         return
     activity = _LiveActivity("local model")
-    dispatcher = Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()) or None, hooks=activity.hooks())
+    dispatcher = _memory_dispatcher(activity.hooks())  # never `or None`: an empty set means nothing installed, not unknown
     try:
         done = memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=_session.root or Path.cwd())
     finally:
@@ -1520,7 +1532,7 @@ def _model_choices() -> list[tuple[str, str, dict]]:
                 {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"},
             )
         )
-    for provider, models in config.FRONTIER_MODEL_CHOICES.items():
+    for provider in config.FRONTIER_MODEL_CHOICES:
         if provider == "local":
             continue
         env_var = FRONTIER_PROVIDERS.get(provider)
@@ -1531,11 +1543,69 @@ def _model_choices() -> list[tuple[str, str, dict]]:
             auth, how = config.AUTH_CLI_LOGIN, f"your `{spec['command']}` login"
         else:
             continue
-        for model in models:
+        for model in _provider_models(provider) if auth == config.AUTH_API_KEY else config.FRONTIER_MODEL_CHOICES[provider]:
             choices.append(
                 (model, f"{model}  ({how})", {config.AUTH_METHOD_ENV_VAR: auth, config.FRONTIER_PROVIDER_ENV_VAR: provider})
             )
     return choices
+
+
+_GEMINI_SKIP = ("tts", "image", "embedding", "live", "audio", "transcribe", "computer-use", "customtools", "translate", "aqa")
+
+
+_gemini_cache: dict[str, tuple[str, ...]] = {}
+
+
+def _gemini_models(api_key: str) -> tuple[str, ...]:
+    if api_key not in _gemini_cache:
+        found = _fetch_gemini_models(api_key)
+        if not found:
+            return ()  # not cached: offline now doesn't mean offline for the whole session
+        _gemini_cache[api_key] = found
+    return _gemini_cache[api_key]
+
+
+def _fetch_gemini_models(api_key: str) -> tuple[str, ...]:
+    """The text models this Google AI Studio key can use, newest and most
+    capable first, straight from Google's model list -- so the menu is
+    current without localforge guessing at model ids. Empty on any failure
+    (the curated list is used instead)."""
+    try:
+        resp = httpx.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"pageSize": 1000},
+            headers={"x-goog-api-key": api_key},  # a header, so the key never lands in a URL or log
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        models = resp.json().get("models") or []
+    except Exception:  # noqa: BLE001 - a nicer menu, never a reason to fail
+        return ()
+    names = []
+    for m in models:
+        name = str(m.get("name") or "").removeprefix("models/")
+        if (
+            name.startswith("gemini-")
+            and "generateContent" in (m.get("supportedGenerationMethods") or [])
+            and not any(skip in name for skip in _GEMINI_SKIP)
+        ):
+            names.append(name)
+
+    def rank(name: str):
+        version = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+        tier = 0 if "-pro" in name else 2 if "lite" in name else 1
+        return (-float(version.group(1)) if version else 0.0, "preview" in name or "exp" in name, tier, name)
+
+    return tuple(f"gemini/{n}" for n in sorted(set(names), key=rank)[:10])
+
+
+def _provider_models(provider: str) -> list[str]:
+    """Model ids to offer for `provider`: Google's live list when an AI
+    Studio key is set, else the curated list."""
+    curated = list(config.FRONTIER_MODEL_CHOICES.get(provider, []))
+    if provider == "gemini" and (key := os.environ.get(FRONTIER_PROVIDERS["gemini"])):
+        return list(_gemini_models(key)) or curated
+    return curated
 
 
 def _set_orchestrator(model: str, auth: dict) -> None:
@@ -1644,6 +1714,34 @@ def _current_is_usable(current: str, choices: list[tuple[str, str, dict]]) -> bo
     )
 
 
+def _first_run_setup() -> bool:
+    """Nothing to orchestrate with yet -- the install deliberately leaves
+    this until now, so it happens where the user can see it. Offers to run
+    setup here rather than telling them to go and do it themselves."""
+    console.print(
+        "[bold]Nothing to work with yet.[/bold] Setup installs Ollama if you don't have it, has a model "
+        "picked for this machine's hardware, and saves how you want to reach a frontier model (or lets "
+        "you skip that and stay fully local)."
+    )
+    console.print("  1) Set it up now\n  2) Not now")
+    answer = _ask_number("Choose", 2)
+    if answer is None:
+        return False
+    if answer != 1:
+        console.print("[dim]No problem — run /setup when you're ready, or /model if you pull a model yourself.[/dim]\n")
+        return True
+    try:
+        app(["setup"], standalone_mode=False)
+    except typer.Exit:
+        pass
+    except Exception as exc:  # noqa: BLE001 - setup reports its own problems; the session goes on
+        console.print(f"[error]Setup didn't finish:[/error] {escape(str(exc))}")
+    console.print()
+    if _model_choices():
+        return _choose_orchestrator_at_start()  # now there's something to pick
+    return True
+
+
 def _choose_orchestrator_at_start() -> bool:
     """Every new session confirms the orchestrator. With a usable one from
     last time, it's a short "keep it, or choose another?"; the full list
@@ -1669,11 +1767,7 @@ def _choose_orchestrator_at_start() -> bool:
         console.print(f"[warning]{escape(current)} from last time isn't available here any more.[/warning]")
 
     if not choices:
-        console.print(
-            "[warning]No orchestrator is available yet: no models in Ollama and no cloud key or login.[/warning] "
-            "Run /setup, or `ollama pull qwen2.5:7b` and then /model.\n"
-        )
-        return True
+        return _first_run_setup()
     console.print("[bold]Which model should orchestrate this session?[/bold]")
     for i, (model_id, label, _) in enumerate(choices, 1):
         last = "  [dim](last used)[/dim]" if model_id == current else ""
@@ -1697,6 +1791,7 @@ def model_command(
     choices = _model_choices()
 
     if model:
+        model = config.litellm_model_id(model)
         for model_id, _, auth in choices:
             if model_id == model:
                 _set_orchestrator(model_id, auth)
@@ -1756,11 +1851,31 @@ def _save_memory_at_exit() -> None:
             return
         try:
             memory.extract_facts(conversation, dispatcher, root, activity.hooks())  # before compact trims the turns
+            _draft_brief_update(root, dispatcher, activity)
             memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=root)
         finally:
             activity.close()
     finally:
         _session.drop_scratchpad()
+
+
+def _draft_brief_update(root: Path, dispatcher, activity) -> None:
+    """After a session that changed files, have the keeper draft an updated
+    brief and leave it pending. Never written to the project here: the user
+    reviews it with /init, like any other change."""
+    current = brief.existing_brief(root)
+    keeper = memory.keeper(dispatcher)
+    if not current or not _session.files_changed or keeper is None:
+        return
+    workspace = Workspace(root, scratch=_session.scratch.root if _session.scratch else None)
+    try:
+        context = brief.gather_context(workspace, memory.load(root), memory.facts_for_prompt(root))
+        text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
+    except Exception:  # noqa: BLE001 - an optional nicety at exit
+        return
+    if text and text.strip() != current.strip():
+        brief.save_pending(root, text)
+        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE} — run /init next time to review it.[/dim]")
 
 
 @app.command(name="memory")
@@ -1939,7 +2054,7 @@ def _answer_with_local_model(question: str, approval) -> tuple[str, str] | None:
     try:
         from localforge.backends import BACKENDS
 
-        result = BACKENDS[entry.runtime].generate(entry.name, prompt)
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=dispatcher.context_limit(entry))
     except Exception:  # noqa: BLE001 - an explanation is never worth an error
         return None
     text = str(result.get("content") or "").strip()
@@ -1954,6 +2069,58 @@ def explain_to_user(question: str, approval) -> None:
         if answer := _answer_with_local_model(question, approval):
             text, model = answer
             console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (local)", border_style="panel.border"))
+
+
+@app.command()
+def init(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the brief from scratch instead of updating it."),
+) -> None:
+    """Write (or update) LOCALFORGE.md: what this project is, for every future session.
+
+    A local model reads the project and what localforge remembers, and drafts
+    it; you see the diff and approve it like any other change.
+    """
+    folder = Path.cwd().resolve()
+    if not trust.is_trusted(folder) and not _ask_trust(folder):
+        console.print("Not trusted — nothing written.")
+        raise typer.Exit(code=1)
+
+    activity = _session.make_activity("local model")
+    dispatcher = _memory_dispatcher(activity.hooks())
+    keeper = memory.keeper(dispatcher)
+    if keeper is None:
+        console.print(
+            "[error]No local model is available to write the brief.[/error] "
+            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /init again."
+        )
+        raise typer.Exit(code=1)
+
+    workspace = Workspace(folder, approver=activity.approve, scratch=_session.scratchpad_for(folder).root)
+    current = "" if refresh else brief.existing_brief(folder)
+    pending = "" if refresh else brief.take_pending(folder)
+    if pending:
+        console.print("[dim]Using the update drafted at the end of the last session.[/dim]")
+        text = pending
+    else:
+        console.print(f"[dim]Reading the project with {escape(keeper.name)} (local)…[/dim]")
+        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder))
+        try:
+            text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
+        except Exception as exc:  # noqa: BLE001 - reported plainly, nothing written
+            console.print(f"[error]Couldn't write the brief:[/error] {escape(str(exc))}")
+            raise typer.Exit(code=1) from None
+        finally:
+            activity.close()
+    if not text:
+        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /init --refresh.[/warning]")
+        raise typer.Exit(code=1)
+
+    result = workspace.write_file(brief.BRIEF_FILE, text)
+    console.print(result.splitlines()[0])
+    if result.startswith(("Created ", "Updated ")):
+        if _session.conversation is not None:
+            _session.conversation.brief = brief.brief_for_prompt(folder)
+        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /init again to refresh it.[/dim]")
 
 
 @app.command()

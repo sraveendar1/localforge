@@ -32,7 +32,7 @@ CATALOG = [
 
 
 def _hw() -> HardwareProfile:
-    return HardwareProfile(os="Darwin", arch="arm64", cpu_cores=10, ram_gb=32, free_disk_gb=200, gpus=[])
+    return HardwareProfile(os="Darwin", arch="arm64", cpu_cores=10, ram_gb=32, free_disk_gb=200, gpus=[], memory_bandwidth_gbps=400)
 
 
 class StreamingStub:
@@ -176,7 +176,7 @@ def test_ollama_generate_streams_chunks_and_reads_final_token_count():
 
     assert requests[0]["stream"] is True
     assert chunks == ["def ", "f():"]
-    assert result == {"type": "text", "content": "def f():", "tokens": 7}
+    assert result == {"type": "text", "content": "def f():", "tokens": 7, "truncated": False}
 
 
 def test_ollama_streaming_surfaces_a_mid_stream_error():

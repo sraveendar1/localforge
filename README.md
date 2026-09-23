@@ -77,6 +77,16 @@ and code before anything touches a real file. Moving a draft into the project
 shows you the diff first. It's deleted when the session ends (`/scratch` shows
 what's in it).
 
+**`localforge init`:** like Claude Code's `/init`, this writes a project
+brief — `LOCALFORGE.md`: what the project is, how it's built, how to run and
+test it, and the decisions worth keeping. A **local** model writes it, from
+the project itself plus what localforge remembers of your sessions, and you
+approve the diff like any other change. Every later session starts with it,
+so the frontier model doesn't pay to rediscover your project each time. After
+a session that changed files, the local model drafts an update and tells you;
+`/init` reviews it, `/init --refresh` rewrites from scratch. If your project
+already has a `CLAUDE.md` or `AGENTS.md`, that's used instead.
+
 **Memory:** like Claude Code, localforge keeps memory per project, outside
 the project: remembered facts (your preferences, decisions, pointers) and a
 summary of where the last session left off. Tell it "remember that…" and it
@@ -109,10 +119,12 @@ and anvil working away, the model doing the work, how long it's been, a
 running token count, and, if a step goes quiet, how long for:
 
 ```
-        🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+localforge> add a health endpoint
+  → coding → qwen2.5-coder:7b (local)
+          ⠴ Forging with qwen2.5-coder:7b… (5s · ↓ 62 tokens · working on coding, 12 tok/s) │ /summary · /stop
+  │     app = FastAPI()
   │     @app.get("/health")
-  │     def health():
-  │         return {"ok": Tr
+localforge>
 ```
 
 The last few lines the local model is writing show under it, so you can watch
@@ -159,11 +171,11 @@ waiting on stdin.
 ## Quickstart
 
 **Before you run it — what `install.sh` puts on your machine:**
-- [Homebrew](https://brew.sh) on macOS, if you don't already have it
-- [Ollama](https://ollama.com), if you don't already have it
-- One or more real open-weight models matched to your hardware (an actual
-  multi-GB download — sizes are shown before each pull)
+- [uv](https://docs.astral.sh/uv/), if you don't already have it
 - The `localforge` CLI tool itself
+
+Models, Ollama and Homebrew are not installed here: the first `localforge`
+run offers those, so nothing multi-GB downloads before you've seen the tool.
 
 The script prints this same list and waits for you to press Enter before
 touching anything (falls through automatically if there's no interactive
@@ -183,11 +195,13 @@ cd localforge
 ./install.sh
 ```
 
-Either way, after that one confirmation, everything else runs with no
-further prompts to click through except one: a frontier model API key
-(Anthropic, OpenAI, or Gemini — paste one when asked). Once it
-finishes, type `localforge` to start a session, then type what you want
-built:
+That installs the CLI and nothing else. The first time you run `localforge`
+it offers to do the rest — install Ollama, pick a model for your hardware,
+and set up how you reach a frontier model (or stay fully local) — where you
+can see it and say no. (`./install.sh --setup` does that during install
+instead, and `localforge setup` can be run any time.)
+
+Then start a session and type what you want built:
 
 ```bash
 localforge
@@ -338,7 +352,7 @@ into a single "yes to everything."
 
 ### Choosing a frontier model
 
-`setup`/`wizard` always ask explicitly which frontier provider
+`setup` always asks explicitly which frontier provider
 (Anthropic/OpenAI/Gemini, **or `local`**) to use — localforge never
 silently guesses this from whatever API key happens to already be in your
 environment (if you have multiple keys set for unrelated tools, that
@@ -388,7 +402,7 @@ public OAuth/browser-login flow for third-party CLI tools to authenticate
 on your behalf (unlike, say, `gh auth login`'s device flow for GitHub) —
 so this is not a real "sign in" step, just a shortcut to the right page.
 When you pick a provider that needs a key and don't already have one set,
-`setup`/`wizard` automatically opens your browser straight to that
+`setup` automatically opens your browser straight to that
 provider's API key page (Anthropic's Console, OpenAI's Platform dashboard,
 or Google AI Studio) so you don't have to go find it, then you paste the
 key in as usual.
@@ -406,7 +420,7 @@ LiteLLM/Ollama supports via the "Other" option.
 
 ### Reusing what's already installed
 
-Before downloading anything, `setup` (and the wizard) checks which models
+Before downloading anything, `setup` checks which models
 Ollama already has on disk. If an installed model fits your hardware for a
 task type, it's reused instead of pulling a new one — re-running setup
 won't re-download models you already have. Setup prints the plan first:
@@ -425,7 +439,7 @@ picks with an **Installed** column.
 
 ### Hardware-aware model selection
 
-During `setup`/`wizard`, model selection isn't purely rule-based: the
+During `setup`, model selection isn't purely rule-based: the
 catalog is first filtered down to only the models that actually fit this
 machine's RAM, VRAM, *and* free disk space (`catalog.candidates()`), and
 then the frontier model itself is asked to pick the best one per modality
@@ -457,7 +471,7 @@ deterministic highest-quality-tier pick `localforge models` uses on its own.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
 manual model downloads, no re-exporting API keys. Setup, `doctor` and the
-wizard all end by telling you to type `localforge` to start a session. The
+and the first-run setup all end by telling you to type `localforge` to start a session. The
 installer then prints a short "what to do next" panel without opening the
 session itself, so the script actually finishes. You get the same panel
 whenever `localforge` runs without a real terminal attached: one version
@@ -467,8 +481,6 @@ To upgrade after a new release: just re-run the one-liner or `./install.sh`
 — it pulls the latest source and reinstalls.
 
 You can also run pieces individually:
-- `localforge wizard` — the same setup flow as a navigable terminal UI
-  (screens, checkboxes, a live pull log) instead of console output.
 - `localforge setup` — the automated, non-interactive-except-for-the-API-key
   flow that `install.sh` calls; useful to re-run on its own.
 - `localforge doctor` — checks everything's still in place without changing
@@ -486,7 +498,6 @@ uv run localforge scan
 
 ```bash
 localforge help                                  # list every command (same as --help)
-localforge wizard                                # one-time interactive setup (terminal UI)
 localforge setup                                 # one-time interactive setup (plain prompts)
 localforge doctor                                # is everything set up correctly?
 localforge scan                                  # what hardware do I have?
@@ -530,8 +541,7 @@ and applies immediately to the running command as well as every future one.
   `best_match()` on any failure.
 - `backends/` — one module per serving runtime. `ollama.py` is implemented,
   including a real progress callback fed by Ollama's streaming pull
-  response (used to drive an actual download progress bar in `setup` and a
-  live percentage in `wizard`, not just a spinner). `comfyui.py` is a stub
+  response (used to drive an actual download progress bar in `setup`). `comfyui.py` is a stub
   reserved for image/video generation, since those are job-based (submit →
   poll → fetch file) rather than a single request/response like text.
 - `tools.py` — turns catalog + backends into tool schemas the frontier model
@@ -548,10 +558,8 @@ and applies immediately to the running command as well as every future one.
   behind `localforge theme`, keyed by semantic style names
   (`success`/`error`/`warning`/`accent`) that `cli.py` uses everywhere
   instead of literal color words.
-- `tui.py` — the `localforge wizard` terminal UI ([Textual](https://textual.textualize.io/)):
-  the same setup steps as `setup`, as navigable screens instead of prompts.
 - `cli.py` — the `localforge` command-line entry point (Typer), including
-  the `setup`/`wizard` onboarding flows and `doctor` diagnostic.
+  the `setup` onboarding flow and `doctor` diagnostic.
 - `install.sh` — the one-command bootstrap: installs uv, installs the CLI
   tool, runs `localforge setup`.
 

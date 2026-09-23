@@ -25,16 +25,12 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Callable
 
+# Just a small spinner: it has to keep moving so a slow step doesn't look
+# like a hang, but the line stays plain text in the session's own colors.
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-# A little forge: the hammer swings while work is happening, so an idle-
-# looking moment (a slow local model, a long frontier turn) still visibly
-# ticks. Falls back to ASCII where the terminal can't do emoji.
-FORGE_FRAMES = ("🔨 ⚒️", "⚒️ 🔨")
-FORGE_ASCII = (">- ", " -<")
-IDLE_ICON = "🛠️"
-IDLE_ASCII = "[*]"
+SPINNER_ASCII = "|/-\\"
 # After this long with no new step, the toolbar says how long it's been --
 # "still working" beats a frozen-looking line.
 QUIET_AFTER_SECONDS = 20
@@ -235,25 +231,41 @@ class TaskRunner:
 
     # --- what the user sees -------------------------------------------------------
 
+    def status_lines(self, unicode: bool | None = None) -> list[tuple[str, str]]:
+        """(kind, text) lines shown directly above the input prompt: the
+        centered status, then the code preview. Rendered as part of the
+        prompt rather than a bar pinned to the bottom of the terminal, so
+        the status sits with the work and the typing line stays last.
+        """
+        lines: list[tuple[str, str]] = []
+        status = self.toolbar(unicode)
+        if self.approval is not None or self.state.waiting_for:
+            lines.append(("attention", status))
+        elif self.busy:
+            lines.append(("status", status))
+        else:
+            return []
+        lines += [("preview", line) for line in self._preview_lines()]
+        return lines
+
     def toolbar(self, unicode: bool | None = None) -> str:
         """The live status line, in the shape Claude Code uses:
 
-            🔨 Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s)
+            ⠹ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s)
 
         Always moving while a task runs, so a slow step never looks like a hang.
         """
-        emoji = _unicode_ok() if unicode is None else unicode
-        forge, idle = (FORGE_FRAMES, IDLE_ICON) if emoji else (FORGE_ASCII, IDLE_ASCII)
+        spinner = SPINNER if (_unicode_ok() if unicode is None else unicode) else SPINNER_ASCII
         if self.approval is not None:
             return f" ⏸ waiting for you: {self.approval.title} — answer (y)es / (n)o / (a)lways below"
         if self.state.waiting_for:  # before the busy check: a paused task is still a task
             return f" ⏸ {self.state.waiting_for} — /model to switch and continue now · /stop"
         if not self.busy:
-            return f" {idle} ready — type a task, or / for commands" + (f" · queue: {len(self.queue)}" if self.queue else "")
+            return " ready — type a task, or / for commands" + (f" · queue: {len(self.queue)}" if self.queue else "")
 
         s = self.state
         now = time.monotonic()
-        icon = SPINNER[int(now * 8) % len(SPINNER)] + " " + forge[int(now * 2.5) % len(forge)]
+        icon = spinner[int(now * 8) % len(spinner)]
         # One verb, and the model doing the work right now -- so the line
         # always answers "who is working?" at a glance.
         if s.downloading:
@@ -271,7 +283,7 @@ class TaskRunner:
         parts = [_elapsed(s.started), f"↓ {_thousands(s.tokens())} tokens", detail]
         queue = f" · queue: {len(self.queue)}" if self.queue else ""
         status = f"{icon} Forging with {who or 'a model'}… ({' · '.join(parts)}){queue} │ /summary · /stop"
-        return "\n".join([_center(status, self.width), *self._preview_lines()])
+        return _center(status, self.width)
 
     def _preview_lines(self) -> list[str]:
         """The last few lines the local model has written, so its work is

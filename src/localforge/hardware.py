@@ -24,6 +24,10 @@ class HardwareProfile(BaseModel):
     ram_gb: float
     free_disk_gb: float
     gpus: list[GPU]
+    # GB/s the GPU (or, without one, the CPU) reads memory at: generation
+    # speed is bound by it. None = unknown; catalog.py then assumes a typical
+    # figure for the kind of machine.
+    memory_bandwidth_gbps: float | None = None
 
     @property
     def total_vram_gb(self) -> float:
@@ -74,6 +78,28 @@ def _detect_apple_silicon_gpu(ram_gb: float) -> list[GPU]:
     return [GPU(name=brand or "Apple Silicon GPU", vram_gb=round(ram_gb * 0.75, 1), backend="metal")]
 
 
+# Apple's published unified-memory bandwidth per chip (GB/s). Binned Max
+# chips are slower; the lower figure is used so estimates err on the slow side.
+_APPLE_BANDWIDTH = {
+    "M1": 68, "M1 Pro": 200, "M1 Max": 400, "M1 Ultra": 800,
+    "M2": 100, "M2 Pro": 200, "M2 Max": 400, "M2 Ultra": 800,
+    "M3": 100, "M3 Pro": 150, "M3 Max": 300, "M3 Ultra": 819,
+    "M4": 120, "M4 Pro": 273, "M4 Max": 410,
+    "M5": 153,
+}
+
+
+def apple_bandwidth(brand: str) -> float | None:
+    """e.g. "Apple M4 Pro" -> 273. None for a chip not in the table."""
+    import re
+
+    match = re.search(r"\b(M\d+)(?:\s+(Pro|Max|Ultra))?\b", brand)
+    if not match:
+        return None
+    chip = match.group(1) + (f" {match.group(2)}" if match.group(2) else "")
+    return _APPLE_BANDWIDTH.get(chip) or _APPLE_BANDWIDTH.get(match.group(1))
+
+
 def _detect_free_disk_gb() -> float:
     # Where Ollama/model downloads actually land, not just wherever the CLI runs.
     usage = shutil.disk_usage(Path.home())
@@ -83,6 +109,7 @@ def _detect_free_disk_gb() -> float:
 def detect_hardware() -> HardwareProfile:
     ram_gb = round(psutil.virtual_memory().total / (1024**3), 1)
     gpus = _detect_nvidia_gpus() or _detect_apple_silicon_gpu(ram_gb)
+    bandwidth = apple_bandwidth(gpus[0].name) if gpus and gpus[0].backend == "metal" else None
     return HardwareProfile(
         os=platform.system(),
         arch=platform.machine(),
@@ -90,4 +117,5 @@ def detect_hardware() -> HardwareProfile:
         ram_gb=ram_gb,
         free_disk_gb=_detect_free_disk_gb(),
         gpus=gpus,
+        memory_bandwidth_gbps=bandwidth,
     )

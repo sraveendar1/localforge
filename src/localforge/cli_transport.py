@@ -448,7 +448,7 @@ def complete(
     output_args = spec["stream_args"] if streaming else spec.get("json_args", [])
     cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *output_args]
     if model and spec.get("model_flag"):
-        cmd += [spec["model_flag"], model]
+        cmd += [spec["model_flag"], model.removeprefix(f"{provider}/")]  # gemini/x is LiteLLM's name; the CLI wants x
     if spec.get("effort_flag"):
         effort = os.environ.get(config.ORCHESTRATOR_EFFORT_ENV_VAR) or config.DEFAULT_ORCHESTRATOR_EFFORT
         cmd += [spec["effort_flag"], effort]
