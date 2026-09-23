@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
+from localforge import brief, cli_transport, config, local_transport, memory, repl, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -224,7 +224,7 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
             if ideal.name != entry.name and ideal.quality_tier > entry.quality_tier:
                 notes.append(
                     f"{modality}: {ideal.name} (higher tier, ~{ideal.disk_gb:g} GB) also fits — "
-                    f"`ollama pull {ideal.name}` if you want the upgrade"
+                    "/upgrade swaps it in and removes the old one"
                 )
         elif tasks[entry.name][0] == modality:
             download.append(f"{entry.name} ({covers}, ~{entry.disk_gb:g} GB)")
@@ -326,6 +326,7 @@ def delete(
     for name in queue:
         try:
             ollama.delete(name)
+            upgrades.unmark(name)
             console.print(f"[success]✓[/success] Deleted {name}")
         except Exception as exc:  # noqa: BLE001 - one failed delete shouldn't abort the rest of the queue
             console.print(f"[error]✗[/error] Failed to delete {name}: {exc}")
@@ -587,6 +588,7 @@ def setup() -> None:
                 console.print(f"Pulling {orchestrator_model_name} for orchestration (this can take a while)...")
                 try:
                     ollama.ensure_available(orchestrator_model_name)
+                    upgrades.mark_managed(orchestrator_model_name)
                     console.print(f"[success]✓[/success] {orchestrator_model_name} ready\n")
                 except Exception as exc:  # noqa: BLE001 - reported, doesn't abort the rest of setup
                     console.print(f"[error]Failed to pull {orchestrator_model_name}: {exc}[/error]\n")
@@ -686,6 +688,7 @@ def setup() -> None:
 
             try:
                 ollama.ensure_available(model_name, on_progress=_on_progress)
+                upgrades.mark_managed(model_name)
                 progress.update(task_id, description=f"{model_name} (done)", completed=progress.tasks[task_id].total or 1)
             except Exception as exc:  # noqa: BLE001 - one failed pull shouldn't abort the rest of setup
                 failed.append(model_name)
@@ -1639,7 +1642,177 @@ def _start_session() -> bool:
     if not _ask_trust(Path.cwd().resolve()):
         console.print("Not trusted — exiting. cd into a folder you trust and run localforge there.")
         return False
-    return _choose_orchestrator_at_start()
+    if not _choose_orchestrator_at_start():
+        return False
+    _offer_upgrades_at_start()
+    return True
+
+
+# --- upgrading installed models --------------------------------------------------
+
+
+def _upgrade_plan() -> tuple[upgrades.Plan, OllamaBackend] | None:
+    """What an upgrade would do here, or None if Ollama can't be asked."""
+    ollama = OllamaBackend()
+    try:
+        on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+    except Exception:  # noqa: BLE001 - no Ollama, nothing to upgrade
+        return None
+    return upgrades.plan(detect_hardware(), on_disk, keep=upgrades.local_orchestrator()), ollama
+
+
+def _print_upgrade_plan(plan: upgrades.Plan) -> None:
+    for line in plan.summary():
+        console.print(f"  • {escape(line)}", highlight=False)
+    if plan.download_gb or plan.freed_gb:
+        console.print(f"  [dim]download ~{plan.download_gb:g} GB · frees ~{plan.freed_gb:g} GB afterwards[/dim]")
+
+
+def _offer_upgrades_at_start() -> None:
+    """At session start: if a better model fits this machine, or models
+    localforge installed are no longer used, upgrade -- asking the first
+    time, then as the user chose ("always" runs it in the background)."""
+    setting = os.environ.get(upgrades.AUTO_UPGRADE_ENV_VAR, "")
+    if setting == "never" or not sys.stdin.isatty():
+        return
+    found = _upgrade_plan()
+    if found is None:
+        return
+    plan, ollama = found
+    if plan.blocked:
+        console.print(f"[dim]A better local model fits this machine, but the upgrade {escape(plan.blocked)}.[/dim]")
+    if plan.empty:
+        return
+    if setting == "always":
+        _start_background_upgrade(plan, ollama)
+        return
+    console.print("\n[bold]Better local models fit this machine:[/bold]")
+    _print_upgrade_plan(plan)
+    console.print(
+        "  1) Upgrade now, in the background\n  2) Always upgrade automatically from now on\n"
+        "  3) Not now\n  4) Never ask (/upgrade still works)"
+    )
+    answer = _ask_number("Choose", 4)
+    if answer in (1, 2):
+        if answer == 2:
+            config.save({upgrades.AUTO_UPGRADE_ENV_VAR: "always"})
+        _start_background_upgrade(plan, ollama)
+    elif answer == 4:
+        config.save({upgrades.AUTO_UPGRADE_ENV_VAR: "never"})
+    console.print()
+
+
+_upgrade_lock = threading.Lock()
+UPGRADE_IDLE_POLL_SECONDS = 5.0
+
+
+def _start_background_upgrade(plan: upgrades.Plan, ollama: OllamaBackend) -> threading.Thread | None:
+    """Download in the background while the session carries on; the new
+    model is used from the next task on (a model on disk wins). Old models
+    are removed only once no task is running, since one might be using them."""
+    if not _upgrade_lock.acquire(blocking=False):
+        return None  # one upgrade at a time
+    names = ", ".join(u.new.name for u in plan.upgrades)
+    if names:
+        console.print(f"[dim]↓ Upgrading in the background: {escape(names)} (~{plan.download_gb:g} GB). Keep working.[/dim]")
+
+    shown: dict[str, int] = {}
+
+    def milestones(name: str, event: dict) -> None:
+        # A big download takes a while: a line every 25% so it's never silent.
+        total, done = event.get("total"), event.get("completed")
+        if total and done is not None:
+            quarter = int(done * 4 / total)
+            if 0 < quarter < 4 and quarter > shown.get(name, 0):
+                shown[name] = quarter
+                console.print(f"[dim]↓ {escape(name)}: {quarter * 25}% of ~{total / 1e9:.1f} GB[/dim]")
+
+    def work() -> None:
+        try:
+            _apply_upgrade(plan, ollama, wait_for_idle=True, on_progress=milestones)
+        finally:
+            _upgrade_lock.release()
+
+    thread = threading.Thread(target=work, name="localforge-upgrade", daemon=True)
+    thread.start()
+    return thread
+
+
+def _apply_upgrade(plan: upgrades.Plan, ollama: OllamaBackend, wait_for_idle: bool = False, on_progress=None) -> bool:
+    """Download every new model, then remove the ones no longer used. Old
+    models stay if any download fails -- they're still what's in use."""
+    for upgrade in plan.upgrades:
+        name = upgrade.new.name
+        try:
+            ollama.ensure_available(name, on_progress=(lambda event, name=name: on_progress(name, event)) if on_progress else None)
+        except Exception as exc:  # noqa: BLE001 - reported; the old model stays in use
+            console.print(f"[warning]![/warning] Upgrade stopped: couldn't download {escape(name)} ({escape(str(exc))}). Nothing was removed.")
+            return False
+        upgrades.mark_managed(name)
+        console.print(
+            f"[success]✓[/success] {escape(', '.join(upgrade.modalities))} now uses {escape(name)} (was {escape(upgrade.old)}) "
+            "from the next task. Memory and the conversation carry over; they're kept per project, not per model."
+        )
+    if plan.remove and wait_for_idle:
+        while _session.runner is not None and _session.runner.busy:
+            time.sleep(UPGRADE_IDLE_POLL_SECONDS)  # a running task may still be using an old model
+    removed = []
+    # Checked now, not when the plan was made: /model may have made one of
+    # these the orchestrator during a long download.
+    keep = upgrades.local_orchestrator()
+    for name in plan.remove:
+        if name in keep:
+            continue
+        try:
+            ollama.delete(name)
+        except Exception as exc:  # noqa: BLE001 - one failed delete doesn't stop the rest
+            console.print(f"[warning]![/warning] Couldn't remove {escape(name)}: {escape(str(exc))}")
+            continue
+        upgrades.unmark(name)
+        removed.append(name)
+    if removed:
+        console.print(f"[success]✓[/success] Removed {escape(', '.join(removed))}, freeing ~{plan.freed_gb:g} GB.")
+    return True
+
+
+@app.command()
+def upgrade(yes: bool = typer.Option(False, "--yes", "-y", help="Don't ask before downloading/removing.")) -> None:
+    """Upgrade installed local models to better ones that fit this machine, and remove old ones."""
+    found = _upgrade_plan()
+    if found is None:
+        console.print("[error]Ollama isn't reachable.[/error] Start it, then retry.")
+        raise typer.Exit(code=1)
+    plan, ollama = found
+    if plan.blocked:
+        console.print(f"[warning]![/warning] A better model fits, but the upgrade {escape(plan.blocked)}.")
+    if plan.empty and not plan.unused_own:
+        console.print("[success]✓[/success] Your local models are already the best fit for this machine.")
+        return
+    if not plan.empty:
+        console.print("[bold]Upgrade plan:[/bold]")
+        _print_upgrade_plan(plan)
+        if yes or (sys.stdin.isatty() and typer.confirm("Go ahead?", default=False)):
+            with Progress(
+                TextColumn("[progress.description]{task.description}"), BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"), DownloadColumn(), console=console,
+            ) as progress:
+                tasks: dict[str, object] = {}
+
+                def on_progress(name: str, event: dict) -> None:
+                    task_id = tasks.setdefault(name, progress.add_task(name, total=None))
+                    if event.get("total") and event.get("completed") is not None:
+                        progress.update(task_id, total=event["total"], completed=event["completed"])
+
+                _apply_upgrade(plan, ollama, on_progress=on_progress)
+        else:
+            console.print("Nothing changed.")
+    if plan.unused_own:
+        # Not installed by localforge: only ever removed when asked, one prompt, never with --yes.
+        console.print(
+            f"\nThese were installed outside localforge and localforge no longer uses them: {escape(', '.join(plan.unused_own))}"
+        )
+        if not yes and sys.stdin.isatty() and typer.confirm("Remove them too?", default=False):
+            _apply_upgrade(upgrades.Plan(remove=plan.unused_own), ollama)
 
 
 def _ask_number(prompt: str, count: int) -> int | None:

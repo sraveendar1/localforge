@@ -470,7 +470,11 @@ class Dispatcher:
                     f"{entry.name} isn't downloaded and the download wasn't approved; no {modality} model is available. "
                     "Tell the user, or use a different tool."
                 )
+            backend.ensure_available(entry.name, on_progress=on_pull)
             self.installed.add(entry.name)
+            from localforge import upgrades
+
+            upgrades.mark_managed(entry.name)  # localforge downloaded it, so an upgrade may replace it
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
         window = {"context_limit": self.context_limit(entry)}

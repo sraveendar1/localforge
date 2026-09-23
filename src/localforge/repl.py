@@ -50,6 +50,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /catalog          full model catalog
   /installed        models actually on disk
   /delete <names>   delete installed model(s), omit names to choose interactively
+  /upgrade          swap installed models for better ones that fit, and remove the old ones
   /theme <name>     show/switch color theme (matrix, dark, light)
   /uninstall        remove localforge and everything it manages
   /help             show this list
@@ -168,7 +169,7 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init"}
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init", "upgrade"}
 HELP_COMMANDS = {"/help", "/?"}
 
 
