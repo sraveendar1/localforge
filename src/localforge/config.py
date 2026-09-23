@@ -46,7 +46,12 @@ THEME_ENV_VAR = "LOCALFORGE_THEME"
 FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
     "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1"],
     "openai": ["gpt-5"],
-    "gemini": ["gemini-2.5-pro"],
+    # "gemini/" is LiteLLM's route to Google AI Studio (a key from
+    # aistudio.google.com). A bare "gemini-2.5-pro" goes to Vertex AI instead,
+    # which needs Google Cloud credentials -- so an AI Studio key never worked.
+    # With a key, /model and /setup list the models it can actually use (see
+    # cli._gemini_models); these are the fallback.
+    "gemini": ["gemini/gemini-2.5-pro", "gemini/gemini-2.5-flash"],
     "local": ["ollama/llama3.1:70b", "ollama/qwen2.5:72b"],
 }
 FRONTIER_DEFAULT_MODELS = {provider: choices[0] for provider, choices in FRONTIER_MODEL_CHOICES.items()}
@@ -168,12 +173,31 @@ FRONTIER_CONSOLE_URLS: dict[str, str] = {
 }
 
 
+# Google AI Studio keys are often exported as GOOGLE_API_KEY; LiteLLM reads
+# either name, so localforge accepts either too.
+GEMINI_KEY_ALIASES = ("GOOGLE_API_KEY",)
+
+
+def litellm_model_id(model: str) -> str:
+    """The id LiteLLM routes to the right place. A bare Gemini id (saved by
+    an older localforge, or typed by hand) would go to Vertex AI rather than
+    AI Studio."""
+    return f"gemini/{model}" if model.startswith("gemini-") else model
+
+
 def load() -> None:
     """Load saved config into the environment, without overriding vars the
     user already set for this shell session.
     """
     if CONFIG_FILE.exists():
         load_dotenv(CONFIG_FILE, override=False)
+    if not os.environ.get(FRONTIER_PROVIDERS["gemini"]):
+        for alias in GEMINI_KEY_ALIASES:
+            if os.environ.get(alias):
+                os.environ[FRONTIER_PROVIDERS["gemini"]] = os.environ[alias]
+                break
+    if saved := os.environ.get(FRONTIER_MODEL_ENV_VAR):
+        os.environ[FRONTIER_MODEL_ENV_VAR] = litellm_model_id(saved)
 
 
 def save(values: dict[str, str]) -> None:

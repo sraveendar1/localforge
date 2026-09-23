@@ -3,10 +3,11 @@ from __future__ import annotations
 from typing import Literal, Protocol, TypedDict
 
 
-class BackendResult(TypedDict):
+class BackendResult(TypedDict, total=False):
     type: Literal["text", "file"]
     content: str  # text content, or a filesystem path when type == "file"
     tokens: int  # tokens the local model generated, for usage metrics; 0 if unknown
+    truncated: bool  # the output hit the length cap and stops mid-way
 
 
 class Backend(Protocol):

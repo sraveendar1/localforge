@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import httpx
 import litellm
 import typer
 from rich.console import Console
@@ -202,11 +204,19 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
     """
     catalog = load_catalog()
     reuse, download, notes = [], [], []
+    # One model can cover several task types (on a smaller machine it's the
+    # same model for all text work): list it once, with every task it covers.
+    tasks: dict[str, list[str]] = {}
+    for modality, entry in recs.items():
+        if entry is not None and entry.runtime == "ollama":
+            tasks.setdefault(entry.name, []).append(modality)
     for modality, entry in recs.items():
         if entry is None or entry.runtime != "ollama":
             continue
+        covers = ", ".join(tasks[entry.name])
         if entry.name in installed:
-            reuse.append(f"{entry.name} ({modality})")
+            if tasks[entry.name][0] == modality:
+                reuse.append(f"{entry.name} ({covers})")
             try:
                 ideal = best_match(modality, hw, catalog)  # ignoring what's installed
             except NoFittingModelError:
@@ -216,8 +226,8 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
                     f"{modality}: {ideal.name} (higher tier, ~{ideal.disk_gb:g} GB) also fits — "
                     f"`ollama pull {ideal.name}` if you want the upgrade"
                 )
-        else:
-            download.append(f"{entry.name} ({modality}, ~{entry.disk_gb:g} GB)")
+        elif tasks[entry.name][0] == modality:
+            download.append(f"{entry.name} ({covers}, ~{entry.disk_gb:g} GB)")
 
     if reuse:
         console.print(f"[success]✓[/success] Reusing already-installed: {', '.join(reuse)}")
@@ -450,7 +460,7 @@ def _prompt_for_model(provider: str) -> str:
     text "Other" escape hatch so any LiteLLM-supported model id can be used,
     not just the curated list.
     """
-    choices = config.FRONTIER_MODEL_CHOICES.get(provider, [])
+    choices = _provider_models(provider)
     labels = {}
     if provider == "local":
         installed = _installed_model_names(OllamaBackend())
@@ -856,7 +866,7 @@ def run(
     """Run a task in the current folder: the frontier model investigates and plans,
     local models write the code, and you approve each change."""
     explicit_model = frontier_model
-    frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
+    frontier_model = config.litellm_model_id(frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5")
     cli_provider = _cli_provider_for(frontier_model, explicit=bool(explicit_model))
     if cli_provider:
         if not cli_transport.available(cli_provider):
@@ -1079,6 +1089,7 @@ class _LiveActivity:
         "fetch_url": "Fetch",
         "compact": "Memory",
         "retry": "Retry",
+        "checkpoint": "Checkpoint",
         "remember": "Remember",
         "forget": "Forget",
     }
@@ -1449,7 +1460,7 @@ def compact() -> None:
         console.print("Nothing to compact yet.")
         return
     activity = _LiveActivity("local model")
-    dispatcher = Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()) or None, hooks=activity.hooks())
+    dispatcher = _memory_dispatcher(activity.hooks())  # never `or None`: an empty set means nothing installed, not unknown
     try:
         done = memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=_session.root or Path.cwd())
     finally:
@@ -1481,7 +1492,7 @@ def _model_choices() -> list[tuple[str, str, dict]]:
                 {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"},
             )
         )
-    for provider, models in config.FRONTIER_MODEL_CHOICES.items():
+    for provider in config.FRONTIER_MODEL_CHOICES:
         if provider == "local":
             continue
         env_var = FRONTIER_PROVIDERS.get(provider)
@@ -1492,11 +1503,69 @@ def _model_choices() -> list[tuple[str, str, dict]]:
             auth, how = config.AUTH_CLI_LOGIN, f"your `{spec['command']}` login"
         else:
             continue
-        for model in models:
+        for model in _provider_models(provider) if auth == config.AUTH_API_KEY else config.FRONTIER_MODEL_CHOICES[provider]:
             choices.append(
                 (model, f"{model}  ({how})", {config.AUTH_METHOD_ENV_VAR: auth, config.FRONTIER_PROVIDER_ENV_VAR: provider})
             )
     return choices
+
+
+_GEMINI_SKIP = ("tts", "image", "embedding", "live", "audio", "transcribe", "computer-use", "customtools", "translate", "aqa")
+
+
+_gemini_cache: dict[str, tuple[str, ...]] = {}
+
+
+def _gemini_models(api_key: str) -> tuple[str, ...]:
+    if api_key not in _gemini_cache:
+        found = _fetch_gemini_models(api_key)
+        if not found:
+            return ()  # not cached: offline now doesn't mean offline for the whole session
+        _gemini_cache[api_key] = found
+    return _gemini_cache[api_key]
+
+
+def _fetch_gemini_models(api_key: str) -> tuple[str, ...]:
+    """The text models this Google AI Studio key can use, newest and most
+    capable first, straight from Google's model list -- so the menu is
+    current without localforge guessing at model ids. Empty on any failure
+    (the curated list is used instead)."""
+    try:
+        resp = httpx.get(
+            "https://generativelanguage.googleapis.com/v1beta/models",
+            params={"pageSize": 1000},
+            headers={"x-goog-api-key": api_key},  # a header, so the key never lands in a URL or log
+            timeout=5.0,
+        )
+        resp.raise_for_status()
+        models = resp.json().get("models") or []
+    except Exception:  # noqa: BLE001 - a nicer menu, never a reason to fail
+        return ()
+    names = []
+    for m in models:
+        name = str(m.get("name") or "").removeprefix("models/")
+        if (
+            name.startswith("gemini-")
+            and "generateContent" in (m.get("supportedGenerationMethods") or [])
+            and not any(skip in name for skip in _GEMINI_SKIP)
+        ):
+            names.append(name)
+
+    def rank(name: str):
+        version = re.search(r"gemini-(\d+(?:\.\d+)?)", name)
+        tier = 0 if "-pro" in name else 2 if "lite" in name else 1
+        return (-float(version.group(1)) if version else 0.0, "preview" in name or "exp" in name, tier, name)
+
+    return tuple(f"gemini/{n}" for n in sorted(set(names), key=rank)[:10])
+
+
+def _provider_models(provider: str) -> list[str]:
+    """Model ids to offer for `provider`: Google's live list when an AI
+    Studio key is set, else the curated list."""
+    curated = list(config.FRONTIER_MODEL_CHOICES.get(provider, []))
+    if provider == "gemini" and (key := os.environ.get(FRONTIER_PROVIDERS["gemini"])):
+        return list(_gemini_models(key)) or curated
+    return curated
 
 
 def _set_orchestrator(model: str, auth: dict) -> None:
@@ -1683,6 +1752,7 @@ def model_command(
     choices = _model_choices()
 
     if model:
+        model = config.litellm_model_id(model)
         for model_id, _, auth in choices:
             if model_id == model:
                 _set_orchestrator(model_id, auth)
@@ -1761,7 +1831,7 @@ def _draft_brief_update(root: Path, dispatcher, activity) -> None:
     workspace = Workspace(root, scratch=_session.scratch.root if _session.scratch else None)
     try:
         context = brief.gather_context(workspace, memory.load(root), memory.facts_for_prompt(root))
-        text = brief.draft(keeper, context, current)
+        text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
     except Exception:  # noqa: BLE001 - an optional nicety at exit
         return
     if text and text.strip() != current.strip():
@@ -1945,7 +2015,7 @@ def _answer_with_local_model(question: str, approval) -> tuple[str, str] | None:
     try:
         from localforge.backends import BACKENDS
 
-        result = BACKENDS[entry.runtime].generate(entry.name, prompt)
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=dispatcher.context_limit(entry))
     except Exception:  # noqa: BLE001 - an explanation is never worth an error
         return None
     text = str(result.get("content") or "").strip()
@@ -1996,7 +2066,7 @@ def init(
         console.print(f"[dim]Reading the project with {escape(keeper.name)} (local)…[/dim]")
         context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder))
         try:
-            text = brief.draft(keeper, context, current)
+            text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
         except Exception as exc:  # noqa: BLE001 - reported plainly, nothing written
             console.print(f"[error]Couldn't write the brief:[/error] {escape(str(exc))}")
             raise typer.Exit(code=1) from None

@@ -12,7 +12,8 @@ from collections.abc import Callable
 from localforge import web
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
-from localforge.catalog import ModelEntry, best_match, candidates, load_catalog
+from localforge.backends.ollama import MAX_OUTPUT_TOKENS, prompt_budget
+from localforge.catalog import ModelEntry, best_match, candidates, context_limit, load_catalog
 from localforge.hardware import HardwareProfile
 
 # Called right before a subtask is handed to a local model, so callers (the
@@ -226,6 +227,16 @@ MAX_CONTEXT_FILES = 8
 MAX_CONTEXT_CHARS = 60_000
 RESULT_PREVIEW_LINES = 12
 
+# The fixed text wrapped around a delegated prompt (preface, notes).
+PROMPT_OVERHEAD = 500
+
+
+def _with_notes(result: str, notes: list[str]) -> str:
+    """A delegation's result plus what the orchestrator should know about
+    how it was produced (reference files cut or left out)."""
+    return result + "\n\n[localforge: " + "; ".join(notes) + ".]" if notes else result
+
+
 # Modalities whose models are interchangeable in a pinch: all produce text.
 TEXT_MODALITIES = ("coding", "docs", "general")
 
@@ -280,14 +291,38 @@ def build_tool_schemas(
     return schemas
 
 
-def _extract_file_content(text: str) -> str:
+_FENCE_LINE = re.compile(r"^\s*```[^`]*$")
+
+
+def _extract_file_content(text: str) -> str | None:
     """A model asked for a whole file still tends to wrap it in a code fence
-    and add a sentence around it; keep only the (longest) fenced block.
+    and add a sentence around it; keep only the file.
+
+    A reply that opens with a fence is the file, from that fence to the LAST
+    fence line: a Markdown file has fences of its own, and matching the first
+    closing fence kept only its opening paragraph (a README cut down to its
+    title). Otherwise the longest fenced block wins. None when the reply
+    opens a fence and never closes it -- the output was cut off, and writing
+    it would save half a file.
     """
+    lines = text.strip("\n").splitlines()
+    if lines and _FENCE_LINE.match(lines[0]):
+        closing = [i for i in range(1, len(lines)) if lines[i].strip() == "```"]
+        if not closing:
+            return None
+        body = lines[1 : closing[-1]]
+        return "\n".join(body).rstrip("\n") + "\n"
     blocks = re.findall(r"```[^\n`]*\n(.*?)```", text, flags=re.DOTALL)
     if blocks:
         return max(blocks, key=len).rstrip("\n") + "\n"
     return text.strip("\n") + "\n"
+
+
+def _cut_off_warning(modality: str) -> str:
+    return (
+        f"[WARNING: the local {modality} model's output hit its {MAX_OUTPUT_TOKENS}-token limit and was cut off "
+        "mid-way. Split the work into smaller pieces (one function, class or section per call) rather than retrying it whole.]"
+    )
 
 
 def _prompt_for(modality: str, instructions: str) -> str:
@@ -378,6 +413,19 @@ class Dispatcher:
             self._resolved_models[modality] = entry
         return self._resolved_models[modality]
 
+    def context_limit(self, entry: ModelEntry) -> int | None:
+        """The context window `entry` can run with on this machine (None:
+        the default cap). Every prompt it's given is sized to fit this."""
+        return context_limit(entry, self.hardware)
+
+    def prompt_chars(self, modality: str, output_tokens: int = MAX_OUTPUT_TOKENS) -> int:
+        """How much prompt the model for `modality` can take beside its reply."""
+        try:
+            entry = self.resolve(modality)
+        except Exception:  # noqa: BLE001 - no model: the call will fail with its own error
+            return prompt_budget(None, output_tokens)
+        return prompt_budget(self.context_limit(entry), output_tokens)
+
     def _retry_candidate(self, modality: str, current: ModelEntry) -> ModelEntry | None:
         """A different model for `modality` to retry with, if this
         hardware fits more than one. `resolve()` already picks the single
@@ -393,6 +441,10 @@ class Dispatcher:
             # A retry is not worth a surprise multi-GB download; with nothing
             # else installed, the caller retries the same model instead.
             alternatives = [c for c in alternatives if c.name in self.installed]
+        # The prompt was sized for the current model's window; a model with a
+        # smaller one would have it cut off.
+        window = self.context_limit(current) or 0
+        alternatives = [c for c in alternatives if (self.context_limit(c) or 0) >= window]
         return max(alternatives, key=lambda m: m.quality_tier) if alternatives else None
 
     def _reinforced_instructions(self, instructions: str, reason: str) -> str:
@@ -421,10 +473,11 @@ class Dispatcher:
             self.installed.add(entry.name)
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
+        window = {"context_limit": self.context_limit(entry)}
         if hooks.on_token is not None:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions), on_token=hooks.on_token)
+            result = backend.generate(entry.name, _prompt_for(modality, instructions), on_token=hooks.on_token, **window)
         else:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions))
+            result = backend.generate(entry.name, _prompt_for(modality, instructions), **window)
         tokens = result.get("tokens", 0)
         self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
         if hooks.on_done is not None:
@@ -440,39 +493,53 @@ class Dispatcher:
         if tool_name in DIRECT_TOOLS:
             return self._direct(tool_name, args)
         modality = self._tool_name_to_modality(tool_name)
-        instructions = str(args.get("instructions") or "") + self._context_block(args.get("context_files"))
+        instructions = str(args.get("instructions") or "")
         path = args.get("path")
         if path:
-            return self._delegate_to_file(modality, instructions, str(path), on_delegate)
-        content, warning = self._delegate(modality, instructions, on_delegate)
-        return f"{warning}\n\n{content}" if warning else content
+            return self._delegate_to_file(modality, instructions, args.get("context_files"), str(path), on_delegate)
+        room = self.prompt_chars(modality) - len(instructions) - PROMPT_OVERHEAD
+        context, notes = self._context_block(args.get("context_files"), room)
+        content, warning = self._delegate(modality, instructions + context, on_delegate)
+        return _with_notes(f"{warning}\n\n{content}" if warning else content, notes)
 
-    def _context_block(self, paths) -> str:
-        """Files named in context_files, attached for the local model. They go
-        from disk straight to the local model: the orchestrator never reads
-        them, which is the point (reading them itself costs frontier tokens
-        twice -- once to read, again to paste them into instructions)."""
+    def _context_block(self, paths, room: int) -> tuple[str, list[str]]:
+        """Files named in context_files, attached for the local model, and
+        notes for the orchestrator about any that were cut or left out. They
+        go from disk straight to the local model: the orchestrator never
+        reads them, which is the point (reading them itself costs frontier
+        tokens twice -- once to read, again to paste them into instructions).
+
+        `room` is what's left of the local model's context window. Anything
+        past it would be dropped by Ollama without a word -- and the model
+        would lose its instructions, not the files -- so files are cut here,
+        visibly, and the orchestrator is told which."""
         if not paths or self.workspace is None:
-            return ""
+            return "", []
         if isinstance(paths, str):
             paths = [paths]
-        blocks, used = [], 0
+        room = max(0, min(room, MAX_CONTEXT_CHARS))
+        blocks, notes, used = [], [], 0
         for raw in list(paths)[:MAX_CONTEXT_FILES]:
             try:
                 target = self.workspace.resolve(str(raw))
                 text = target.read_text(errors="replace")
             except (WorkspaceError, OSError) as exc:
                 blocks.append(f"\n[context file {raw} unavailable: {exc}]")
+                notes.append(f"context file {raw} was unavailable ({exc})")
                 continue
-            room = MAX_CONTEXT_CHARS - used
-            if room <= 0:
+            left = room - used
+            if left <= 0:
                 blocks.append(f"\n[context file {raw} left out: context limit reached]")
+                notes.append(f"context file {raw} was left out: the local model's context was full")
                 continue
-            if len(text) > room:
-                text = text[:room] + "\n[... cut to fit ...]"
+            if len(text) > left:
+                notes.append(f"context file {raw} was cut to its first {left:,} of {len(text):,} characters to fit")
+                text = text[:left] + "\n[... cut to fit ...]"
             used += len(text)
             blocks.append(f"\n\nFile `{self.workspace.rel(target)}`:\n```\n{text}\n```")
-        return "\n\nReference files:" + "".join(blocks) if blocks else ""
+        if len(paths) > MAX_CONTEXT_FILES:
+            notes.append(f"only the first {MAX_CONTEXT_FILES} context files were attached")
+        return ("\n\nReference files:" + "".join(blocks) if blocks else ""), notes
 
     def _delegate(self, modality: str, instructions: str, on_delegate: DelegateCallback | None) -> tuple[str, str | None]:
         """(content, warning or None), with one automatic retry when the first
@@ -486,6 +553,8 @@ class Dispatcher:
             return self._recover(modality, entry, instructions, on_delegate, first_error)
         if result["type"] == "file":
             return f"[generated file: {result['content']}]", None
+        if result.get("truncated"):
+            return result["content"], _cut_off_warning(modality)  # retrying the same thing would cut off again
 
         reason = _looks_suspect(result["content"], instructions)
         if reason is None:
@@ -496,6 +565,8 @@ class Dispatcher:
         retry_result = self._run(modality, retry_entry, retry_instructions, on_delegate)
         if retry_result["type"] == "file":
             return f"[generated file: {retry_result['content']}]", None
+        if retry_result.get("truncated"):
+            return retry_result["content"], _cut_off_warning(modality)
         retry_reason = _looks_suspect(retry_result["content"], instructions)
         if retry_reason is None:
             return retry_result["content"], None
@@ -525,6 +596,8 @@ class Dispatcher:
             ) from second_error
         if result["type"] == "file":
             return f"[generated file: {result['content']}]", None
+        if result.get("truncated"):
+            return result["content"], _cut_off_warning(modality)
         reason = _looks_suspect(result["content"], instructions)
         if reason is None:
             return result["content"], None
@@ -533,7 +606,9 @@ class Dispatcher:
             "-- verify before use, or delegate again with clearer/simpler instructions]"
         )
 
-    def _delegate_to_file(self, modality: str, instructions: str, path: str, on_delegate: DelegateCallback | None) -> str:
+    def _delegate_to_file(
+        self, modality: str, instructions: str, context_files, path: str, on_delegate: DelegateCallback | None
+    ) -> str:
         if self.workspace is None:
             return "No project folder is open, so nothing can be written; omit `path` to get the text back."
         try:
@@ -542,28 +617,50 @@ class Dispatcher:
             return f"Cannot write {path}: {exc}"
         rel = self.workspace.rel(target)
         current = target.read_text(errors="replace") if target.is_file() else None
-        brief = (
-            f"{instructions}\n\nWrite the COMPLETE contents of the file `{rel}`. "
+        directive = (
+            f"\n\nWrite the COMPLETE contents of the file `{rel}`. "
             "Reply with only the file's contents in one code block -- no explanation before or after."
         )
+        current_block = ""
         if current is not None:
-            brief += f"\n\nCurrent contents of `{rel}` (change what the task needs, keep the rest):\n```\n{current}\n```"
+            current_block = (
+                f"\n\nCurrent contents of `{rel}` (change what the task needs, keep the rest):\n```\n{current}\n```"
+                f"\n\nNow write the complete new contents of `{rel}`."  # restated: a long file buries the task
+            )
+        room = self.prompt_chars(modality) - len(instructions) - len(directive) - len(current_block) - PROMPT_OVERHEAD
+        tool = TASK_MODALITIES[modality]["tool_name"]
+        if current is not None and room < 0:
+            # The file alone doesn't fit next to room for the rewrite. Cutting
+            # it and asking for "the complete file" would lose the rest of it.
+            return (
+                f"{tool} failed: {rel} is too large ({len(current.splitlines())} lines) for a local model to rewrite "
+                "whole within its context window. Nothing was sent or written. Split the change: delegate without "
+                "`path` for just the part that changes and apply it with edit_file, or move part of the file into "
+                "a new, smaller module first."
+            )
+        context, notes = self._context_block(context_files, room)
+        brief = instructions + context + directive + current_block
         content, warning = self._delegate(modality, brief, on_delegate)
         if warning:
-            return f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}"
+            return _with_notes(f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}", notes)
         written = _extract_file_content(content)
+        if written is None:
+            return _with_notes(
+                f"{_cut_off_warning(modality)}\n\nNothing was written to {rel}: the reply opened a code block and never closed it.",
+                notes,
+            )
         result = self.workspace.write_file(rel, written)
         if self.hooks.on_tool_result is not None:
             self.hooks.on_tool_result("write", result.splitlines()[0])
         if not result.startswith(("Created ", "Updated ")):
-            return result
+            return _with_notes(result, notes)
         # The user saw the full diff when approving. The orchestrator gets a
         # summary and a short preview -- every line it's handed is paid for
         # again on each later step -- and can read_file to check more.
         lines = written.splitlines()
         preview = "\n".join(lines[:RESULT_PREVIEW_LINES])
         more = f"\n[... {len(lines) - RESULT_PREVIEW_LINES} more lines; read_file {rel} if you need to check them]" if len(lines) > RESULT_PREVIEW_LINES else ""
-        return f"{result.splitlines()[0]}\nFirst lines:\n{preview}{more}"
+        return _with_notes(f"{result.splitlines()[0]}\nFirst lines:\n{preview}{more}", notes)
 
     def _direct(self, tool_name: str, args: dict) -> str:
         """A tool the orchestrator runs itself. Failures come back as text so

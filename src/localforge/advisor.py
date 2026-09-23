@@ -12,20 +12,28 @@ import json
 
 from litellm import completion
 
-from localforge.catalog import ModelEntry, candidates, load_catalog
+from localforge.catalog import (
+    ModelEntry,
+    balanced_pick,
+    candidates,
+    load_catalog,
+    running_gb,
+    share_text_model,
+    tokens_per_second,
+)
 from localforge.hardware import HardwareProfile
 
 
-def _best_choice(entries: list[ModelEntry], installed: set[str] | None) -> ModelEntry:
+def _best_choice(entries: list[ModelEntry], installed: set[str] | None, hardware: HardwareProfile) -> ModelEntry:
     """Deterministic fallback: an already-installed fitting model beats a
-    higher-tier one that would need a fresh download (same rule as
-    catalog.best_match).
+    higher-tier one that would need a fresh download, and otherwise the
+    balanced pick (same rules as catalog.best_match).
     """
     if installed:
         already_have = [e for e in entries if e.name in installed]
         if already_have:
             return max(already_have, key=lambda e: e.quality_tier)
-    return max(entries, key=lambda e: e.quality_tier)
+    return balanced_pick(entries, hardware)
 
 
 def _ask_via_cli(cli_provider: str, prompt: str, choosable: dict[str, list[ModelEntry]], model: str | None = None) -> dict:
@@ -108,9 +116,13 @@ def recommend_models(
     prompt = (
         "Here is a machine's hardware profile and, per task modality, the "
         "local models that fit it. Call select_models to choose the best "
-        "one per modality -- weigh quality_tier against how much RAM/VRAM/"
-        "disk headroom each choice leaves for actually running it "
-        "alongside everything else on the machine.\n\n"
+        "one per modality. Aim for balance: the best quality that still runs "
+        "at a comfortable speed (est_tokens_per_second of 15 or more) and "
+        "leaves the machine usable. Every candidate already fits in memory "
+        "with room kept for the OS and apps (running_gb includes its context "
+        "cache). If two different models can't be in memory together, "
+        "prefer using one model for several modalities over constant "
+        "reloading.\n\n"
         "Candidates marked \"installed\": true are ALREADY on this machine and "
         "need no download at all. Strongly prefer an installed model unless a "
         "not-installed one is clearly better for the task -- a multi-GB "
@@ -118,7 +130,18 @@ def recommend_models(
         f"Hardware: {hardware.model_dump_json()}\n\n"
         "Candidates: "
         + json.dumps(
-            {m: [{**e.model_dump(), "installed": e.name in installed} for e in es] for m, es in choosable.items()}
+            {
+                m: [
+                    {
+                        **e.model_dump(),
+                        "installed": e.name in installed,
+                        "running_gb": round(running_gb(e), 1),
+                        "est_tokens_per_second": round(tokens_per_second(e, hardware)),
+                    }
+                    for e in es
+                ]
+                for m, es in choosable.items()
+            }
         )
     )
 
@@ -136,9 +159,15 @@ def recommend_models(
     except Exception:  # noqa: BLE001 - any failure here falls back to the deterministic heuristic
         args = {}
 
+    fell_back = False
     for modality, entries in choosable.items():
         picked_name = args.get(modality)
         match = next((e for e in entries if e.name == picked_name), None)
-        result[modality] = match or _best_choice(entries, installed)
-
-    return result
+        if match is None:
+            result[modality] = _best_choice(entries, installed, hardware)
+            fell_back = True
+        else:
+            result[modality] = match
+    # The deterministic fallback shares one text model on a small machine,
+    # as catalog.recommendations() does; a frontier model's own picks are kept.
+    return share_text_model(result, hardware, installed) if fell_back else result

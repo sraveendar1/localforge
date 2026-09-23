@@ -54,6 +54,7 @@ def test_non_convergence_raises_error_carrying_the_usage_spent_so_far():
         patch.object(orch_module, "Dispatcher", _StubDispatcher),
         patch.object(orch_module, "build_tool_schemas", return_value=[]),
         patch.object(orch_module.litellm, "completion_cost", return_value=0.001),
+        patch.object(orch_module, "CHECKPOINT_EVERY", orch_module.MAX_ROUNDS),  # run to the ceiling
     ):
         with pytest.raises(OrchestrationError) as excinfo:
             orch_module.run("task", "claude-opus-5", hardware=_hw())

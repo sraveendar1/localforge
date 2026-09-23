@@ -141,12 +141,13 @@ def build_prompt(context: str, current_brief: str = "") -> str:
     return PROMPT.format(existing=existing, context=context)
 
 
-def draft(entry, context: str, current_brief: str = "") -> str:
+def draft(entry, context: str, current_brief: str = "", context_limit: int | None = None) -> str:
     """Have the local model write the brief. Returns markdown (never partial
-    JSON or prose around it)."""
+    JSON or prose around it). `context_limit` is the window this model can
+    run with on this machine (Dispatcher.context_limit)."""
     from localforge.backends import BACKENDS
 
-    result = BACKENDS[entry.runtime].generate(entry.name, build_prompt(context, current_brief))
+    result = BACKENDS[entry.runtime].generate(entry.name, build_prompt(context, current_brief), context_limit=context_limit)
     text = str(result.get("content") or "").strip()
     if text.startswith("```"):
         inner = text.split("```")

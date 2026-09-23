@@ -85,3 +85,23 @@ def _scratch_in_tmp(monkeypatch, tmp_path_factory):
 
     base = tmp_path_factory.mktemp("scratch-base")
     monkeypatch.setattr(scratchpad, "base_dir", lambda: base)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_gemini_lookup(monkeypatch):
+    """With a real GEMINI_API_KEY in the developer's shell, /model and setup
+    would ask Google for its model list mid-test. Tests that exercise that
+    lookup patch httpx themselves."""
+    from localforge import cli
+
+    cli._gemini_cache.clear()
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _fresh_local_windows():
+    """local_transport caches each orchestrator model's window per process;
+    a test that changes LOCALFORGE_LOCAL_CONTEXT must not see another's."""
+    from localforge import local_transport
+
+    local_transport._windows.clear()

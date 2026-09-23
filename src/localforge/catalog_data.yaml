@@ -1,72 +1,158 @@
 # Curated catalog of open-weight models, tagged by task/modality and hardware needs.
-# min_vram_gb: 0 means the model can run CPU-only (via RAM) if no GPU is present.
-# disk_gb: approximate download size, checked against free disk space before pulling.
+# disk_gb: download size, checked against Ollama's registry (2026-09-23).
+# kv_gb_per_8k: context (KV) cache per 8k tokens of context, fp16, from each
+#   model's architecture (layers x KV heads x head size x 2 x 2 bytes);
+#   gemma3's sliding-window layers make its cache small.
+# active_gb: weights read per generated token, for mixture-of-experts models.
+# min_ram_gb: a quick floor only -- catalog.py decides fit from memory while
+#   running (weights + context cache + overhead) against what the machine
+#   can spare, and prefers models fast enough to be comfortable.
+# min_vram_gb: 0 for text models -- any of them can run on the CPU.
 # runtime: which backend in localforge/backends/ knows how to serve this model.
+#
+# Left out on purpose: "thinking" models (qwen3, qwen3.5, gpt-oss) -- their
+# reasoning text can end up inside a generated file -- and cloud-only tags
+# such as kimi-k2 (0 bytes to download; it never ran locally).
 
 models:
+  # --- coding ---
+  - name: qwen3-coder:30b  # mixture-of-experts: ~3B active, so fast for its size
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 24
+    disk_gb: 18.6
+    kv_gb_per_8k: 0.8
+    active_gb: 2.0
+    quality_tier: 4
+
+  - name: devstral-small-2:24b
+    modality: coding
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 24
+    disk_gb: 15.2
+    kv_gb_per_8k: 1.34
+    quality_tier: 3
+
   - name: qwen2.5-coder:32b
     modality: coding
     runtime: ollama
-    min_vram_gb: 20
+    min_vram_gb: 0
     min_ram_gb: 32
-    disk_gb: 20
+    disk_gb: 19.9
+    kv_gb_per_8k: 2.1
     quality_tier: 3
 
   - name: qwen2.5-coder:14b
     modality: coding
     runtime: ollama
-    min_vram_gb: 10
+    min_vram_gb: 0
     min_ram_gb: 16
-    disk_gb: 9
+    disk_gb: 9.0
+    kv_gb_per_8k: 1.6
     quality_tier: 2
 
   - name: qwen2.5-coder:7b
     modality: coding
     runtime: ollama
-    min_vram_gb: 6
+    min_vram_gb: 0
     min_ram_gb: 8
-    disk_gb: 4.5
+    disk_gb: 4.7
+    kv_gb_per_8k: 0.47
     quality_tier: 1
 
-  - name: gemma3:27b
-    modality: coding
-    runtime: ollama
-    min_vram_gb: 18
-    min_ram_gb: 24
-    disk_gb: 17
-    quality_tier: 2
-
-  - name: gemma3:4b
+  - name: qwen2.5-coder:3b
     modality: coding
     runtime: ollama
     min_vram_gb: 0
-    min_ram_gb: 8
-    disk_gb: 3.3
-    quality_tier: 1
+    min_ram_gb: 4
+    disk_gb: 1.9
+    kv_gb_per_8k: 0.3
+    quality_tier: 0
 
-  - name: kimi-k2:latest
+  # --- docs ---
+  - name: mistral-small3.2:24b
     modality: docs
     runtime: ollama
-    min_vram_gb: 24
-    min_ram_gb: 32
-    disk_gb: 24
+    min_vram_gb: 0
+    min_ram_gb: 24
+    disk_gb: 15.2
+    kv_gb_per_8k: 1.34
     quality_tier: 3
 
-  - name: llama3.1:8b
+  - name: gemma3:12b
     modality: docs
     runtime: ollama
-    min_vram_gb: 6
-    min_ram_gb: 8
-    disk_gb: 4.7
-    quality_tier: 1
+    min_vram_gb: 0
+    min_ram_gb: 16
+    disk_gb: 8.2
+    kv_gb_per_8k: 0.65
+    quality_tier: 2
 
   - name: mistral-nemo:12b
     modality: docs
     runtime: ollama
-    min_vram_gb: 8
+    min_vram_gb: 0
     min_ram_gb: 12
-    disk_gb: 7
+    disk_gb: 7.1
+    kv_gb_per_8k: 1.34
     quality_tier: 2
+
+  - name: llama3.1:8b
+    modality: docs
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 8
+    disk_gb: 4.9
+    kv_gb_per_8k: 1.07
+    quality_tier: 1
+
+  - name: llama3.2:3b
+    modality: docs
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 4
+    disk_gb: 2.0
+    kv_gb_per_8k: 0.94
+    quality_tier: 0
+
+  # --- general (summaries, memory, the project brief) ---
+  - name: gemma3:27b
+    modality: general
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 24
+    disk_gb: 17.4
+    kv_gb_per_8k: 0.8
+    quality_tier: 3
+
+  - name: gemma3:12b
+    modality: general
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 16
+    disk_gb: 8.2
+    kv_gb_per_8k: 0.65
+    quality_tier: 2
+
+  - name: qwen2.5:7b
+    modality: general
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 8
+    disk_gb: 4.7
+    kv_gb_per_8k: 0.47
+    quality_tier: 1
+
+  - name: gemma3:4b
+    modality: general
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 6
+    disk_gb: 3.3
+    kv_gb_per_8k: 0.25
+    quality_tier: 0
 
   - name: qwen2.5:3b
     modality: general
@@ -74,7 +160,8 @@ models:
     min_vram_gb: 0
     min_ram_gb: 4
     disk_gb: 1.9
-    quality_tier: 1
+    kv_gb_per_8k: 0.3
+    quality_tier: 0
 
   # Image/video entries are placeholders: the runtimes below are not yet
   # implemented (see backends/image.py, backends/video.py) but the catalog

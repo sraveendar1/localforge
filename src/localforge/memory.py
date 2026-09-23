@@ -210,20 +210,54 @@ def facts_for_prompt(root: Path) -> str:
 
 
 def _turn_starts(messages: list[dict]) -> list[int]:
-    """Indices (after the system message) where a user turn begins."""
-    return [i for i, m in enumerate(messages) if i > 0 and m.get("role") == "user"]
+    """Indices (after the system message) where a user turn begins. Notes
+    and nudges localforge added mid-task are user-role too, but not turns."""
+    from localforge.orchestrator import NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX
+
+    return [
+        i
+        for i, m in enumerate(messages)
+        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX))
+    ]
 
 
-def _render(messages: list[dict]) -> str:
+def _calls(message: dict) -> str:
+    """An API-path assistant message's tool calls, in the CLI transport's
+    `[requested: ...]` form. Their content is empty, so without this the
+    memory keeper never saw which files were written or commands run."""
+    calls = []
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {} if isinstance(call, dict) else getattr(call, "function", None)
+        name = function.get("name") if isinstance(function, dict) else getattr(function, "name", None)
+        arguments = function.get("arguments") if isinstance(function, dict) else getattr(function, "arguments", "")
+        if name:
+            calls.append(f"{name}({str(arguments or '')[:300]})")
+    return f"[requested: {', '.join(calls)}]" if calls else ""
+
+
+def _render(messages: list[dict], limit: int = MAX_TRANSCRIPT_CHARS) -> str:
     lines = []
     for m in messages:
         content = str(m.get("content") or "").strip()
+        if content.startswith("[superseded:"):
+            content = content.partition(" It began: ")[2]  # only how the step went
+        if m.get("role") == "assistant" and m.get("tool_calls"):
+            content = "\n".join(x for x in (content, _calls(m)) if x)
         if content:
             lines.append(f"[{m.get('role', '?')}] {content}")
     text = "\n\n".join(lines)
-    if len(text) > MAX_TRANSCRIPT_CHARS:
-        text = text[:MAX_TRANSCRIPT_CHARS // 2] + "\n\n[... middle omitted ...]\n\n" + text[-MAX_TRANSCRIPT_CHARS // 2 :]
+    if len(text) > limit:
+        text = text[: limit // 2] + "\n\n[... middle omitted ...]\n\n" + text[-(limit // 2) :]
     return text
+
+
+def _room(dispatcher, entry, *fixed: str) -> int:
+    """Transcript characters the keeper can take: its context window on this
+    machine, less the prompt around the transcript and room for the reply."""
+    from localforge.backends.ollama import MAX_QUIET_OUTPUT_TOKENS, prompt_budget
+
+    budget = prompt_budget(dispatcher.context_limit(entry), MAX_QUIET_OUTPUT_TOKENS)
+    return max(2_000, min(MAX_TRANSCRIPT_CHARS, budget - sum(len(f) for f in fixed) - 200))
 
 
 def keeper(dispatcher):
@@ -241,9 +275,11 @@ def keeper(dispatcher):
     return None
 
 
-def _summarize(old_memory: str, transcript: str, dispatcher, hooks) -> str | None:
+def _summarize(old_memory: str, old_messages: list[dict], dispatcher, hooks) -> str | None:
     entry = keeper(dispatcher)
     if entry is None:
+        if hooks is not None and hooks.on_tool_result is not None:
+            hooks.on_tool_result("compact", "no local model available; dropped the oldest turns instead")
         return None
     if hooks is not None and hooks.on_tool is not None:
         hooks.on_tool("compact", f"condensing earlier turns with {entry.name}")
@@ -251,8 +287,14 @@ def _summarize(old_memory: str, transcript: str, dispatcher, hooks) -> str | Non
     started = time.monotonic()
     try:
         backend.ensure_available(entry.name)
-        result = backend.generate(entry.name, PROMPT.format(memory=old_memory or "(none yet)", transcript=transcript))
-    except Exception:  # noqa: BLE001 - memory is best-effort; fall back to dropping turns
+        memory_text = old_memory or "(none yet)"
+        transcript = _render(old_messages, _room(dispatcher, entry, PROMPT, memory_text))
+        result = backend.generate(
+            entry.name, PROMPT.format(memory=memory_text, transcript=transcript), context_limit=dispatcher.context_limit(entry)
+        )
+    except Exception as exc:  # noqa: BLE001 - memory is best-effort; fall back to dropping turns
+        if hooks is not None and hooks.on_tool_result is not None:
+            hooks.on_tool_result("compact", f"{entry.name} couldn't condense them ({exc}); dropped the oldest turns instead")
         return None
     dispatcher.local_tokens_generated += result.get("tokens", 0)
     text = str(result.get("content") or "").strip()
@@ -271,7 +313,7 @@ def compact(conversation, dispatcher, hooks=None, keep_recent_turns: int = KEEP_
     cut = starts[-keep_recent_turns] if keep_recent_turns else len(conversation.messages)
     old, kept = conversation.messages[1:cut], conversation.messages[cut:]
 
-    summary = _summarize(conversation.memory, _render(old), dispatcher, hooks)
+    summary = _summarize(conversation.memory, old, dispatcher, hooks)
     if summary is not None:
         conversation.memory = summary
         if root is None and dispatcher.workspace is not None:
@@ -281,8 +323,6 @@ def compact(conversation, dispatcher, hooks=None, keep_recent_turns: int = KEEP_
                 save(root, summary)
             except OSError:
                 pass
-    elif hooks is not None and hooks.on_tool_result is not None:
-        hooks.on_tool_result("compact", "no local model available; dropped the oldest turns instead")
 
     conversation.messages = conversation.messages[:1] + kept
     conversation.reindex_tools()
@@ -322,7 +362,10 @@ def extract_facts(conversation, dispatcher, root: Path, hooks=None) -> int:
     if hooks is not None and hooks.on_tool is not None:
         hooks.on_tool("compact", f"saving what's worth remembering with {entry.name}")
     try:
-        result = BACKENDS[entry.runtime].generate(entry.name, EXTRACT_PROMPT.format(existing=existing, transcript=_render(turns)))
+        transcript = _render(turns, _room(dispatcher, entry, EXTRACT_PROMPT, existing))
+        result = BACKENDS[entry.runtime].generate(
+            entry.name, EXTRACT_PROMPT.format(existing=existing, transcript=transcript), context_limit=dispatcher.context_limit(entry)
+        )
     except Exception:  # noqa: BLE001 - memory is best-effort
         return 0
     dispatcher.local_tokens_generated += result.get("tokens", 0)

@@ -20,7 +20,10 @@ def test_recommend_models_falls_back_to_best_quality_when_frontier_call_fails():
     # No real API key/network in tests, so the litellm.completion() call inside
     # recommend_models is expected to fail -- verifying the safety-net fallback
     # (deterministic highest quality_tier per modality) kicks in instead of raising.
-    hw = _hw(ram_gb=32, vram_gb=24)
+    hw = HardwareProfile(
+        os="Linux", arch="x86_64", cpu_cores=16, ram_gb=64, free_disk_gb=100,
+        gpus=[GPU(name="big-gpu", vram_gb=48, backend="cuda")], memory_bandwidth_gbps=1000,
+    )
     recs = recommend_models(hw, "claude-opus-5", CATALOG)
     assert recs["coding"].name == "big-coder"
     assert recs["docs"].name == "only-docs"
