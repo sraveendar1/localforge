@@ -32,6 +32,8 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /memory           show this folder's memory (/memory forget <name>, /memory clear)
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
+  /stream <on|off>  print local models' output in full while they write
+  /why              explain what you're being asked to approve (or just ask in words)
   /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
   /summary          what's happening now: which model is doing what, the plan, the queue
   /queue            tasks waiting behind the current one (/queue clear to drop them)
@@ -230,6 +232,8 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
             if answer in ("y", "yes", "n", "no", "a", "always"):
                 runner.answer(answer in ("y", "yes", "a", "always"), always=answer in ("a", "always"))
                 continue
+            if line and not line.startswith("/") and runner.ask_question(line):
+                continue  # a question about the request, answered without deciding it
         if not line:
             continue
         if line in EXIT_COMMANDS:

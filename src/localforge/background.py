@@ -20,6 +20,7 @@ One-off `localforge run` and every non-terminal path stay synchronous.
 from __future__ import annotations
 
 import collections
+import shutil
 import sys
 import threading
 import time
@@ -37,12 +38,16 @@ IDLE_ASCII = "[*]"
 # After this long with no new step, the toolbar says how long it's been --
 # "still working" beats a frozen-looking line.
 QUIET_AFTER_SECONDS = 20
+# Lines of the local model's output kept under the status line, so you can
+# see the code taking shape without it scrolling the session away.
+PREVIEW_LINES = 3
 
 
 @dataclass
 class Approval:
     kind: str
     title: str
+    detail: str = ""  # the diff, command or listing the user is being asked about
     answered: threading.Event = field(default_factory=threading.Event)
     allowed: bool = False
     always: bool = False  # "(a)lways": allow this kind for the rest of the session
@@ -71,6 +76,8 @@ class TaskState:
     downloading: str = ""
     waiting_for: str = ""  # e.g. "usage limit resets in 2h 14m"
     last_event: float = 0.0  # when the last step/token landed, for the "quiet for Xs" note
+    preview: collections.deque = field(default_factory=lambda: collections.deque(maxlen=PREVIEW_LINES))
+    partial: str = ""  # the line the local model is part-way through writing
     todos: list[dict] = field(default_factory=list)
     steps: collections.deque = field(default_factory=lambda: collections.deque(maxlen=12))
 
@@ -86,6 +93,9 @@ class TaskRunner:
         self.cancel_event = threading.Event()
         self.approval: Approval | None = None
         self._notes: list[str] = []
+        # Answers "why is this needed?" while a prompt is waiting; set by the
+        # CLI, which knows how to explain a request.
+        self.question_handler = None
         self._lock = threading.Lock()
         # Set and cleared under _lock, together with the queue check -- asking
         # thread.is_alive() instead would strand a task submitted in the
@@ -163,6 +173,20 @@ class TaskRunner:
         """Something happened (a step, a token): resets the quiet timer."""
         self.state.last_event = time.monotonic()
 
+    def note_output(self, chunk: str) -> None:
+        """Local-model output for the live preview: complete lines are kept,
+        the unfinished one is shown as it grows."""
+        state = self.state
+        text = state.partial + chunk
+        *lines, state.partial = text.split("\n")
+        for line in lines:
+            state.preview.append(line)
+        self.note_event()
+
+    def clear_preview(self) -> None:
+        self.state.preview.clear()
+        self.state.partial = ""
+
     def _work(self, task: str) -> None:
         while True:
             try:
@@ -190,9 +214,9 @@ class TaskRunner:
             notes, self._notes = self._notes, []
         return notes
 
-    def ask(self, kind: str, title: str) -> Approval:
+    def ask(self, kind: str, title: str, detail: str = "") -> Approval:
         """Block the worker until the user answers on the main thread."""
-        approval = Approval(kind, title)
+        approval = Approval(kind, title, detail)
         self.approval = approval
         while not approval.answered.wait(0.2):
             if self.cancel_event.is_set():
@@ -200,6 +224,14 @@ class TaskRunner:
         self.approval = None
         self.check_cancel()
         return approval
+
+    def ask_question(self, question: str) -> bool:
+        """The user typed something other than y/n/a at a prompt: treat it as
+        a question about what's being asked. Returns whether it was handled."""
+        if self.question_handler is None:
+            return False
+        self.question_handler(question, self.approval)
+        return True
 
     # --- what the user sees -------------------------------------------------------
 
@@ -237,8 +269,25 @@ class TaskRunner:
         if quiet > QUIET_AFTER_SECONDS:
             detail += f", quiet for {_elapsed(now - quiet)}"
         parts = [_elapsed(s.started), f"↓ {_thousands(s.tokens())} tokens", detail]
-        queue = f" │ queue: {len(self.queue)}" if self.queue else ""
-        return f" {icon} Forging with {who or 'a model'}… ({' · '.join(parts)}){queue} │ /summary · /stop"
+        queue = f" · queue: {len(self.queue)}" if self.queue else ""
+        status = f"{icon} Forging with {who or 'a model'}… ({' · '.join(parts)}){queue} │ /summary · /stop"
+        return "\n".join([_center(status, self.width), *self._preview_lines()])
+
+    def _preview_lines(self) -> list[str]:
+        """The last few lines the local model has written, so its work is
+        visible without filling the session with code."""
+        if not (self.state.preview or self.state.partial):
+            return []
+        lines = [*self.state.preview, self.state.partial] if self.state.partial else list(self.state.preview)
+        room = max(self.width - 6, 20)
+        return [f"  │ {line[:room]}" for line in lines[-PREVIEW_LINES:]]
+
+    @property
+    def width(self) -> int:
+        try:
+            return max(shutil.get_terminal_size().columns, 40)
+        except OSError:
+            return 80
 
     def summary(self) -> list[str]:
         """Plain lines for /summary: instant, from state -- no model call."""
@@ -270,6 +319,12 @@ class TaskRunner:
             lines.append(f"Queued ({len(self.queue)}):")
             lines += [f"  {i}. {task}" for i, task in enumerate(self.queue, 1)]
         return lines
+
+
+def _center(text: str, width: int) -> str:
+    """Centered, because a status line in the middle reads as "working" at a
+    glance where a left-hugging one blends into the output above it."""
+    return " " * max((width - len(text)) // 2, 1) + text
 
 
 def _thousands(count: int) -> str:

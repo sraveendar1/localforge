@@ -98,16 +98,33 @@ files or code into its instructions: it names `context_files`, and localforge
 hands those files straight to the local model. What a local model writes
 comes back to the frontier model as a short summary, while you still see the
 full diff. Claude also orchestrates at medium thinking effort
-(`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows an estimate of
-what the local models' work would have cost from the frontier model.
+(`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows the last task, this session,
+the previous session and this project's all-time totals — how much of the
+work the local models did, and an estimate of what that would have cost from
+the frontier model. The totals are kept per project, so they survive closing
+the session.
 
 **Always visibly alive:** while a task runs, the bottom line shows a hammer
 and anvil working away, the model doing the work, how long it's been, a
 running token count, and, if a step goes quiet, how long for:
 
 ```
- 🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+        🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+  │     @app.get("/health")
+  │     def health():
+  │         return {"ok": Tr
 ```
+
+The last few lines the local model is writing show under it, so you can watch
+the code take shape without it scrolling your session away (`/stream on`
+prints everything instead).
+
+**Asking why:** at any permission prompt you can type a question instead of
+y/n/a — "why is this needed?" — and localforge explains what the request
+does, what happens if you say no, and what it came up during; a local model
+answers anything more specific. The prompt stays waiting, so asking never
+approves anything. `/why` does the same on demand, and the folder-trust
+question can be asked about too.
 
 **If the paid model runs out mid-task:** the task doesn't die. localforge
 reads the reset time from the provider's message, pauses with a countdown in

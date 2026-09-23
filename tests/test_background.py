@@ -14,6 +14,9 @@ import pytest
 
 import localforge.cli as cli_module
 import localforge.orchestrator as orch
+import os
+
+from localforge import background as background_module
 from localforge.background import TaskRunner
 from localforge.hardware import HardwareProfile
 
@@ -220,9 +223,9 @@ def test_approval_in_the_background_respects_always(monkeypatch):
     try:
         from localforge.background import Approval
 
-        monkeypatch.setattr(runner, "ask", lambda kind, title: Approval(kind, title, allowed=True, always=True))
+        monkeypatch.setattr(runner, "ask", lambda kind, title, detail="": Approval(kind, title, allowed=True, always=True))
         assert act.approve("write", "Create a.py", "+x") is True
-        monkeypatch.setattr(runner, "ask", lambda kind, title: pytest.fail("should not ask again"))
+        monkeypatch.setattr(runner, "ask", lambda kind, title, detail="": pytest.fail("should not ask again"))
         assert act.approve("write", "Create b.py", "+y") is True  # "always" remembered
     finally:
         cli_module.console.pop_theme()
@@ -335,7 +338,7 @@ def test_the_status_line_reads_like_claude_codes():
 
 def test_it_keeps_moving_while_a_step_is_slow():
     runner = _running_runner(orchestrator="m", phase="planning")
-    frames = {runner.toolbar(unicode=True)[:6] for _ in _ticks()}
+    frames = {runner.toolbar(unicode=True).strip()[:6] for _ in _ticks()}
     assert len(frames) > 1  # the spinner and hammer animate on their own
 
 
@@ -386,3 +389,50 @@ def test_counters_and_the_quiet_timer_are_fed_by_the_hooks():
         act._on_token("x")
     act._on_answer_text("hello there")
     assert runner.state.local_total == 10 and runner.state.answer_chars == 11
+
+
+def test_the_status_line_is_centered(monkeypatch):
+    monkeypatch.setattr(background_module.shutil, "get_terminal_size", lambda: os.terminal_size((200, 40)))
+    runner = _running_runner(orchestrator="m", phase="planning")
+    line = runner.toolbar(unicode=False).splitlines()[0]
+    left = len(line) - len(line.lstrip())
+    right = runner.width - len(line.rstrip())
+    assert abs(left - right) <= 1 and left > 1
+
+
+def test_code_being_written_shows_under_the_status_line():
+    runner = _running_runner(local_model="coder", local_what="writing app.py", local_started=time.monotonic())
+    for chunk in ["def main():\n", "    app = FastAPI()\n", "    return ", "app\n", "# tail"]:
+        runner.note_output(chunk)
+    lines = runner.toolbar(unicode=False).splitlines()
+    assert len(lines) == 1 + 3  # status + the last three lines
+    assert lines[-1].strip() == "│ # tail"  # the unfinished line shows as it grows
+    assert "def main():" not in "\n".join(lines)  # older lines scroll out of the preview
+
+
+def test_the_preview_is_cleared_between_delegations():
+    runner = _running_runner(local_model="coder")
+    runner.note_output("secret_draft = 1\n")
+    runner.clear_preview()
+    assert runner.toolbar(unicode=False).count("\n") == 0
+
+
+def test_stream_on_prints_everything_as_well(monkeypatch, capsys):
+    from typer.testing import CliRunner
+
+    runner = TaskRunner(lambda t: None)
+    runner._running = True
+    runner._begin("t")
+    act = cli_module._BackgroundActivity("m", runner)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        act._on_token("quiet\n")
+        assert "quiet" not in capsys.readouterr().out
+        CliRunner().invoke(cli_module.app, ["stream", "on"])
+        act._on_token("loud\n")
+        assert "loud" in capsys.readouterr().out
+        CliRunner().invoke(cli_module.app, ["stream", "off"])
+        act._on_token("hushed\n")
+        assert "hushed" not in capsys.readouterr().out
+    finally:
+        cli_module.console.pop_theme()

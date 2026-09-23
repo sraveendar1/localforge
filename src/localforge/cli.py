@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, local_transport, memory, repl, theme, trust
+from localforge import cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -54,6 +55,7 @@ def _main(ctx: typer.Context) -> None:
         # `localforge` call starts waiting on stdin forever.
         if sys.stdin.isatty() and sys.stdout.isatty():
             runner = TaskRunner(lambda task: _run_in_background(task))
+            runner.question_handler = explain_to_user
             _session.runner = runner
             try:
                 repl.run_repl(
@@ -926,6 +928,7 @@ def run(
         # Ctrl+C mid-task: only the task stops, not the session. Changes the
         # user already approved stay; the conversation notes it was stopped.
         _session_usage.append((frontier_model, exc.stats))
+        _record_usage(frontier_model, exc.stats)
         console.print("\n[warning]Stopped.[/warning] Changes you already approved are kept. Type your next message.")
         raise typer.Exit(code=130) from None
     except OrchestrationError as exc:
@@ -933,6 +936,7 @@ def run(
         # compute along the way -- record it so /usage still accounts for it.
         console.print(f"[bold error]Error:[/bold error] {exc}")
         _session_usage.append((frontier_model, exc.stats))
+        _record_usage(frontier_model, exc.stats)
         if show_usage:
             _print_usage_panel(exc.stats, frontier_model)
         raise typer.Exit(code=1) from None
@@ -946,6 +950,7 @@ def run(
         console.print()
         console.print(Markdown(result.answer or "(no answer)"))
     _session_usage.append((frontier_model, result.stats))
+    _record_usage(frontier_model, result.stats)
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
 
@@ -1289,6 +1294,7 @@ class _BackgroundActivity(_LiveActivity):
 
     def _on_delegate(self, modality: str, entry) -> None:
         self.runner.check_cancel()
+        self.runner.clear_preview()
         state = self.runner.state
         state.local_model, state.local_what = entry.name, f"working on {modality}"
         state.local_tokens, state.local_started = 0, time.monotonic()
@@ -1300,11 +1306,14 @@ class _BackgroundActivity(_LiveActivity):
         state = self.runner.state
         state.local_tokens += 1
         state.local_total += 1
-        self.runner.note_event()
+        self.runner.note_output(chunk)
+        if _session.stream_output:  # /stream on: the full firehose, as the foreground display does
+            super()._on_token(chunk)
 
     def _on_done(self, modality: str, entry, tokens: int, seconds: float) -> None:
         state = self.runner.state
         state.local_model = ""
+        self.runner.clear_preview()
         console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s", highlight=False)
         self._step(f"✓ {entry.name} finished {modality} ({tokens} tokens)")
 
@@ -1356,7 +1365,7 @@ class _BackgroundActivity(_LiveActivity):
             self._print_change(kind, title, detail)
             return True
         self._print_change(kind, title, detail)
-        answer = self.runner.ask(kind, title)
+        answer = self.runner.ask(kind, title, detail)
         if answer.always:
             _session.always_allow.add(kind)
         return answer.allowed
@@ -1375,6 +1384,8 @@ class _SessionState:
         self.scratch: Scratchpad | None = None
         self.auto_approve = False
         self.always_allow: set[str] = set()
+        self.stream_output = False  # /stream on: print local output in full as well
+        self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
         self.runner = None  # background.TaskRunner when the session runs tasks in the background
@@ -1528,6 +1539,15 @@ def _ask_trust(folder: Path) -> bool:
             return True
         if answer == "2":
             return False
+        if answer:  # a question rather than a choice
+            console.print(
+                "Trusting a folder lets localforge read, create, change, move and delete files in it and run commands "
+                "there, on your behalf. It's asked once per folder because everything localforge does happens inside "
+                "it. Each individual change and command still asks you separately (unless you turn on /auto), and "
+                "nothing outside this folder is touched. Say 2 to leave without trusting it.",
+                highlight=False,
+            )
+            continue
         console.print("[warning]Type 1 or 2.[/warning]")
 
 
@@ -1822,6 +1842,102 @@ def tell(note: list[str] = typer.Argument(None, help="A note for the running tas
     console.print("[success]✓[/success] It'll see that at its next step.")
 
 
+WHAT_IT_MEANS = {
+    "write": (
+        "A local model wrote this file and localforge is asking before saving it. The diff above is the whole change, "
+        "nothing else is touched. Say no and the file stays exactly as it is; the orchestrator is told you declined "
+        "and can try something else."
+    ),
+    "delete": (
+        "This would remove the listed file(s) from your project for good — localforge has no undo, so if they aren't "
+        "in git they're gone. Say no and nothing is removed."
+    ),
+    "command": (
+        "This runs that exact command in your project folder, with your permissions. A shell command can do anything "
+        "you can do (including reaching outside the folder), which is why every one is shown first. Say no and it "
+        "isn't run."
+    ),
+    "download": (
+        "No installed model fits this kind of work, so this would download one from Ollama — a real download of "
+        "roughly the size shown, onto your disk. Say no and the orchestrator has to manage with what's installed."
+    ),
+}
+
+
+def _explain_request(approval) -> list[str]:
+    """Why localforge is asking, in plain terms -- from what we know, so it's
+    instant and costs nothing."""
+    if approval is None:
+        return ["Nothing is waiting for an answer right now."]
+    lines = [f"[bold]{escape(approval.title)}[/bold]", WHAT_IT_MEANS.get(approval.kind, "localforge needs your go-ahead for this.")]
+    runner = _session.runner
+    if runner is not None and runner.busy:
+        state = runner.state
+        lines.append(f"It came up while working on: {escape(state.task)}")
+        if state.steps:
+            lines.append("Just before this: " + escape("; ".join(list(state.steps)[-3:])))
+    lines.append("[dim]Answer with (y)es, (n)o, or (a)lways for this kind — or ask another question.[/dim]")
+    return lines
+
+
+def _answer_with_local_model(question: str, approval) -> tuple[str, str] | None:
+    """A short answer from a local model (free, and it's idle while the task
+    waits). Skipped when no local model is installed."""
+    dispatcher = _memory_dispatcher()
+    entry = memory.keeper(dispatcher)
+    if entry is None or approval is None:
+        return None
+    state = _session.runner.state if _session.runner is not None else None
+    prompt = (
+        "You are helping someone decide whether to approve a change a coding assistant wants to make. "
+        "Answer their question in two or three sentences, plainly, using only the details below. "
+        "Don't invent anything; if the details don't answer it, say so.\n\n"
+        f"Request: {approval.title} ({approval.kind})\n"
+        f"Details:\n{(approval.detail or '')[:2000]}\n"
+        f"Task being worked on: {getattr(state, 'task', 'unknown')}\n\n"
+        f"Their question: {question}"
+    )
+    try:
+        from localforge.backends import BACKENDS
+
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt)
+    except Exception:  # noqa: BLE001 - an explanation is never worth an error
+        return None
+    text = str(result.get("content") or "").strip()
+    return (text, entry.name) if text else None
+
+
+def explain_to_user(question: str, approval) -> None:
+    """Handles a question typed at a permission prompt."""
+    for line in _explain_request(approval):
+        console.print(line, highlight=False)
+    if question.strip().lower().rstrip("?") not in ("why", "why this", "what", "explain", ""):
+        if answer := _answer_with_local_model(question, approval):
+            text, model = answer
+            console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (local)", border_style="panel.border"))
+
+
+@app.command()
+def why() -> None:
+    """Explain what localforge is asking you to approve, and why."""
+    approval = _session.runner.approval if _session.runner is not None else None
+    for line in _explain_request(approval):
+        console.print(line, highlight=False)
+
+
+@app.command()
+def stream(
+    state: str = typer.Argument(None, help="on or off; omit to toggle."),
+) -> None:
+    """Print local models' output in full as they write (off by default: the
+    status line shows the last few lines instead)."""
+    _session.stream_output = state == "on" if state in ("on", "off") else not _session.stream_output
+    if _session.stream_output:
+        console.print("[warning]Streaming ON[/warning]: every line a local model writes is printed. /stream off to stop.")
+    else:
+        console.print("[success]Streaming off[/success]: the status line shows the last few lines as they're written.")
+
+
 @app.command()
 def auto(
     state: str = typer.Argument(None, help="on or off; omit to toggle."),
@@ -1837,6 +1953,15 @@ def auto(
         console.print("[success]Auto-approve off[/success]: you'll be asked before each change or command.")
 
 
+def _record_usage(frontier_model: str, stats) -> None:
+    """Keep this task in the project's usage history, so /usage can still
+    show it after the session ends. Never worth failing a task over."""
+    try:
+        usage_store.record(_session.root or Path.cwd().resolve(), _session.id, frontier_model, stats)
+    except OSError:
+        pass
+
+
 # (frontier model, stats) for every task run in this process. Usage is only
 # shown on request, so inside a session this is what /usage reads; a one-off
 # `localforge run` process has nothing to show later (use `run --usage`).
@@ -1845,19 +1970,47 @@ _session_usage: list[tuple[str, RunStats]] = []
 
 @app.command()
 def usage() -> None:
-    """Show token usage for the last task and this session so far."""
-    if not _session_usage:
+    """Token usage: the last task, this session, the previous session, and this project's total."""
+    root = _session.root or Path.cwd().resolve()
+    if _session_usage:
+        last_model, last_stats = _session_usage[-1]
+        _print_usage_panel(last_stats, last_model, title="Usage — last task")
+        if len(_session_usage) > 1:
+            _print_session_usage_panel(_session_usage)
+    else:
         console.print(
             "No tasks run in this session yet. For a one-off run, use "
             '[accent]localforge run --usage "..."[/accent].',
             highlight=False,
         )
-        return
 
-    last_model, last_stats = _session_usage[-1]
-    _print_usage_panel(last_stats, last_model, title="Usage — last task")
-    if len(_session_usage) > 1:
-        _print_session_usage_panel(_session_usage)
+    previous, total = usage_store.previous_session(root, _session.id), usage_store.all_time(root)
+    if not total.tasks:
+        return
+    table = Table(title=f"Usage history for {escape(root.name)}", title_justify="left")
+    for column in ("Span", "Tasks", "Local tokens", "Frontier tokens", "Cost"):
+        table.add_column(column, justify="right" if column != "Span" else "left")
+    if previous and previous.tasks:
+        table.add_row("Previous session", *_usage_row(previous))
+    table.add_row("This project, all time", *_usage_row(total))
+    console.print(table)
+    if total.local_tokens_generated and (saved := _savings_line(total.local_tokens_generated, total.models[0] if total.models else "")):
+        console.print("All time: " + saved, highlight=False)
+
+
+def _usage_row(totals) -> list[str]:
+    cost = []
+    if totals.frontier_cost_usd:
+        cost.append(f"${totals.frontier_cost_usd:.2f}")
+    if totals.subscription_cost_usd:
+        cost.append(f"~${totals.subscription_cost_usd:.2f} of subscription")
+    share = totals.local_tokens_generated * 100 // max(totals.local_tokens_generated + totals.frontier_total_tokens, 1)
+    return [
+        str(totals.tasks),
+        f"{totals.local_tokens_generated:,} ({share}%)",
+        f"{totals.frontier_total_tokens:,}",
+        " + ".join(cost) or "-",
+    ]
 
 
 def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
