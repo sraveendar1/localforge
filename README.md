@@ -171,11 +171,11 @@ waiting on stdin.
 ## Quickstart
 
 **Before you run it — what `install.sh` puts on your machine:**
-- [Homebrew](https://brew.sh) on macOS, if you don't already have it
-- [Ollama](https://ollama.com), if you don't already have it
-- One or more real open-weight models matched to your hardware (an actual
-  multi-GB download — sizes are shown before each pull)
+- [uv](https://docs.astral.sh/uv/), if you don't already have it
 - The `localforge` CLI tool itself
+
+Models, Ollama and Homebrew are not installed here: the first `localforge`
+run offers those, so nothing multi-GB downloads before you've seen the tool.
 
 The script prints this same list and waits for you to press Enter before
 touching anything (falls through automatically if there's no interactive
@@ -195,11 +195,13 @@ cd localforge
 ./install.sh
 ```
 
-Either way, after that one confirmation, everything else runs with no
-further prompts to click through except one: a frontier model API key
-(Anthropic, OpenAI, or Gemini — paste one when asked). Once it
-finishes, type `localforge` to start a session, then type what you want
-built:
+That installs the CLI and nothing else. The first time you run `localforge`
+it offers to do the rest — install Ollama, pick a model for your hardware,
+and set up how you reach a frontier model (or stay fully local) — where you
+can see it and say no. (`./install.sh --setup` does that during install
+instead, and `localforge setup` can be run any time.)
+
+Then start a session and type what you want built:
 
 ```bash
 localforge

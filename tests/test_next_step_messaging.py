@@ -43,12 +43,15 @@ def test_configured_panel_leads_with_the_session(monkeypatch):
     assert "One-off without a session" in out
 
 
-def test_unconfigured_panel_says_to_type_localforge_after_setup(monkeypatch):
+def test_unconfigured_panel_points_at_the_session_not_setup(monkeypatch):
+    """Setting up moved into the first session, so the panel sends people
+    there rather than telling them to run setup first."""
     monkeypatch.delenv("LOCALFORGE_FRONTIER_MODEL", raising=False)
     out = _flat(CliRunner().invoke(cli_module.app, []).output)
 
-    assert "localforge setup" in out
-    assert "type localforge to start a session" in out
+    assert "Get started:" in out
+    assert "first session walks you through it" in out
+    assert "localforge setup" in out  # still offered for doing it up front
 
 
 def test_doctor_ready_message_points_to_the_session(monkeypatch):
@@ -95,3 +98,41 @@ def test_installer_ends_without_opening_the_session():
         line for line in (ROOT / "install.sh").read_text().splitlines() if line.strip().startswith('"$HOME/.local/bin/localforge"')
     ][-1]
     assert last_call.strip() == '"$HOME/.local/bin/localforge" < /dev/null'
+
+
+# --- setup happens on first run, not during install -------------------------------
+# Asked: "as part of the initial install itself it asks to setup a frontier
+# model. Is that needed, or should we just proceed to setup when they type
+# localforge?" -- deferred to the first session.
+
+
+def test_the_installer_only_installs_the_tool():
+    script = (ROOT / "install.sh").read_text()
+    setup_calls = [line for line in script.splitlines() if "localforge\" setup" in line]
+    assert setup_calls, "setup should still be reachable"
+    for line in setup_calls:
+        assert line.startswith("    "), "setup must sit inside the --setup branch"
+    assert 'RUN_SETUP=1 ;;' in script and 'if [ "$RUN_SETUP" = "1" ]; then' in script
+    assert "first time you run 'localforge'" in script  # says where setup happens instead
+
+
+def test_the_first_session_offers_to_set_things_up(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock, patch
+
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: [])
+    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
+    answers = iter(["1"])
+    monkeypatch.setattr(cli_module.console, "input", lambda prompt="": next(answers))
+    ran = []
+    monkeypatch.setattr(cli_module, "app", MagicMock(side_effect=lambda argv, **kw: ran.append(argv)))
+
+    assert cli_module._choose_orchestrator_at_start() is True
+    assert ran == [["setup"]]
+
+
+def test_declining_the_first_run_setup_still_opens_the_session(monkeypatch, capsys):
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: [])
+    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
+    monkeypatch.setattr(cli_module.console, "input", lambda prompt="": "2")
+    assert cli_module._choose_orchestrator_at_start() is True
+    assert "run /setup when you're ready" in " ".join(capsys.readouterr().out.split())

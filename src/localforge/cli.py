@@ -133,10 +133,12 @@ def _print_getting_started() -> None:
         )
     else:
         body = (
-            "[bold]Get started in one step:[/bold]\n\n"
-            "  [accent]localforge setup[/accent]   (or [accent]localforge wizard[/accent] for a terminal UI)\n\n"
-            "That installs Ollama, has a frontier model pick local models for your\n"
-            "hardware, and saves your API key. Then type [accent]localforge[/accent] to start a session."
+            "[bold]Get started:[/bold]\n\n"
+            "  [accent]localforge[/accent]\n\n"
+            "The first session walks you through it: installing Ollama, picking a model\n"
+            "for your hardware, and how you want to reach a frontier model (or staying\n"
+            "fully local). To do that part now instead: [accent]localforge setup[/accent]\n"
+            "(or [accent]localforge wizard[/accent] for a terminal UI)."
         )
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
@@ -1615,6 +1617,34 @@ def _current_is_usable(current: str, choices: list[tuple[str, str, dict]]) -> bo
     )
 
 
+def _first_run_setup() -> bool:
+    """Nothing to orchestrate with yet -- the install deliberately leaves
+    this until now, so it happens where the user can see it. Offers to run
+    setup here rather than telling them to go and do it themselves."""
+    console.print(
+        "[bold]Nothing to work with yet.[/bold] Setup installs Ollama if you don't have it, has a model "
+        "picked for this machine's hardware, and saves how you want to reach a frontier model (or lets "
+        "you skip that and stay fully local)."
+    )
+    console.print("  1) Set it up now\n  2) Not now")
+    answer = _ask_number("Choose", 2)
+    if answer is None:
+        return False
+    if answer != 1:
+        console.print("[dim]No problem — run /setup when you're ready, or /model if you pull a model yourself.[/dim]\n")
+        return True
+    try:
+        app(["setup"], standalone_mode=False)
+    except typer.Exit:
+        pass
+    except Exception as exc:  # noqa: BLE001 - setup reports its own problems; the session goes on
+        console.print(f"[error]Setup didn't finish:[/error] {escape(str(exc))}")
+    console.print()
+    if _model_choices():
+        return _choose_orchestrator_at_start()  # now there's something to pick
+    return True
+
+
 def _choose_orchestrator_at_start() -> bool:
     """Every new session confirms the orchestrator. With a usable one from
     last time, it's a short "keep it, or choose another?"; the full list
@@ -1640,11 +1670,7 @@ def _choose_orchestrator_at_start() -> bool:
         console.print(f"[warning]{escape(current)} from last time isn't available here any more.[/warning]")
 
     if not choices:
-        console.print(
-            "[warning]No orchestrator is available yet: no models in Ollama and no cloud key or login.[/warning] "
-            "Run /setup, or `ollama pull qwen2.5:7b` and then /model.\n"
-        )
-        return True
+        return _first_run_setup()
     console.print("[bold]Which model should orchestrate this session?[/bold]")
     for i, (model_id, label, _) in enumerate(choices, 1):
         last = "  [dim](last used)[/dim]" if model_id == current else ""
