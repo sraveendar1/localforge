@@ -5,7 +5,6 @@ just the recent" -- usage only knew the running process and forgot it all
 on exit.
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

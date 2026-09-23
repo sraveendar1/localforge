@@ -6,7 +6,6 @@ objective of the project and keeps it updated using the memory selected open
 weighted llm".
 """
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest

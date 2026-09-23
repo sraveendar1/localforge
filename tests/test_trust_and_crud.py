@@ -1,7 +1,6 @@
 """Folder trust (like Claude Code) and full create/read/update/delete on a
 trusted folder, each change still behind its own permission prompt."""
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

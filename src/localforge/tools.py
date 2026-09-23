@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
-from typing import Callable
+from collections.abc import Callable
 
 from localforge import web
 from localforge.workspace import Workspace, WorkspaceError
@@ -16,7 +16,7 @@ from localforge.catalog import ModelEntry, best_match, candidates, load_catalog
 from localforge.hardware import HardwareProfile
 
 # Called right before a subtask is handed to a local model, so callers (the
-# CLI, the wizard) can show the user what's actually doing the work and why.
+# CLI) can show the user what's actually doing the work and why.
 DelegateCallback = Callable[[str, ModelEntry], None]
 
 

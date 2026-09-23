@@ -35,7 +35,7 @@ def test_best_match_raises_when_nothing_fits():
     hw = _hw(ram_gb=2, vram_gb=0)
     try:
         best_match("coding", hw, CATALOG)
-        assert False, "expected NoFittingModelError"
+        raise AssertionError("expected NoFittingModelError")
     except NoFittingModelError:
         pass
 

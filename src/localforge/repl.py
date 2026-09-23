@@ -18,7 +18,7 @@ from pathlib import Path
 import typer
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
-from prompt_toolkit.formatted_text import HTML, FormattedText
+from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.history import FileHistory, InMemoryHistory
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
@@ -44,7 +44,6 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /tell <note>      add a note to the running task
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
-  /wizard           setup as a terminal UI
   /doctor           check everything's configured correctly
   /scan             show detected hardware
   /models           best-fit local model per modality
@@ -169,7 +168,7 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "wizard", "uninstall", "delete", "run", "init"}
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init"}
 HELP_COMMANDS = {"/help", "/?"}
 
 

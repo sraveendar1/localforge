@@ -137,8 +137,7 @@ def _print_getting_started() -> None:
             "  [accent]localforge[/accent]\n\n"
             "The first session walks you through it: installing Ollama, picking a model\n"
             "for your hardware, and how you want to reach a frontier model (or staying\n"
-            "fully local). To do that part now instead: [accent]localforge setup[/accent]\n"
-            "(or [accent]localforge wizard[/accent] for a terminal UI)."
+            "fully local). To do that part now instead: [accent]localforge setup[/accent]."
         )
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
@@ -244,7 +243,7 @@ def installed() -> None:
     """List local models actually pulled via Ollama (not just the catalog)."""
     models_on_disk = _installed_ollama_models()
     if not models_on_disk:
-        console.print("No local models installed yet. Run `localforge setup` or `localforge wizard`.")
+        console.print("No local models installed yet. Run `localforge setup` to get some.")
         return
 
     table = Table(title="Installed local models")
@@ -340,16 +339,6 @@ def catalog() -> None:
             str(entry.min_vram_gb), str(entry.min_ram_gb), str(entry.disk_gb), str(entry.quality_tier),
         )
     console.print(table)
-
-
-@app.command()
-def wizard() -> None:
-    """Launch the interactive terminal getting-started wizard (same steps as
-    `setup`, but as a navigable screen-by-screen UI).
-    """
-    from localforge.tui import LocalforgeWizard
-
-    LocalforgeWizard().run()
 
 
 def _drain_buffered_input() -> None:
@@ -521,8 +510,8 @@ def setup() -> None:
     and saves your frontier model API key so future runs just work.
     """
     console.print("[bold]localforge setup[/bold]\n")
-    console.print("This installs everything localforge needs automatically; the only")
-    console.print("thing you'll need to provide is a frontier model API key.\n")
+    console.print("This gets the machine ready: Ollama, local models that fit your hardware,")
+    console.print("and how you want to reach a frontier model — or stay fully local.\n")
 
     # 1. Ollama
     if shutil.which("ollama") is None:

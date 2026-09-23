@@ -2,7 +2,7 @@
 
 Reported: after setup the user was told `Try: localforge run "..."`, when
 the natural next step since the interactive session was added is simply
-typing `localforge`. These guard the setup/doctor/panel/wizard wording and
+typing `localforge`. These guard the setup/doctor/panel wording and
 the installer ending.
 """
 
@@ -83,12 +83,6 @@ def test_no_code_still_tells_users_to_try_localforge_run():
     assert offenders == [], "\n".join(offenders)
 
 
-def test_wizard_done_screen_points_to_the_session():
-    text = (SRC / "tui.py").read_text()
-    done = text[text.index("class DoneScreen") :]
-    assert "localforge[/bold] in your terminal to start a session" in done
-
-
 def test_installer_ends_without_opening_the_session():
     """A bare `localforge` opens the session whenever stdin is a terminal,
     which would leave `./install.sh` sitting in a prompt instead of
@@ -117,7 +111,7 @@ def test_the_installer_only_installs_the_tool():
 
 
 def test_the_first_session_offers_to_set_things_up(monkeypatch, tmp_path):
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     monkeypatch.setattr(cli_module, "_model_choices", lambda: [])
     monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)

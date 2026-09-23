@@ -1,7 +1,6 @@
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest

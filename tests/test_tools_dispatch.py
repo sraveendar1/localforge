@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 from localforge.catalog import ModelEntry
-from localforge.hardware import GPU, HardwareProfile
+from localforge.hardware import HardwareProfile
 from localforge.tools import TASK_MODALITIES, Dispatcher, _looks_suspect
 
 CATALOG = [

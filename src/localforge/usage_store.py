@@ -67,7 +67,7 @@ class Totals:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Totals":
+    def from_dict(cls, data: dict) -> Totals:
         totals = cls()
         for key, value in (data or {}).items():
             if hasattr(totals, key) and value is not None:

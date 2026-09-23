@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from collections.abc import Callable
 
 # Just a small spinner: it has to keep moving so a slow step doesn't look
 # like a hang, but the line stays plain text in the session's own colors.

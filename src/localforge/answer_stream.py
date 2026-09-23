@@ -12,7 +12,7 @@ produces nothing here; those show up as activity lines instead.
 from __future__ import annotations
 
 import re
-from typing import Callable
+from collections.abc import Callable
 
 _START = re.compile(r'"final_answer"\s*:\s*"')
 _ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
