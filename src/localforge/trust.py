@@ -10,6 +10,7 @@ localforge's own config folder, never in the project.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 
 from localforge import config
@@ -27,13 +28,41 @@ def trusted_folders() -> list[str]:
     return [str(p) for p in data if isinstance(p, str)] if isinstance(data, list) else []
 
 
-def is_trusted(folder: Path) -> bool:
+def looks_like_home(folder: Path) -> bool:
+    """Home or a filesystem root -- worth warning about in any front end."""
     folder = Path(folder).resolve()
-    for entry in trusted_folders():
-        root = Path(entry)
-        if folder == root or root in folder.parents:
-            return True
-    return False
+    return folder == Path.home().resolve() or folder == folder.parent
+
+
+def apply_choice(folder: Path, choice: str) -> bool:
+    """Apply a trust choice ("yes" or "no") and say whether the folder is trusted.
+
+    Shared by the terminal prompt and a native desktop front end -- this module
+    never imports any UI code.
+    """
+    folder = Path(folder).resolve()
+    if choice == "yes":
+        trust(folder)
+        return True
+    elif choice == "no":
+        return False
+    else:
+        raise ValueError(f"Unknown choice: {choice}")
+
+
+def decide(folder: Path, ask: Callable[[Path], str]) -> bool:
+    """Trust flow for any front end: `ask` returns "yes" or "no" for an untrusted folder."""
+    folder = Path(folder).resolve()
+    if is_trusted(folder):
+        return True
+    choice = ask(folder)
+    return apply_choice(folder, choice)
+
+
+def is_trusted(folder: Path) -> bool:
+    """True if the folder is a trusted entry or inside one -- trust covers subfolders."""
+    folder = Path(folder).resolve()
+    return any(folder == root or root in folder.parents for root in map(Path, trusted_folders()))
 
 
 def trust(folder: Path) -> None:

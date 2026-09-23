@@ -922,6 +922,46 @@ def run(
         _print_usage_panel(result.stats, frontier_model)
 
 
+@app.command()
+def serve(
+    stdio: bool = typer.Option(
+        False, "--stdio", help="Speak the JSON-lines protocol over stdin/stdout (used by the desktop app)."
+    ),
+    frontier_model: str = typer.Option(
+        None,
+        "--model",
+        "-m",
+        help="Frontier model to orchestrate with. Defaults to whatever `localforge setup` saved, or claude-opus-5.",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Start with auto-approve on (deletions still ask)."),
+) -> None:
+    """Run localforge as the backend for the desktop app, in the current folder."""
+    import json
+
+    from localforge.serve import serve_stdio
+
+    if not stdio:
+        console.print("[error]Only --stdio is supported for now.[/error] Run `localforge serve --stdio`.")
+        raise typer.Exit(code=1)
+
+    # stdout is the protocol stream, so startup failures are reported as a
+    # protocol error event the app can show, not as Rich console output.
+    def fail(message: str) -> None:
+        sys.stdout.write(json.dumps({"type": "error", "message": message, "fatal": True}) + "\n")
+        sys.stdout.flush()
+        raise typer.Exit(code=1)
+
+    explicit_model = frontier_model
+    frontier_model = frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5"
+    cli_provider = _cli_provider_for(frontier_model, explicit=bool(explicit_model))
+    if cli_provider and not cli_transport.available(cli_provider):
+        fail(cli_transport.requirements_message(cli_provider))
+    folder = Path.cwd().resolve()
+    if not trust.is_trusted(folder):
+        fail(f"{folder} isn't a trusted folder. Run `localforge` there once interactively to trust it.")
+    serve_stdio(folder, frontier_model, cli_provider, auto_approve=yes)
+
+
 class _LiveActivity:
     """Shows a run as it happens: a spinner only while the frontier model is
     thinking, and each local model's output streamed as it's generated, so
@@ -1264,7 +1304,7 @@ def _ask_trust(folder: Path) -> bool:
     home_note = (
         "\n[warning]This is your home folder, so everything in it would be in reach. "
         "Usually you want a project folder instead.[/warning]"
-        if folder in (Path.home().resolve(), Path(folder.anchor))
+        if trust.looks_like_home(folder)
         else ""
     )
     console.print(
@@ -1286,11 +1326,10 @@ def _ask_trust(folder: Path) -> bool:
             console.print()
             return False
         if answer == "1":
-            trust.trust(folder)
             console.print(f"[success]✓[/success] Trusted {escape(str(folder))}\n")
-            return True
+            return trust.apply_choice(folder, "yes")
         if answer == "2":
-            return False
+            return trust.apply_choice(folder, "no")
         console.print("[warning]Type 1 or 2.[/warning]")
 
 
