@@ -254,7 +254,7 @@ class Conversation:
     memory: str = ""
     project_snapshot: str = ""
     facts: str = ""
-    brief: str = ""  # the project brief (LOCALFORGE.md), if the project has one
+    brief: str = ""  # the project brief (AGENTS.md), if the project has one
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT

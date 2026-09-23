@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from localforge import web
+from localforge import brief, verify, web
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
 from localforge.backends.ollama import MAX_OUTPUT_TOKENS, prompt_budget
@@ -325,13 +325,47 @@ def _cut_off_warning(modality: str) -> str:
     )
 
 
-def _prompt_for(modality: str, instructions: str) -> str:
-    prefaces = {
-        "coding": "You are a focused coding assistant. Produce working code for this task:\n\n",
-        "docs": "You are a technical writer. Write clear documentation for this task:\n\n",
-        "general": "",
-    }
-    return prefaces.get(modality, "") + instructions
+_PREFACES = {
+    "coding": "You are a focused coding assistant working in an existing project. Produce working code for this task.",
+    "docs": "You are a technical writer working in an existing project. Write clear documentation for this task.",
+    "general": "You are helping with an existing software project.",
+}
+# Keeps a local model inside the project instead of guessing.
+LOCAL_RULES = (
+    "Rules: match the style and conventions of the existing code and the project notes. Use only functions, "
+    "modules and APIs that exist in the files you're given, the standard library, or the project's declared "
+    "dependencies -- never invent them. If something you need is missing or unclear, make the smallest sensible "
+    "assumption and say so in your NOTES."
+)
+
+
+def _prompt_for(modality: str, instructions: str, grounding: str = "") -> str:
+    """What a local model is sent: who it is, the rules, what this project is
+    built with and how (from the brief), then the task."""
+    parts = [_PREFACES.get(modality, _PREFACES["general"]), LOCAL_RULES]
+    if grounding:
+        parts.append("Project notes (from the project's brief):\n" + grounding)
+    return "\n\n".join(parts) + "\n\nTask:\n" + instructions
+
+
+_NOTES = re.compile(r"^\s*NOTES:\s*", re.I | re.M)
+MAX_NOTES_CHARS = 500
+
+
+def _split_notes(reply: str) -> tuple[str, str]:
+    """(the reply without its NOTES, the notes). The local model is asked to
+    put a few NOTES lines after the file's code block: what it assumed or
+    didn't do. They're for the orchestrator, never written into the file."""
+    lines = reply.rstrip().splitlines()
+    fences = [i for i, line in enumerate(lines) if line.strip().startswith("```")]
+    start = fences[-1] + 1 if len(fences) >= 2 else 0
+    for i in range(start, len(lines)):
+        if _NOTES.match(lines[i]):
+            notes = _NOTES.sub("", "\n".join(lines[i:]), count=1).strip()
+            if notes.lower().rstrip(".") in ("none", "n/a", ""):
+                notes = ""
+            return "\n".join(lines[:i]), notes[:MAX_NOTES_CHARS]
+    return reply, ""
 
 
 # Cheap, deterministic tripwires for the clearest local-model failure modes
@@ -385,6 +419,7 @@ class Dispatcher:
         self.installed = installed
         self.hooks = hooks or ActivityHooks()
         self._resolved_models: dict[str, ModelEntry] = {}
+        self._grounding: str | None = None
         self.local_tokens_generated = 0  # running total, for usage metrics
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
@@ -418,13 +453,22 @@ class Dispatcher:
         the default cap). Every prompt it's given is sized to fit this."""
         return context_limit(entry, self.hardware)
 
+    def grounding(self) -> str:
+        """The brief's stack/commands/conventions, for every delegated task
+        (read once per task: /init may have changed it since the last one)."""
+        if self._grounding is None:
+            self._grounding = brief.grounding_for_local(self.workspace.root) if self.workspace is not None else ""
+        return self._grounding
+
     def prompt_chars(self, modality: str, output_tokens: int = MAX_OUTPUT_TOKENS) -> int:
-        """How much prompt the model for `modality` can take beside its reply."""
+        """How much task text the model for `modality` can take beside its
+        reply, after the fixed preamble (rules and project notes)."""
+        preamble = len(_prompt_for(modality, "", self.grounding()))
         try:
             entry = self.resolve(modality)
         except Exception:  # noqa: BLE001 - no model: the call will fail with its own error
-            return prompt_budget(None, output_tokens)
-        return prompt_budget(self.context_limit(entry), output_tokens)
+            return prompt_budget(None, output_tokens) - preamble
+        return prompt_budget(self.context_limit(entry), output_tokens) - preamble
 
     def _retry_candidate(self, modality: str, current: ModelEntry) -> ModelEntry | None:
         """A different model for `modality` to retry with, if this
@@ -478,10 +522,11 @@ class Dispatcher:
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
         window = {"context_limit": self.context_limit(entry)}
+        prompt = _prompt_for(modality, instructions, self.grounding())
         if hooks.on_token is not None:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions), on_token=hooks.on_token, **window)
+            result = backend.generate(entry.name, prompt, on_token=hooks.on_token, **window)
         else:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions), **window)
+            result = backend.generate(entry.name, prompt, **window)
         tokens = result.get("tokens", 0)
         self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
         if hooks.on_done is not None:
@@ -622,8 +667,9 @@ class Dispatcher:
         rel = self.workspace.rel(target)
         current = target.read_text(errors="replace") if target.is_file() else None
         directive = (
-            f"\n\nWrite the COMPLETE contents of the file `{rel}`. "
-            "Reply with only the file's contents in one code block -- no explanation before or after."
+            f"\n\nWrite the COMPLETE contents of the file `{rel}`. Reply with the file's contents in one code block, "
+            "then, after the block, at most three short lines starting with NOTES: -- anything you assumed or "
+            "couldn't do (or NOTES: none). Nothing before the code block."
         )
         current_block = ""
         if current is not None:
@@ -643,16 +689,41 @@ class Dispatcher:
                 "a new, smaller module first."
             )
         context, notes = self._context_block(context_files, room)
-        brief = instructions + context + directive + current_block
-        content, warning = self._delegate(modality, brief, on_delegate)
+        task = instructions + context + directive + current_block
+        content, warning = self._delegate(modality, task, on_delegate)
         if warning:
             return _with_notes(f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}", notes)
-        written = _extract_file_content(content)
+        body, model_notes = _split_notes(content)
+        written = _extract_file_content(body)
         if written is None:
             return _with_notes(
                 f"{_cut_off_warning(modality)}\n\nNothing was written to {rel}: the reply opened a code block and never closed it.",
                 notes,
             )
+
+        # Check it parses before the user is asked about it. One free local
+        # retry with the exact error; the paid orchestrator only hears about
+        # it if the local model can't fix it.
+        language, error = verify.check(rel, written)
+        if error:
+            if self.hooks.on_tool is not None:
+                self.hooks.on_tool("retry", f"{rel}: {error[:120]}; asking the local model to fix it")
+            retry = f"{task}\n\nYour previous version of `{rel}` failed a syntax check: {error}\nFix it and write the complete file again."
+            content, warning = self._delegate(modality, retry, on_delegate)
+            if not warning:
+                body, model_notes = _split_notes(content)
+                fixed = _extract_file_content(body)
+                if fixed is not None:
+                    written = fixed
+                    language, error = verify.check(rel, written)
+            if error or warning:
+                return _with_notes(
+                    f"{tool} failed: the local model's {rel} doesn't parse, even after one retry with the error "
+                    f"({error or warning}). Nothing was written. Try smaller or clearer instructions, or split the file.",
+                    notes,
+                )
+        checked = f"Syntax check: {language} parses." if language else ""
+
         result = self.workspace.write_file(rel, written)
         if self.hooks.on_tool_result is not None:
             self.hooks.on_tool_result("write", result.splitlines()[0])
@@ -664,7 +735,12 @@ class Dispatcher:
         lines = written.splitlines()
         preview = "\n".join(lines[:RESULT_PREVIEW_LINES])
         more = f"\n[... {len(lines) - RESULT_PREVIEW_LINES} more lines; read_file {rel} if you need to check them]" if len(lines) > RESULT_PREVIEW_LINES else ""
-        return _with_notes(f"{result.splitlines()[0]}\nFirst lines:\n{preview}{more}", notes)
+        report = [result.splitlines()[0]]
+        if checked:
+            report.append(checked)
+        if model_notes:
+            report.append(f"The local model's notes: {model_notes}")
+        return _with_notes("\n".join(report) + f"\nFirst lines:\n{preview}{more}", notes)
 
     def _direct(self, tool_name: str, args: dict) -> str:
         """A tool the orchestrator runs itself. Failures come back as text so

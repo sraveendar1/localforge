@@ -78,8 +78,10 @@ shows you the diff first. It's deleted when the session ends (`/scratch` shows
 what's in it).
 
 **`localforge init`:** like Claude Code's `/init`, this writes a project
-brief — `LOCALFORGE.md`: what the project is, how it's built, how to run and
-test it, and the decisions worth keeping. A **local** model writes it, from
+brief — `AGENTS.md` (the file other coding agents read too): what the project
+is, how it's built, how to run and test it, and the decisions worth keeping.
+The local models get its stack, commands and conventions with every task, so
+the code they write fits the project. A **local** model writes it, from
 the project itself plus what localforge remembers of your sessions, and you
 approve the diff like any other change. Every later session starts with it,
 so the frontier model doesn't pay to rediscover your project each time. After

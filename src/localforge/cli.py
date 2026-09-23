@@ -2209,7 +2209,7 @@ def explain_to_user(question: str, approval) -> None:
 def init(
     refresh: bool = typer.Option(False, "--refresh", help="Rewrite the brief from scratch instead of updating it."),
 ) -> None:
-    """Write (or update) LOCALFORGE.md: what this project is, for every future session.
+    """Write (or update) AGENTS.md: what this project is, for every future session.
 
     A local model reads the project and what localforge remembers, and drafts
     it; you see the diff and approve it like any other change.
@@ -2255,6 +2255,11 @@ def init(
         if _session.conversation is not None:
             _session.conversation.brief = brief.brief_for_prompt(folder)
         console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /init again to refresh it.[/dim]")
+        if (folder / brief.LEGACY_BRIEF).is_file():
+            # The brief's old name: its content is in AGENTS.md now. Removing it
+            # goes through the normal delete approval, like any other change.
+            console.print(f"[dim]{brief.LEGACY_BRIEF} is the old name for this file, and AGENTS.md replaces it.[/dim]")
+            console.print(workspace.delete_path(brief.LEGACY_BRIEF).splitlines()[0])
 
 
 @app.command()

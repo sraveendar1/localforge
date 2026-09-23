@@ -1,9 +1,10 @@
 """The project brief: what this project is, kept in the project.
 
 Claude Code has CLAUDE.md; this is the same idea, written by a local model
-rather than a paid one. `localforge init` reads the project (its layout,
-README, manifests, entry points) together with what localforge remembers of
-your sessions, and drafts `LOCALFORGE.md`: the objective, how the project is
+rather than a paid one, in AGENTS.md -- the name other coding agents already
+read, so one file serves them all. `localforge init` reads the project (its
+layout, README, manifests, entry points) together with what localforge
+remembers of your sessions, and drafts `AGENTS.md`: the objective, how the project is
 built, how to run it, and the decisions worth knowing. Every later session
 starts with it, so the orchestrator doesn't have to rediscover the project
 (which costs frontier tokens every time).
@@ -13,17 +14,20 @@ any other change: it's written through the usual diff-and-approval path, and
 never rewritten silently. After a session that changed files, the keeper
 drafts an update and leaves it pending for `/init` to review.
 
-If the project already has a CLAUDE.md or AGENTS.md, that's read instead of
-duplicating it.
+An existing AGENTS.md (the user's, or another tool's) is updated in place,
+through the diff, never overwritten unseen. A CLAUDE.md (Claude Code's) is
+read when there's no AGENTS.md, never written. LOCALFORGE.md is this file's
+old name: still read, and /init moves it to AGENTS.md.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-BRIEF_FILE = "LOCALFORGE.md"
-# Briefs written for other tools; read rather than duplicated.
-OTHER_BRIEFS = ("CLAUDE.md", "AGENTS.md", ".cursorrules", ".github/copilot-instructions.md")
+BRIEF_FILE = "AGENTS.md"
+LEGACY_BRIEF = "LOCALFORGE.md"  # the old name; read, and moved to AGENTS.md by /init
+# Read (in this order) when there's no AGENTS.md; never written.
+OTHER_BRIEFS = (LEGACY_BRIEF, "CLAUDE.md", ".cursorrules", ".github/copilot-instructions.md")
 MANIFESTS = (
     "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "pom.xml", "build.gradle",
     "Gemfile", "composer.json", "requirements.txt", "Makefile", "docker-compose.yml",
@@ -83,6 +87,32 @@ def existing_brief(root: Path) -> str:
 def brief_for_prompt(root: Path, limit: int = 6_000) -> str:
     text = existing_brief(root)
     return text if len(text) <= limit else text[:limit] + "\n[... brief truncated]"
+
+
+# What a local model writing code needs from the brief: the stack, how the
+# project runs and is tested, and its conventions -- not the project's story.
+GROUNDING_SECTIONS = ("how it's built", "running and testing", "conventions and decisions")
+GROUNDING_CHARS = 2_000
+
+
+def grounding_for_local(root: Path, limit: int = GROUNDING_CHARS) -> str:
+    """The part of the brief every delegated task gets, so local models write
+    code that fits the project without the orchestrator repeating it (which
+    costs paid tokens, and gets forgotten). From a brief /init wrote, just the
+    sections above; from another tool's brief (CLAUDE.md, AGENTS.md), its
+    opening, since its layout is unknown."""
+    text = existing_brief(root)
+    if not text:
+        return ""
+    sections, keep, found = [], False, False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            keep = line[3:].strip().lower() in GROUNDING_SECTIONS
+            found = found or keep
+        if keep:
+            sections.append(line)
+    picked = "\n".join(sections).strip() if found else text
+    return picked if len(picked) <= limit else picked[:limit].rsplit("\n", 1)[0] + "\n[...]"
 
 
 def pending_path(root: Path) -> Path:
