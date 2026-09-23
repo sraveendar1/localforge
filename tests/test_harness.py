@@ -195,7 +195,7 @@ def test_update_todos_goes_to_the_hook():
 def test_tool_schemas_carry_real_parameters():
     by_name = {s["function"]["name"]: s["function"]["parameters"] for s in build_tool_schemas(_hw(), CATALOG)}
     assert by_name["read_file"]["required"] == ["path"]
-    assert set(by_name["delegate_coding_task"]["properties"]) == {"instructions", "path"}
+    assert set(by_name["delegate_coding_task"]["properties"]) == {"instructions", "path", "context_files"}
     assert {"read_file", "list_files", "search", "edit_file", "run_command", "update_todos"} <= set(by_name)
     assert "write_file" not in by_name  # the orchestrator can't write whole files itself
 
@@ -402,20 +402,80 @@ def test_run_answer_is_rendered_as_markdown(fresh_session, monkeypatch, tmp_path
 # --- session start: pick the orchestrator; session end: save memory -------------------
 
 
-def test_each_new_session_asks_for_the_orchestrator_with_no_default(fresh_session, monkeypatch):
-    choices = [
-        ("ollama/qwen2.5:7b", "ollama/qwen2.5:7b  (local)", {"LOCALFORGE_AUTH_METHOD": "local", "LOCALFORGE_FRONTIER_PROVIDER": "local"}),
-        ("claude-opus-5", "claude-opus-5  (your `claude` login)", {"LOCALFORGE_AUTH_METHOD": "cli_login", "LOCALFORGE_FRONTIER_PROVIDER": "anthropic"}),
-    ]
-    monkeypatch.setattr(cli_module, "_model_choices", lambda: choices)
-    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
-    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "claude-opus-5")
-    answers = iter(["", "9", "1"])  # Enter doesn't pick anything; out-of-range re-asks
-    monkeypatch.setattr(cli_module.console, "input", lambda prompt="": next(answers))
+CHOICES = [
+    ("ollama/qwen2.5:7b", "ollama/qwen2.5:7b  (local)", {"LOCALFORGE_AUTH_METHOD": "local", "LOCALFORGE_FRONTIER_PROVIDER": "local"}),
+    ("claude-opus-5", "claude-opus-5  (your `claude` login)", {"LOCALFORGE_AUTH_METHOD": "cli_login", "LOCALFORGE_FRONTIER_PROVIDER": "anthropic"}),
+]
 
-    assert cli_module._choose_orchestrator_at_start() is True
+
+@pytest.fixture
+def picker(fresh_session, monkeypatch):
+    """Drive the session-start picker with scripted answers; returns the
+    prompts that were shown."""
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: CHOICES)
+    monkeypatch.setattr(cli_module, "_drain_buffered_input", lambda: None)
+    monkeypatch.setattr(cli_module.cli_transport, "available", lambda p: True)
+    prompts = []
+
+    def run(answers):
+        answers = iter(answers)
+
+        def fake_input(prompt=""):
+            prompts.append(cli_module.console.render_str(prompt).plain)
+            return next(answers)
+
+        monkeypatch.setattr(cli_module.console, "input", fake_input)
+        return cli_module._choose_orchestrator_at_start()
+
+    run.prompts = prompts
+    return run
+
+
+def test_resuming_offers_to_keep_the_last_orchestrator(picker, monkeypatch, capsys):
+    """Reported: resuming showed the whole model list instead of asking
+    whether to keep the current orchestrator."""
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "claude-opus-5")
+    monkeypatch.setenv("LOCALFORGE_AUTH_METHOD", "cli_login")
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_PROVIDER", "anthropic")
+    assert picker(["", "1"]) is True  # Enter alone picks nothing
+    assert picker.prompts == ["Choose (1-2): ", "Choose (1-2): "]  # never the long list
+    out = capsys.readouterr().out
+    assert "Orchestrator from last time: claude-opus-5" in out and "Keep using it" in out
+    assert "ollama/qwen2.5:7b" not in out
+    assert not cli_module.config.CONFIG_FILE.exists()  # nothing changed
+
+
+def test_choosing_a_different_one_shows_the_list(picker, monkeypatch, capsys):
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "claude-opus-5")
+    assert picker(["2", "9", "1"]) is True  # out-of-range re-asks
+    out = capsys.readouterr().out
+    assert "Which model should orchestrate this session?" in out and "(last used)" in out
     saved = cli_module.config.CONFIG_FILE.read_text()
     assert "LOCALFORGE_FRONTIER_MODEL=ollama/qwen2.5:7b" in saved and "LOCALFORGE_AUTH_METHOD=local" in saved
+
+
+def test_a_deleted_local_orchestrator_goes_straight_to_the_list(picker, monkeypatch, capsys):
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "ollama/gemma3:4b")  # no longer downloaded
+    assert picker(["2"]) is True
+    out = capsys.readouterr().out
+    assert "ollama/gemma3:4b from last time isn't available here any more" in out
+    assert "Keep using it" not in out
+    assert "LOCALFORGE_FRONTIER_MODEL=claude-opus-5" in cli_module.config.CONFIG_FILE.read_text()
+
+
+def test_first_ever_session_shows_the_list(picker, monkeypatch, capsys):
+    monkeypatch.delenv("LOCALFORGE_FRONTIER_MODEL", raising=False)
+    assert picker(["1"]) is True
+    out = capsys.readouterr().out
+    assert "Keep using it" not in out and "Which model should orchestrate" in out
+
+
+def test_a_custom_cloud_model_with_its_login_counts_as_usable(picker, monkeypatch):
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "claude-some-future-model")
+    assert cli_module._current_is_usable("claude-some-future-model", CHOICES) is True
+    monkeypatch.setattr(cli_module.cli_transport, "available", lambda p: False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert cli_module._current_is_usable("claude-some-future-model", CHOICES) is False
 
 
 def test_backing_out_of_the_start_picker_ends_the_session(fresh_session, monkeypatch):

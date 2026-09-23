@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 
 import litellm
@@ -71,6 +72,9 @@ class OrchestrationError(RuntimeError):
 
 
 MAX_ROUNDS = 40
+# An identical tool call that keeps failing is retried at most this many
+# times; after that the orchestrator is told to try something else.
+MAX_ATTEMPTS_PER_CALL = 3
 
 # How many of the most recent tool results to keep in full. Once a task runs
 # long enough to accumulate more than this many, older ones are collapsed to
@@ -115,6 +119,17 @@ def _complete_streaming(frontier_model: str, messages: list[dict], tools: list[d
     return litellm.stream_chunk_builder(chunks, messages=messages)
 
 
+_FAILURE = re.compile(r"^(\[WARNING:|Error running |\S+ (failed|is missing the required argument|got bad arguments)\b)")
+
+
+def _failure_in(result: str) -> str | None:
+    """The error in a tool result the dispatcher reported as text, or None
+    if the step worked. (Declines by the user aren't failures: retrying the
+    same thing would just ask again.)"""
+    first = (result or "").strip().splitlines()[0] if (result or "").strip() else ""
+    return first if _FAILURE.match(first) else None
+
+
 def _canonical_args(arguments: str | None) -> str:
     """Tool-call arguments in a stable form, so the same call is recognised
     regardless of key order or whitespace."""
@@ -149,10 +164,15 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
 
 SYSTEM_PROMPT = """You are the orchestrator inside localforge, a coding harness in the user's terminal, working in their project folder. You plan, investigate and review; local open-weight models running on the user's machine write the code and docs.
 
+You are the expensive model; the local models are free. Every token you read or write costs money, so your job is to decide and direct, not to do the work:
+- Never write code (or whole documents) yourself -- not in edit_file, not inside `instructions`. Describe what's needed and let the local model write it. A spec that already contains the code wastes the local model and doubles your cost.
+- Don't read files just to pass their contents along. Name them in `context_files` and localforge hands them to the local model directly. To understand a large file or module, ask a local model to summarize it (delegate_general_task with context_files) rather than reading it all yourself.
+- Keep `instructions` short: the goal, the constraints, names and interfaces that matter. Read a file yourself only to make a decision or to check a result.
+
 How to work:
 - Do only what the user asked. If the message is a greeting, a question, or a chat, just answer it -- don't create, change or run anything unless they asked for that.
 - Investigate before changing anything: list_files, search and read_file show you the project. Never guess at code you haven't read.
-- To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees ONLY your instructions plus the current file contents -- no other files, no conversation, no internet. So put everything it needs into `instructions`: the goal, the exact interfaces and names from other files, conventions, and any facts you looked up.
+- To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees only your instructions, the current file, and any `context_files` -- no conversation, no internet -- so give it what it needs through those (and any facts you looked up), not by pasting.
 - edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
 - make_dir, move_path and delete_path create folders, move/rename, and delete. The user has trusted this folder, and still approves each change; only delete what the task needs.
 - run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them.
@@ -162,6 +182,7 @@ How to work:
 - Memory: facts remembered from earlier sessions in this project are listed below. When the user tells you to remember something, or states a lasting preference or correction, save it with remember (type user, feedback, project or reference); use forget when a memory turns out wrong. Don't save things that are obvious from the code or only matter today.
 - This is an ongoing conversation: the user's earlier messages and your earlier work are above, and older turns may be condensed into a session-memory note.
 - If the user declines a change or command, don't retry it unchanged; ask or adjust.
+- When a step fails (a delegation errors, a local model stalls or returns junk, a command exits non-zero), don't stop at the first error. Read the error and work out the cause, then unblock it: retry once if it looks transient, give the local model smaller or clearer instructions, split the work, try a different tool, or check the situation first (read_file, list_files, run_command). If the same thing still fails after a couple of different attempts, stop and tell the user plainly what is blocked, what you tried, and what they could do.
 - Finish with a short summary of what you changed (files, commands run, results) and anything left to do.
 
 Local models occasionally produce bad results: empty output, a refusal, something far too short for what was asked, or content that doesn't actually satisfy the subtask. Do not accept a delegated result at face value -- check it against what you asked for before using it (read_file the written file when it matters). If a result is prefixed with [WARNING: ...], that is an automated flag that something looked wrong; treat it with extra scrutiny. If a result is clearly bad, delegate that subtask again with more specific or simpler instructions rather than passing the bad result through. If you've retried and still can't get a usable result, say so plainly in your final answer instead of presenting a broken result as if it were fine."""
@@ -238,7 +259,8 @@ def run(
         if not conversation.project_snapshot:
             conversation.project_snapshot = workspace.snapshot()
         conversation.facts = memory.facts_for_prompt(workspace.root)  # may have changed via remember/forget
-    if conversation.chars() > memory.COMPACT_AT_CHARS:
+    compact_at = memory.COMPACT_AT_CHARS_LOCAL if frontier_model.startswith(local_transport.PREFIXES) else memory.COMPACT_AT_CHARS
+    if conversation.chars() > compact_at:
         memory.compact(conversation, dispatcher, hooks)
     if not conversation.messages:
         conversation.messages.append(conversation.system_message())
@@ -247,6 +269,105 @@ def run(
     conversation.messages.append({"role": "user", "content": task})
     messages = conversation.messages
 
+    turn_start = len(messages) - 1  # index of this turn's user message
+    try:
+        return _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate)
+    except KeyboardInterrupt:
+        # Ctrl+C: stop this task only. Drop its half-finished steps (an
+        # assistant tool call without its result would make the next request
+        # invalid) and note that it was stopped, so the conversation stays usable.
+        del messages[turn_start + 1 :]
+        messages.append({"role": "assistant", "content": "(The user stopped this task before it finished.)"})
+        conversation.reindex_tools()
+        stats.local_tokens_generated = dispatcher.local_tokens_generated
+        raise TaskCancelled(stats) from None
+
+
+def _call_frontier(orchestrator: dict, hooks, messages, tools):
+    """One orchestrator turn.
+
+    Retried once if the failure looks transient (a dropped connection, a
+    server hiccup, an intermittent CLI exit). A usage limit is different:
+    the work so far is fine, the account just can't be used right now, so
+    `hooks.on_limit` decides -- wait for the reset and retry, switch to
+    another orchestrator (`orchestrator` is updated in place, so the task
+    carries on from exactly where it stopped), or give up. Sign-in problems
+    and missing tools are still raised straight away.
+    """
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            model, cli_provider = orchestrator["model"], orchestrator["provider"]
+            on_text = hooks.on_answer_text
+            if model.startswith(local_transport.PREFIXES):
+                # An open-weight orchestrator on this machine: straight to Ollama,
+                # never through a provider CLI, whatever else is configured.
+                return local_transport.complete(model, messages, tools, on_text=on_text)
+            if cli_provider:
+                return cli_transport.complete(cli_provider, messages, tools, model=model, on_text=on_text)
+            if on_text is not None:
+                return _complete_streaming(model, messages, tools, on_text)
+            return completion(model=model, messages=messages, tools=tools)
+        except Exception as exc:  # noqa: BLE001 - classified below
+            limit = _as_usage_limit(exc, orchestrator)
+            if limit is not None and hooks.on_limit is not None:
+                decision = hooks.on_limit(limit)
+                if decision == "retry":
+                    attempt = 0  # a fresh start after the wait, not a retry of a broken call
+                    continue
+                if isinstance(decision, tuple) and decision and decision[0] == "switch":
+                    _, orchestrator["model"], orchestrator["provider"] = decision
+                    attempt = 0
+                    continue
+                raise limit from None
+            if limit is not None or attempt >= 2 or not _is_transient(exc):
+                raise
+            if hooks.on_tool is not None:
+                hooks.on_tool("retry", f"the orchestrator call failed ({str(exc)[:120]}); retrying once")
+            time.sleep(RETRY_DELAY_SECONDS)
+
+
+def _as_usage_limit(exc: Exception, orchestrator: dict) -> cli_transport.UsageLimitError | None:
+    """The same failure arrives differently per transport: a typed error from
+    the CLI transport, a RateLimitError from LiteLLM, or just a message."""
+    if isinstance(exc, cli_transport.UsageLimitError):
+        return exc
+    if isinstance(exc, cli_transport.CLINotAvailableError) and not cli_transport.looks_like_limit(str(exc)):
+        return None
+    text = str(exc)
+    if type(exc).__name__ in ("RateLimitError", "BudgetExceededError") or cli_transport.looks_like_limit(text):
+        return cli_transport.UsageLimitError(
+            text, provider=orchestrator.get("provider") or "", reset_at=cli_transport.parse_reset_time(text)
+        )
+    return None
+
+
+RETRY_DELAY_SECONDS = 2.0
+_PERMANENT = ("limit", "quota", "spend", "credit", "billing", "log in", "login", "logged", "auth", "api key",
+              "unauthorized", "forbidden", "not installed", "is required", "not running", "invalid", "not found")
+_TRANSIENT_TYPES = {"APIConnectionError", "Timeout", "InternalServerError", "ServiceUnavailableError", "APIError",
+                    "TimeoutExpired", "ConnectError", "ReadTimeout", "RemoteProtocolError"}
+
+
+def _is_transient(exc: Exception) -> bool:
+    text = str(exc).lower()
+    if any(marker in text for marker in _PERMANENT):
+        return False
+    if isinstance(exc, (cli_transport.CLINotAvailableError, local_transport.LocalOrchestratorError)):
+        return True  # e.g. "claude exited 1: ..." with no sign of a limit or sign-in problem
+    return type(exc).__name__ in _TRANSIENT_TYPES
+
+
+class TaskCancelled(Exception):
+    """The user pressed Ctrl+C during a task. Carries the usage spent so far."""
+
+    def __init__(self, stats: RunStats):
+        super().__init__("Task stopped by the user.")
+        self.stats = stats
+
+
+def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate) -> RunResult:
     def _finish() -> None:
         stats.local_tokens_generated = dispatcher.local_tokens_generated
 
@@ -254,23 +375,19 @@ def run(
     # local orchestrators loop, re-issuing the same call after it succeeded
     # (seen live: one file delegated three times); re-running it wastes a
     # local generation and, for writes, another approval prompt.
-    done_calls: dict[tuple[str, str], str] = {}
+    orchestrator = {"model": frontier_model, "provider": cli_provider}
+    done_calls: dict[tuple[str, str], str] = {}  # successful calls only
+    failures: dict[tuple[str, str], int] = {}  # failed attempts per identical call
+    last_error: dict[tuple[str, str], str] = {}
     used_tools = nudged = False
 
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
             hooks.on_frontier(round_number)
-        on_text = hooks.on_answer_text
-        if frontier_model.startswith(local_transport.PREFIXES):
-            # An open-weight orchestrator on this machine: straight to Ollama,
-            # never through a provider CLI, whatever else is configured.
-            response = local_transport.complete(frontier_model, messages, tools, on_text=on_text)
-        elif cli_provider:
-            response = cli_transport.complete(cli_provider, messages, tools, model=frontier_model, on_text=on_text)
-        elif on_text is not None:
-            response = _complete_streaming(frontier_model, messages, tools, on_text)
-        else:
-            response = completion(model=frontier_model, messages=messages, tools=tools)
+        for note in hooks.poll_notes() if hooks.poll_notes is not None else []:
+            messages.append({"role": "user", "content": f"[Note from the user, added while you were working]: {note}"})
+        response = _call_frontier(orchestrator, hooks, messages, tools)
+        frontier_model = orchestrator["model"]  # may have been switched while waiting out a limit
         _record_frontier_usage(response, stats)
         message = response.choices[0].message
         messages.append(message.model_dump())
@@ -294,19 +411,43 @@ def run(
         used_tools = True
 
         for call in message.tool_calls:
-            key = (call.function.name, _canonical_args(call.function.arguments))
-            if key in done_calls and call.function.name != "update_todos":
+            name = call.function.name
+            key = (name, _canonical_args(call.function.arguments))
+            if key in done_calls and name != "update_todos":
                 result = (
-                    f"You already made this exact {call.function.name} call in this task; it was not run again. "
+                    f"You already made this exact {name} call in this task and it succeeded; it was not run again. "
                     f"Its result was:\n{done_calls[key][:1500]}\n\nDon't repeat it: do the next step, or give your final answer."
+                )
+            elif failures.get(key, 0) >= MAX_ATTEMPTS_PER_CALL:
+                result = (
+                    f"This exact {name} call has already failed {failures[key]} times (last error: {last_error[key]}). "
+                    "It was not run again. Take a different approach: change the instructions (smaller scope, "
+                    "clearer), use another tool, check the situation first (read_file, list_files, run_command), "
+                    "or tell the user what's blocking and what you tried."
                 )
             else:
                 try:
                     args = json.loads(call.function.arguments or "{}")
-                    result = dispatcher.dispatch(call.function.name, args, on_delegate=on_delegate)
+                    result = dispatcher.dispatch(name, args, on_delegate=on_delegate)
+                    error = _failure_in(result)
                 except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
-                    result = f"Error running {call.function.name}: {exc}"
-                done_calls[key] = result
+                    error = str(exc) or type(exc).__name__
+                    result = None
+                if error is None:
+                    done_calls[key] = result  # only successes are cached; failures may be retried
+                else:
+                    failures[key] = failures.get(key, 0) + 1
+                    last_error[key] = error[:300]
+                    if result is None or not result.strip():
+                        result = f"{name} failed: {error}"
+                    left = MAX_ATTEMPTS_PER_CALL - failures[key]
+                    result += (
+                        f"\n\n[This step failed (attempt {failures[key]} of {MAX_ATTEMPTS_PER_CALL}). "
+                        "Work out why from the error. You can retry it"
+                        + (f" ({left} attempt{'s' if left != 1 else ''} left)" if left else " no more times")
+                        + ", or unblock it another way: simpler or smaller instructions, a different tool, "
+                        "or checking files/the environment first.]"
+                    )
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
             conversation.tool_indices.append(len(messages) - 1)
 

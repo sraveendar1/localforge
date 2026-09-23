@@ -62,6 +62,8 @@ FRONTIER_PROVIDER_ENV_VAR = "LOCALFORGE_FRONTIER_PROVIDER"
 AUTH_API_KEY = "api_key"
 AUTH_CLI_LOGIN = "cli_login"
 AUTH_LOCAL = "local"  # an open-weight orchestrator: no key, no login
+ORCHESTRATOR_EFFORT_ENV_VAR = "LOCALFORGE_ORCHESTRATOR_EFFORT"
+DEFAULT_ORCHESTRATOR_EFFORT = "medium"
 
 # Per-provider first-party CLI that supports account/subscription login.
 #   command       : executable to look for on PATH
@@ -97,6 +99,11 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # Which Claude model to run. Without it `claude -p` uses Claude Code's
         # own default, silently ignoring the model picked in setup (a real bug).
         "model_flag": "--model",
+        # How hard Claude thinks on each orchestration step. Most steps are
+        # routine ("call the next tool"), and thinking tokens are billed like
+        # output, so the default is medium (LOCALFORGE_ORCHESTRATOR_EFFORT
+        # overrides: low, medium, high, xhigh, max).
+        "effort_flag": "--effort",
         "json_args": ["--output-format", "json"],
         # Live streaming (verified live): text arrives as stream_event /
         # content_block_delta / text_delta; the last `result` event carries

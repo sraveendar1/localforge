@@ -43,16 +43,29 @@ also saved so your next session in the same folder picks up where you left
 off (`/compact` to do it now, `/clear` to start fresh).
 
 **Starting a session:** the first time in a folder, localforge asks whether
-you trust it (like Claude Code). Then it asks which model should orchestrate
-this session: any model in Ollama, or Claude/GPT/Gemini if you've set one up.
-There's no default, so you always choose. Type `/` to see every command with
+you trust it (like Claude Code). Then it confirms the orchestrator. If you used
+one last time, it asks whether to keep it or choose a different one. The list
+(any model in Ollama, or Claude/GPT/Gemini if you've set one up) appears only
+when you want to change. There's no default, so you always choose. Type `/` to see every command with
 a description, and press Tab to complete. Arrow keys, mid-line editing and
 Up for history all work.
 
-**Watching it work:** local models' output streams as they write, and so does
-the orchestrator's answer, rendered as formatted text while it's written.
-In between you see each action: files read, commands run, the plan checklist,
-and diffs waiting for your approval.
+**Watching it work, while you keep working:** a task runs in the background
+and your prompt stays live, like Claude Code. A status bar at the bottom shows
+who is doing what, for example `qwen2.5-coder:7b working on coding · 312
+tokens · 41 tok/s`, and each finished step prints one line instead of
+flooding the screen with code. While it works you can:
+- `/summary`: the task, which model is doing what, the plan, recent steps
+  and the queue (instant, no model call)
+- type another task: it's queued and runs next (`/queue` to see or clear)
+- `/tell <note>`: add something to the task that's running now
+- `/stop` or Ctrl+C: stop the current task (the session stays open)
+- `/usage`, `/memory`, `/scratch` and the other read-only commands
+
+When a change needs your approval, the diff prints above and the prompt
+itself asks: (y)es / (n)o / (a)lways. The answer is printed, formatted, when
+the task is done. (A one-off `localforge run "..."` still streams in the
+foreground.)
 
 **Files:** in a trusted folder it can read, create, change, move and delete
 files and run commands. Every change asks first: (y)es / (n)o / (a)lways this
@@ -70,6 +83,56 @@ summary of where the last session left off. Tell it "remember that…" and it
 saves a fact. At `/exit`, a local model saves what's worth keeping, so the
 next session in that folder picks up from there. `/memory` shows it, and
 `/memory forget <name>` or `/memory clear` remove it.
+
+**When something goes wrong:** if a local model crashes, stalls or starts
+repeating itself, localforge stops it and tries again, with another installed
+model if there is one. The orchestrator is told what failed and works around
+it (retry, simpler instructions, a different approach). Only after a few
+different attempts does it stop and tell you what's blocking. A brief
+connection hiccup with Claude is retried once. Ctrl+C stops the current task
+without ending the session.
+
+**Where the money goes:** the frontier model is told it's the expensive one:
+it plans, directs and checks, and the local models write. It doesn't paste
+files or code into its instructions: it names `context_files`, and localforge
+hands those files straight to the local model. What a local model writes
+comes back to the frontier model as a short summary, while you still see the
+full diff. Claude also orchestrates at medium thinking effort
+(`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows the last task, this session,
+the previous session and this project's all-time totals — how much of the
+work the local models did, and an estimate of what that would have cost from
+the frontier model. The totals are kept per project, so they survive closing
+the session.
+
+**Always visibly alive:** while a task runs, the bottom line shows a hammer
+and anvil working away, the model doing the work, how long it's been, a
+running token count, and, if a step goes quiet, how long for:
+
+```
+        🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+  │     @app.get("/health")
+  │     def health():
+  │         return {"ok": Tr
+```
+
+The last few lines the local model is writing show under it, so you can watch
+the code take shape without it scrolling your session away (`/stream on`
+prints everything instead).
+
+**Asking why:** at any permission prompt you can type a question instead of
+y/n/a — "why is this needed?" — and localforge explains what the request
+does, what happens if you say no, and what it came up during; a local model
+answers anything more specific. The prompt stays waiting, so asking never
+approves anything. `/why` does the same on demand, and the folder-trust
+question can be asked about too.
+
+**If the paid model runs out mid-task:** the task doesn't die. localforge
+reads the reset time from the provider's message, pauses with a countdown in
+the status bar, and then carries on exactly where it stopped: nothing you've
+already done is lost and you don't have to retype the task. While it's
+paused you can `/model` to switch to a local model and continue right away,
+or `/stop` to give up. If the provider doesn't say when the limit resets, or
+it's hours away, localforge says so instead of waiting.
 
 **Fully local, no account:** pick "local" in `localforge setup`, or type
 `/model` in a session and choose a model you already have in Ollama (e.g.

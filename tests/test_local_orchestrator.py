@@ -136,7 +136,7 @@ def test_local_transport_asks_ollama_for_json_with_a_big_context_and_parses_tool
         resp = local_transport.complete("ollama/gemma3:4b", [{"role": "user", "content": "read a.py"}], [])
 
     assert seen["model"] == "gemma3:4b" and seen["format"] == "json"
-    assert seen["options"]["num_ctx"] >= 16384
+    assert seen["options"]["num_ctx"] == local_transport.MIN_NUM_CTX  # a short prompt needs no more
     call = resp.choices[0].message.tool_calls[0]
     assert call.function.name == "read_file" and json.loads(call.function.arguments) == {"path": "a.py"}
     assert (resp.usage.prompt_tokens, resp.usage.completion_tokens) == (900, 30) and resp.local
@@ -378,3 +378,106 @@ def test_a_normal_answer_is_not_nudged():
         conv = orch.Conversation()
         orch.run("hi", "gpt-5", hardware=_hw(), conversation=conv)
     assert not any("didn't call any tool" in str(m.get("content")) for m in conv.messages)
+
+
+# --- a local orchestrator's context window ------------------------------------------------
+# Reported with mistral-nemo:12b as the orchestrator: "my read_file results
+# are coming back corrupted ... line 1535 spliced into the middle of a block
+# at line 1276". Ollama drops whatever doesn't fit the context window and
+# says nothing, so the model read a spliced prompt as if it were the file.
+
+
+def _render(messages):
+    return "\n\n".join(f"[{m['role']}] {m['content']}" for m in messages)
+
+
+def test_a_prompt_that_fits_is_left_alone():
+    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    prompt, trimmed = local_transport.fit_to_context(messages, _render, budget_tokens=1000)
+    assert trimmed == 0 and prompt == _render(messages) and "trimmed" not in prompt
+
+
+def test_oversized_tool_results_are_trimmed_visibly_instead_of_silently():
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "read the files"},
+        {"role": "tool", "content": "A" * 40_000},
+        {"role": "tool", "content": "B" * 40_000},
+        {"role": "user", "content": "now fix it"},
+    ]
+    prompt, trimmed = local_transport.fit_to_context(messages, _render, budget_tokens=4000)
+    assert trimmed >= 1
+    assert len(prompt) // local_transport.CHARS_PER_TOKEN <= 4000
+    assert "characters trimmed to fit this model's context" in prompt
+    assert "localforge:" in prompt and "fetch again" in prompt  # the model is told, so it can re-read
+    assert "now fix it" in prompt  # the newest turn survives
+
+
+def test_a_hopeless_prompt_drops_oldest_turns_but_keeps_the_system_message():
+    messages = [{"role": "system", "content": "sys"}] + [{"role": "user", "content": "x" * 8000} for _ in range(6)]
+    prompt, trimmed = local_transport.fit_to_context(messages, _render, budget_tokens=3000)
+    assert prompt.startswith("[system] sys") and trimmed >= 1
+    assert len(prompt) // local_transport.CHARS_PER_TOKEN <= 3000 + 60  # plus the note
+
+
+def test_the_context_window_is_sized_to_the_prompt_and_capped(monkeypatch):
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/chat":
+            seen.update(json.loads(request.content))
+            return httpx.Response(200, json={"message": {"content": '{"final_answer": "ok"}'}})
+        return httpx.Response(200, json={})
+
+    real = httpx.Client
+    big = [{"role": "user", "content": "y" * 200_000}]
+    monkeypatch.setenv(local_transport.MAX_NUM_CTX_ENV_VAR, "24000")
+    with (
+        patch.object(local_transport.httpx, "Client", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)),
+        patch.object(local_transport.OllamaBackend, "is_running", return_value=True),
+        patch.object(local_transport.OllamaBackend, "ensure_available"),
+    ):
+        local_transport.complete("ollama/m", big, [], on_text=None)
+    assert seen["options"]["num_ctx"] <= 24000  # never more than the model is asked to hold
+    assert len(seen["messages"][0]["content"]) // local_transport.CHARS_PER_TOKEN <= 24000
+
+
+def test_a_local_orchestrator_reads_smaller_chunks(tmp_path, monkeypatch):
+    import localforge.cli as cli_module
+    from localforge.orchestrator import RunResult, RunStats
+
+    (tmp_path / "big.py").write_text("\n".join(f"line_{i} = {i}" for i in range(3000)))
+    monkeypatch.chdir(tmp_path)
+    from localforge import trust
+
+    trust.trust(tmp_path)
+    monkeypatch.setenv(config.AUTH_METHOD_ENV_VAR, config.AUTH_LOCAL)
+    seen = {}
+
+    def fake_run(task, frontier_model, workspace=None, **kw):
+        seen["read"] = workspace.read_file("big.py")
+        return RunResult("ok", RunStats())
+
+    with patch.object(cli_module, "run_orchestrator", side_effect=fake_run):
+        CliRunner().invoke(cli_module.app, ["run", "t", "-m", "ollama/gemma3:4b"])
+    assert len(seen["read"]) <= cli_module.LOCAL_ORCHESTRATOR_READ_CHARS + 200
+    assert "pass offset=" in seen["read"]  # and it says how to read on, instead of just stopping
+
+
+def test_history_is_condensed_sooner_for_a_local_orchestrator():
+    import localforge.orchestrator as orch
+    from localforge import cli_transport, memory
+
+    conv = orch.Conversation(messages=[{"role": "system", "content": "s"}, {"role": "user", "content": "x" * 25_000}])
+    assert memory.COMPACT_AT_CHARS_LOCAL < conv.chars() < memory.COMPACT_AT_CHARS
+    for model, expected in (("ollama/gemma3:4b", 1), ("claude-opus-5", 0)):
+        with (
+            patch.object(orch.memory, "compact") as compact,
+            patch.object(orch, "_installed_models", return_value=None),
+            patch.object(orch.local_transport, "complete", return_value=cli_transport.CLIResponse(
+                choices=[cli_transport._Choice(message=cli_transport.message_from_reply('{"final_answer": "ok"}'))], local=True)),
+            patch.object(orch.cli_transport, "complete", return_value=cli_transport.CLIResponse(
+                choices=[cli_transport._Choice(message=cli_transport.message_from_reply('{"final_answer": "ok"}'))])),
+        ):
+            orch.run("go", model, hardware=_hw(), conversation=orch.Conversation(messages=list(conv.messages)), cli_provider="anthropic")
+            assert compact.call_count == expected, model

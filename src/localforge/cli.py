@@ -5,10 +5,14 @@ import platform
 import shutil
 import subprocess
 import sys
+import threading
 import time
+import uuid
 import webbrowser
+from datetime import datetime
 from pathlib import Path
 
+import litellm
 import typer
 from rich.console import Console
 from rich.live import Live
@@ -18,15 +22,17 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, local_transport, memory, repl, theme, trust
+from localforge import cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
 from localforge.config import FRONTIER_API_KEY_ENV_VARS, FRONTIER_PROVIDERS
 from localforge.hardware import detect_hardware
-from localforge.orchestrator import Conversation, OrchestrationError, RunStats
+from localforge.orchestrator import Conversation, OrchestrationError, RunStats, TaskCancelled
 from localforge.orchestrator import run as run_orchestrator
 from localforge.tools import ActivityHooks, Dispatcher
+from localforge.background import TaskRunner
+from localforge import workspace as workspace_module
 from localforge.scratchpad import Scratchpad
 from localforge.workspace import Workspace
 
@@ -48,9 +54,21 @@ def _main(ctx: typer.Context) -> None:
         # print-and-exit behavior so nothing that scripts against a bare
         # `localforge` call starts waiting on stdin forever.
         if sys.stdin.isatty() and sys.stdout.isatty():
-            repl.run_repl(
-                app, console, on_start=_start_session, on_exit=_save_memory_at_exit, history_file=config.CONFIG_DIR / "history"
-            )
+            runner = TaskRunner(lambda task: _run_in_background(task))
+            runner.question_handler = explain_to_user
+            _session.runner = runner
+            try:
+                repl.run_repl(
+                    app,
+                    console,
+                    on_start=_start_session,
+                    on_exit=_save_memory_at_exit,
+                    history_file=config.CONFIG_DIR / "history",
+                    runner=runner,
+                )
+            finally:
+                runner.shutdown()
+                _session.runner = None
         else:
             _print_getting_started()
         raise typer.Exit()
@@ -871,9 +889,15 @@ def run(
                 "interactively to trust it, or pass --yes to allow this run."
             )
             raise typer.Exit(code=1)
-    activity = _LiveActivity(frontier_model)
+    activity = _session.make_activity(frontier_model)
     scratch = _session.scratchpad_for(folder)
-    workspace = Workspace(folder, approver=activity.approve, scratch=scratch.root)
+    workspace = Workspace(
+        folder,
+        approver=activity.approve,
+        scratch=scratch.root,
+        # A local orchestrator reads into a much smaller context window.
+        max_read_chars=LOCAL_ORCHESTRATOR_READ_CHARS if _is_local_model(frontier_model) else workspace_module.MAX_READ_CHARS,
+    )
     conversation = _session.conversation_for(workspace.root)
     try:
         try:
@@ -900,11 +924,19 @@ def run(
     except local_transport.LocalOrchestratorError as exc:
         console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         raise typer.Exit(code=1) from None
+    except TaskCancelled as exc:
+        # Ctrl+C mid-task: only the task stops, not the session. Changes the
+        # user already approved stay; the conversation notes it was stopped.
+        _session_usage.append((frontier_model, exc.stats))
+        _record_usage(frontier_model, exc.stats)
+        console.print("\n[warning]Stopped.[/warning] Changes you already approved are kept. Type your next message.")
+        raise typer.Exit(code=130) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
         # compute along the way -- record it so /usage still accounts for it.
         console.print(f"[bold error]Error:[/bold error] {exc}")
         _session_usage.append((frontier_model, exc.stats))
+        _record_usage(frontier_model, exc.stats)
         if show_usage:
             _print_usage_panel(exc.stats, frontier_model)
         raise typer.Exit(code=1) from None
@@ -918,6 +950,7 @@ def run(
         console.print()
         console.print(Markdown(result.answer or "(no answer)"))
     _session_usage.append((frontier_model, result.stats))
+    _record_usage(frontier_model, result.stats)
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
 
@@ -962,6 +995,21 @@ def serve(
     serve_stdio(folder, frontier_model, cli_provider, auto_approve=yes)
 
 
+LIMIT_POLL_SECONDS = 5.0
+# What one read_file may return when an open-weight model is orchestrating.
+LOCAL_ORCHESTRATOR_READ_CHARS = 12_000
+
+
+def _human_duration(seconds: float) -> str:
+    """"2h 14m" / "45s" -- for countdowns the user reads at a glance."""
+    seconds = int(max(seconds, 0))
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m {seconds % 60:02d}s"
+    return f"{seconds}s"
+
+
 class _LiveActivity:
     """Shows a run as it happens: a spinner only while the frontier model is
     thinking, and each local model's output streamed as it's generated, so
@@ -981,6 +1029,11 @@ class _LiveActivity:
         # True once the current reply's answer has been streamed to screen,
         # so run() doesn't print it a second time.
         self.reply_streamed = False
+        self.limit_waits = 0
+
+    # Waiting out a usage limit (see on_limit).
+    MAX_LIMIT_WAIT_SECONDS = 6 * 3600
+    MAX_LIMIT_WAITS = 3
 
     def hooks(self) -> ActivityHooks:
         return ActivityHooks(
@@ -993,6 +1046,7 @@ class _LiveActivity:
             on_tool_result=self._on_tool_result,
             on_todos=self._on_todos,
             on_answer_text=self._on_answer_text,
+            on_limit=self.on_limit,
         )
 
     def _stop_spinner(self) -> None:
@@ -1022,8 +1076,8 @@ class _LiveActivity:
     def _on_frontier(self, round_number: int) -> None:
         self._stop_spinner()
         self.reply_streamed = False  # a new reply starts
-        doing = "planning" if round_number == 1 else "reviewing results"
-        self._status = console.status(f"[bold success]{self.frontier_model} is {doing}...")
+        doing = "thinking about the plan" if round_number == 1 else "thinking about the results"
+        self._status = console.status(f"[bold success]Forging with {self.frontier_model}… ({doing})")
         self._status.start()
 
     def _on_delegate(self, modality: str, entry) -> None:
@@ -1033,7 +1087,7 @@ class _LiveActivity:
         self._first_token_at = None
         # Nothing streams while the model loads into memory, which can take
         # tens of seconds for a big model; keep that visible too.
-        self._status = console.status(f"[dim]{entry.name} is loading / thinking...[/dim]")
+        self._status = console.status(f"[dim]Forging with {entry.name}… (loading the model)[/dim]")
         self._status.start()
 
     def _on_token(self, chunk: str) -> None:
@@ -1073,6 +1127,7 @@ class _LiveActivity:
         "web_search": "Web search",
         "fetch_url": "Fetch",
         "compact": "Memory",
+        "retry": "Retry",
         "remember": "Remember",
         "forget": "Forget",
     }
@@ -1173,8 +1228,190 @@ class _LiveActivity:
             self._pull_shown[model_name] = pct
             console.print(f"    [warning]↓[/warning] downloading {model_name} ({total / 1e9:.1f} GB): {pct}%")
 
+    def on_limit(self, exc):
+        """The account hit its usage limit. The work so far is fine, so wait
+        for the reset and carry on rather than throwing the task away. While
+        waiting, /model (or `localforge model` in another window) switches
+        the orchestrator and the task continues straight away."""
+        self._stop_spinner()
+        self.limit_waits += 1
+        who = exc.provider or self.frontier_model
+        reset_at = getattr(exc, "reset_at", None)
+        seconds = (reset_at - datetime.now(reset_at.tzinfo)).total_seconds() if reset_at else 0
+        if reset_at is None or seconds > self.MAX_LIMIT_WAIT_SECONDS or self.limit_waits > self.MAX_LIMIT_WAITS:
+            console.print(
+                f"[bold error]{escape(who)} hit its usage limit[/bold error] and "
+                + ("didn't say when it resets." if reset_at is None else f"it doesn't reset until {reset_at:%d %b %H:%M}.")
+                + " The work so far is kept — switch with /model (e.g. /model ollama/qwen2.5:7b) and say continue, "
+                "or come back after the reset.",
+                highlight=False,
+            )
+            return None
+        console.print(
+            f"[warning]⏸ {escape(who)} hit its usage limit.[/warning] Waiting until "
+            f"{reset_at:%H:%M} ({_human_duration(seconds)}) and then carrying on. "
+            "/model switches the orchestrator to continue now; /stop gives up.",
+            highlight=False,
+        )
+        switched = self._sleep_until(reset_at)
+        if switched is not None:
+            return switched
+        console.print(f"[success]▶ {escape(who)} should be available again — continuing.[/success]", highlight=False)
+        return "retry"
+
+    def _sleep_until(self, reset_at):
+        """Wait, checking every few seconds whether the user switched the
+        orchestrator (then the task continues on that one instead)."""
+        started_with = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+        while True:
+            remaining = (reset_at - datetime.now(reset_at.tzinfo)).total_seconds()
+            if remaining <= 0:
+                return None
+            self._limit_tick(remaining)
+            time.sleep(min(LIMIT_POLL_SECONDS, max(remaining, 0.1)))
+            current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+            if current and current != started_with:
+                console.print(f"[success]▶ switching to {escape(current)} and carrying on.[/success]", highlight=False)
+                return ("switch", current, _cli_provider_for(current, explicit=False))
+
+    def _limit_tick(self, remaining: float) -> None:
+        """Foreground: a spinner with the countdown (the background display
+        puts it in the status bar instead)."""
+        if self._status is None:
+            self._status = console.status("")
+            self._status.start()
+        self._status.update(f"[warning]waiting for the usage limit to reset — {_human_duration(remaining)} left[/warning]")
+
     def close(self) -> None:
         self._stop_spinner()
+
+
+class _BackgroundActivity(_LiveActivity):
+    """Hooks for a task running on the background worker (see background.py).
+    Same events as _LiveActivity, but compressed: no spinner, no Live, no
+    token-by-token output -- the status bar shows what's in progress, each
+    finished step prints one line, and the answer prints when it's done.
+    Permission prompts are handed to the main thread, which owns the keyboard."""
+
+    def __init__(self, frontier_model: str, runner):
+        super().__init__(frontier_model)
+        self.runner = runner
+        runner.state.orchestrator = frontier_model
+        # Effort only applies to a provider CLI; worth showing, since it's
+        # what the orchestrator's thinking costs.
+        provider = _cli_provider_for(frontier_model, explicit=False)
+        effort = os.environ.get(config.ORCHESTRATOR_EFFORT_ENV_VAR) or config.DEFAULT_ORCHESTRATOR_EFFORT
+        self._effort = f" with {effort} effort" if provider and config.FRONTIER_CLI_AUTH.get(provider, {}).get("effort_flag") else ""
+
+    def hooks(self) -> ActivityHooks:
+        hooks = super().hooks()
+        hooks.on_answer_text = self._on_answer_text
+        hooks.poll_notes = self._poll_notes
+        return hooks
+
+    def _step(self, line: str) -> None:
+        self.runner.state.steps.append(line)
+        self.runner.note_event()
+
+    def _stop_spinner(self) -> None:  # nothing live to stop in background mode
+        return
+
+    def _on_frontier(self, round_number: int) -> None:
+        self.runner.check_cancel()
+        self.runner.note_event()
+        state = self.runner.state
+        state.local_model = state.downloading = ""
+        state.answer_words = 0
+        thinking = "thinking" + self._effort
+        state.phase = f"{thinking} about the plan" if round_number == 1 else f"{thinking} about the results (step {round_number})"
+        self.reply_streamed = False
+
+    def _poll_notes(self) -> list[str]:
+        notes = self.runner.take_notes()
+        for note in notes:
+            console.print(f"  [accent]●[/accent] [bold]Your note[/bold] passed to {escape(self.frontier_model)}: {escape(note)}", highlight=False)
+        return notes
+
+    def _on_delegate(self, modality: str, entry) -> None:
+        self.runner.check_cancel()
+        self.runner.clear_preview()
+        state = self.runner.state
+        state.local_model, state.local_what = entry.name, f"working on {modality}"
+        state.local_tokens, state.local_started = 0, time.monotonic()
+        console.print(f"  → {modality} → [accent]{entry.name}[/accent] (local)", highlight=False)
+        self._step(f"→ {modality} delegated to {entry.name}")
+
+    def _on_token(self, chunk: str) -> None:
+        self.runner.check_cancel()
+        state = self.runner.state
+        state.local_tokens += 1
+        state.local_total += 1
+        self.runner.note_output(chunk)
+        if _session.stream_output:  # /stream on: the full firehose, as the foreground display does
+            super()._on_token(chunk)
+
+    def _on_done(self, modality: str, entry, tokens: int, seconds: float) -> None:
+        state = self.runner.state
+        state.local_model = ""
+        self.runner.clear_preview()
+        console.print(f"  [success]✓[/success] {entry.name} finished {modality}: {tokens} tokens in {seconds:.1f}s", highlight=False)
+        self._step(f"✓ {entry.name} finished {modality} ({tokens} tokens)")
+
+    def _on_pull(self, model_name: str, event: dict) -> None:
+        total, completed = event.get("total"), event.get("completed")
+        if total and completed is not None:
+            self.runner.state.downloading = f"downloading {model_name}: {int(100 * completed / total)}%"
+
+    def _on_tool(self, tool_name: str, summary: str) -> None:
+        self.runner.check_cancel()
+        label = self.TOOL_LABELS.get(tool_name, tool_name)
+        self.runner.state.phase = f"{label.lower()} {summary}"[:80]
+        console.print(f"  [accent]●[/accent] [bold]{label}[/bold] {escape(summary)}", highlight=False)
+        self._step(f"● {label} {summary}"[:100])
+
+    def _on_tool_result(self, tool_name: str, result: str) -> None:
+        first = (result.strip().splitlines() or [""])[0]
+        console.print(f"[dim]    ⎿ {escape(first[:140])}[/dim]", highlight=False)
+
+    def _on_todos(self, todos: list[dict]) -> None:
+        self.runner.state.todos = todos
+        done = sum(t.get("status") == "completed" for t in todos)
+        current = next((t.get("content", "") for t in todos if t.get("status") == "in_progress"), "")
+        console.print(
+            f"  [accent]●[/accent] [bold]Plan[/bold] {done}/{len(todos)} done" + (f" — now: {escape(current)}" if current else ""),
+            highlight=False,
+        )
+
+    def _on_answer_text(self, text: str) -> None:
+        # Collected, not streamed: run() prints it formatted once it's done.
+        self._answer += text
+        state = self.runner.state
+        state.answer_words = len(self._answer.split())
+        state.answer_chars = len(self._answer)
+        self.runner.note_event()
+
+    def _limit_tick(self, remaining: float) -> None:
+        self.runner.check_cancel()
+        self.runner.state.waiting_for = f"usage limit resets in {_human_duration(remaining)}"
+
+    def _sleep_until(self, reset_at):
+        try:
+            return super()._sleep_until(reset_at)
+        finally:
+            self.runner.state.waiting_for = ""
+
+    def approve(self, kind: str, title: str, detail: str) -> bool:
+        if _session.auto_approve or kind in _session.always_allow:
+            self._print_change(kind, title, detail)
+            return True
+        self._print_change(kind, title, detail)
+        answer = self.runner.ask(kind, title, detail)
+        if answer.always:
+            _session.always_allow.add(kind)
+        return answer.allowed
+
+    def close(self) -> None:
+        return
 
 
 class _SessionState:
@@ -1187,8 +1424,19 @@ class _SessionState:
         self.scratch: Scratchpad | None = None
         self.auto_approve = False
         self.always_allow: set[str] = set()
+        self.stream_output = False  # /stream on: print local output in full as well
+        self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
+        self.runner = None  # background.TaskRunner when the session runs tasks in the background
+
+    def make_activity(self, frontier_model: str):
+        """The display for a task: compressed and approval-by-handoff on the
+        background worker, the classic live one everywhere else."""
+        runner = self.runner
+        if runner is not None and threading.current_thread() is runner.thread:
+            return _BackgroundActivity(frontier_model, runner)
+        return _LiveActivity(frontier_model)
 
     def conversation_for(self, root: Path) -> Conversation:
         if self.conversation is None or self.root != root:
@@ -1330,7 +1578,28 @@ def _ask_trust(folder: Path) -> bool:
             return trust.apply_choice(folder, "yes")
         if answer == "2":
             return trust.apply_choice(folder, "no")
+        if answer:  # a question rather than a choice
+            console.print(
+                "Trusting a folder lets localforge read, create, change, move and delete files in it and run commands "
+                "there, on your behalf. It's asked once per folder because everything localforge does happens inside "
+                "it. Each individual change and command still asks you separately (unless you turn on /auto), and "
+                "nothing outside this folder is touched. Say 2 to leave without trusting it.",
+                highlight=False,
+            )
+            continue
         console.print("[warning]Type 1 or 2.[/warning]")
+
+
+def _run_in_background(task: str) -> None:
+    """The worker thread's job: the same `run` command a foreground task uses."""
+    try:
+        app(["run", task], standalone_mode=False)
+    except typer.Exit:
+        pass
+    except Exception as exc:  # noqa: BLE001 - reported, then the queue carries on
+        console.print(f"[error]Error:[/error] {escape(str(exc))}")
+    finally:
+        console.print()
 
 
 def _start_session() -> bool:
@@ -1342,14 +1611,63 @@ def _start_session() -> bool:
     return _choose_orchestrator_at_start()
 
 
+def _ask_number(prompt: str, count: int) -> int | None:
+    """A 1..count choice, re-asked until valid; no default. None if the user
+    backs out with Ctrl+C / Ctrl+D."""
+    _drain_buffered_input()
+    while True:
+        try:
+            answer = console.input(f"{prompt} (1-{count}): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print()
+            return None
+        if answer.isdigit() and 1 <= int(answer) <= count:
+            return int(answer)
+        console.print(f"[warning]Type a number from 1 to {count}.[/warning]")
+
+
+def _current_is_usable(current: str, choices: list[tuple[str, str, dict]]) -> bool:
+    """The saved orchestrator can still run here: it's among the choices
+    (a downloaded local model, a cloud model with a key/login), or it's a
+    custom cloud model id whose provider is set up."""
+    if not current:
+        return False
+    if any(model_id == current for model_id, _, _ in choices):
+        return True
+    if _is_local_model(current):
+        return False  # not downloaded (any more)
+    provider = _cloud_provider(current)
+    env_var = FRONTIER_PROVIDERS.get(provider) if provider else None
+    return bool(
+        (env_var and os.environ.get(env_var))
+        or (provider and provider in config.FRONTIER_CLI_AUTH and cli_transport.available(provider))
+    )
+
+
 def _choose_orchestrator_at_start() -> bool:
-    """Every new session asks which orchestrator to use (the user's choice:
-    a new window shouldn't silently reuse yesterday's). A number is
-    required -- no default, matching setup's menus. Returns False if the
-    user backs out (Ctrl+C / Ctrl+D), which ends the session.
-    """
+    """Every new session confirms the orchestrator. With a usable one from
+    last time, it's a short "keep it, or choose another?"; the full list
+    only comes up when asked for, or when there's nothing usable to keep.
+    Numbered, no default. Returns False if the user backs out (Ctrl+C / Ctrl+D),
+    which ends the session."""
     current = os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or ""
     choices = _model_choices()
+
+    if _current_is_usable(current, choices):
+        label = _orchestrator_label(current, _cli_provider_for(current, explicit=False))
+        console.print(f"[bold]Orchestrator from last time:[/bold] {escape(label)}")
+        console.print("  1) Keep using it\n  2) Choose a different model")
+        answer = _ask_number("Choose", 2)
+        if answer is None:
+            return False
+        if answer == 1:
+            _session.announced = True  # just confirmed; don't repeat it on the first task
+            _session.conversation_for(Path.cwd().resolve())
+            console.print()
+            return True
+    elif current:
+        console.print(f"[warning]{escape(current)} from last time isn't available here any more.[/warning]")
+
     if not choices:
         console.print(
             "[warning]No orchestrator is available yet: no models in Ollama and no cloud key or login.[/warning] "
@@ -1360,20 +1678,14 @@ def _choose_orchestrator_at_start() -> bool:
     for i, (model_id, label, _) in enumerate(choices, 1):
         last = "  [dim](last used)[/dim]" if model_id == current else ""
         console.print(f"  {i}) {escape(label)}{last}", highlight=False)
-    _drain_buffered_input()
-    while True:
-        try:
-            answer = console.input(f"Choose 1-{len(choices)}: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print()
-            return False
-        if answer.isdigit() and 1 <= int(answer) <= len(choices):
-            model_id, _, auth = choices[int(answer) - 1]
-            _set_orchestrator(model_id, auth)
-            _session.conversation_for(Path.cwd().resolve())
-            console.print()
-            return True
-        console.print(f"[warning]Type a number from 1 to {len(choices)}.[/warning]")
+    answer = _ask_number("Choose", len(choices))
+    if answer is None:
+        return False
+    model_id, _, auth = choices[answer - 1]
+    _set_orchestrator(model_id, auth)
+    _session.conversation_for(Path.cwd().resolve())
+    console.print()
+    return True
 
 
 @app.command(name="model")
@@ -1518,6 +1830,154 @@ def scratch(
 
 
 @app.command()
+def summary() -> None:
+    """What's happening right now: the task, which model is doing what, the plan, the queue."""
+    runner = _session.runner
+    if runner is None:
+        console.print("Nothing is running in the background (tasks run in the foreground here).")
+        return
+    for line in runner.summary():
+        console.print(escape(line), highlight=False)
+
+
+@app.command(name="queue")
+def queue_command(
+    action: str = typer.Argument(None, help="Omit to list queued tasks; `clear` to drop them."),
+) -> None:
+    """Tasks waiting behind the current one."""
+    runner = _session.runner
+    if runner is None or not runner.queue:
+        console.print("The queue is empty. Type a task while one is running to queue it.")
+        return
+    if action == "clear":
+        runner.queue.clear()
+        console.print("[success]✓[/success] Queue cleared.")
+        return
+    for i, task in enumerate(runner.queue, 1):
+        console.print(f"  {i}. {escape(task)}", highlight=False)
+
+
+@app.command()
+def stop() -> None:
+    """Stop the running task (queued tasks then continue)."""
+    runner = _session.runner
+    if runner is None or not runner.cancel():
+        console.print("Nothing is running.")
+        return
+    console.print("[warning]Stopping…[/warning] it will stop at its next step.")
+
+
+@app.command()
+def tell(note: list[str] = typer.Argument(None, help="A note for the running task.")) -> None:
+    """Add a note to the running task; the orchestrator sees it at its next step."""
+    text = " ".join(note or []).strip()
+    runner = _session.runner
+    if not text:
+        console.print("[error]What should I tell it?[/error] /tell <note>")
+        raise typer.Exit(code=1)
+    if runner is None or not runner.tell(text):
+        console.print("Nothing is running — just type it as a new task.")
+        return
+    console.print("[success]✓[/success] It'll see that at its next step.")
+
+
+WHAT_IT_MEANS = {
+    "write": (
+        "A local model wrote this file and localforge is asking before saving it. The diff above is the whole change, "
+        "nothing else is touched. Say no and the file stays exactly as it is; the orchestrator is told you declined "
+        "and can try something else."
+    ),
+    "delete": (
+        "This would remove the listed file(s) from your project for good — localforge has no undo, so if they aren't "
+        "in git they're gone. Say no and nothing is removed."
+    ),
+    "command": (
+        "This runs that exact command in your project folder, with your permissions. A shell command can do anything "
+        "you can do (including reaching outside the folder), which is why every one is shown first. Say no and it "
+        "isn't run."
+    ),
+    "download": (
+        "No installed model fits this kind of work, so this would download one from Ollama — a real download of "
+        "roughly the size shown, onto your disk. Say no and the orchestrator has to manage with what's installed."
+    ),
+}
+
+
+def _explain_request(approval) -> list[str]:
+    """Why localforge is asking, in plain terms -- from what we know, so it's
+    instant and costs nothing."""
+    if approval is None:
+        return ["Nothing is waiting for an answer right now."]
+    lines = [f"[bold]{escape(approval.title)}[/bold]", WHAT_IT_MEANS.get(approval.kind, "localforge needs your go-ahead for this.")]
+    runner = _session.runner
+    if runner is not None and runner.busy:
+        state = runner.state
+        lines.append(f"It came up while working on: {escape(state.task)}")
+        if state.steps:
+            lines.append("Just before this: " + escape("; ".join(list(state.steps)[-3:])))
+    lines.append("[dim]Answer with (y)es, (n)o, or (a)lways for this kind — or ask another question.[/dim]")
+    return lines
+
+
+def _answer_with_local_model(question: str, approval) -> tuple[str, str] | None:
+    """A short answer from a local model (free, and it's idle while the task
+    waits). Skipped when no local model is installed."""
+    dispatcher = _memory_dispatcher()
+    entry = memory.keeper(dispatcher)
+    if entry is None or approval is None:
+        return None
+    state = _session.runner.state if _session.runner is not None else None
+    prompt = (
+        "You are helping someone decide whether to approve a change a coding assistant wants to make. "
+        "Answer their question in two or three sentences, plainly, using only the details below. "
+        "Don't invent anything; if the details don't answer it, say so.\n\n"
+        f"Request: {approval.title} ({approval.kind})\n"
+        f"Details:\n{(approval.detail or '')[:2000]}\n"
+        f"Task being worked on: {getattr(state, 'task', 'unknown')}\n\n"
+        f"Their question: {question}"
+    )
+    try:
+        from localforge.backends import BACKENDS
+
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt)
+    except Exception:  # noqa: BLE001 - an explanation is never worth an error
+        return None
+    text = str(result.get("content") or "").strip()
+    return (text, entry.name) if text else None
+
+
+def explain_to_user(question: str, approval) -> None:
+    """Handles a question typed at a permission prompt."""
+    for line in _explain_request(approval):
+        console.print(line, highlight=False)
+    if question.strip().lower().rstrip("?") not in ("why", "why this", "what", "explain", ""):
+        if answer := _answer_with_local_model(question, approval):
+            text, model = answer
+            console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (local)", border_style="panel.border"))
+
+
+@app.command()
+def why() -> None:
+    """Explain what localforge is asking you to approve, and why."""
+    approval = _session.runner.approval if _session.runner is not None else None
+    for line in _explain_request(approval):
+        console.print(line, highlight=False)
+
+
+@app.command()
+def stream(
+    state: str = typer.Argument(None, help="on or off; omit to toggle."),
+) -> None:
+    """Print local models' output in full as they write (off by default: the
+    status line shows the last few lines instead)."""
+    _session.stream_output = state == "on" if state in ("on", "off") else not _session.stream_output
+    if _session.stream_output:
+        console.print("[warning]Streaming ON[/warning]: every line a local model writes is printed. /stream off to stop.")
+    else:
+        console.print("[success]Streaming off[/success]: the status line shows the last few lines as they're written.")
+
+
+@app.command()
 def auto(
     state: str = typer.Argument(None, help="on or off; omit to toggle."),
 ) -> None:
@@ -1532,6 +1992,15 @@ def auto(
         console.print("[success]Auto-approve off[/success]: you'll be asked before each change or command.")
 
 
+def _record_usage(frontier_model: str, stats) -> None:
+    """Keep this task in the project's usage history, so /usage can still
+    show it after the session ends. Never worth failing a task over."""
+    try:
+        usage_store.record(_session.root or Path.cwd().resolve(), _session.id, frontier_model, stats)
+    except OSError:
+        pass
+
+
 # (frontier model, stats) for every task run in this process. Usage is only
 # shown on request, so inside a session this is what /usage reads; a one-off
 # `localforge run` process has nothing to show later (use `run --usage`).
@@ -1540,19 +2009,47 @@ _session_usage: list[tuple[str, RunStats]] = []
 
 @app.command()
 def usage() -> None:
-    """Show token usage for the last task and this session so far."""
-    if not _session_usage:
+    """Token usage: the last task, this session, the previous session, and this project's total."""
+    root = _session.root or Path.cwd().resolve()
+    if _session_usage:
+        last_model, last_stats = _session_usage[-1]
+        _print_usage_panel(last_stats, last_model, title="Usage — last task")
+        if len(_session_usage) > 1:
+            _print_session_usage_panel(_session_usage)
+    else:
         console.print(
             "No tasks run in this session yet. For a one-off run, use "
             '[accent]localforge run --usage "..."[/accent].',
             highlight=False,
         )
-        return
 
-    last_model, last_stats = _session_usage[-1]
-    _print_usage_panel(last_stats, last_model, title="Usage — last task")
-    if len(_session_usage) > 1:
-        _print_session_usage_panel(_session_usage)
+    previous, total = usage_store.previous_session(root, _session.id), usage_store.all_time(root)
+    if not total.tasks:
+        return
+    table = Table(title=f"Usage history for {escape(root.name)}", title_justify="left")
+    for column in ("Span", "Tasks", "Local tokens", "Frontier tokens", "Cost"):
+        table.add_column(column, justify="right" if column != "Span" else "left")
+    if previous and previous.tasks:
+        table.add_row("Previous session", *_usage_row(previous))
+    table.add_row("This project, all time", *_usage_row(total))
+    console.print(table)
+    if total.local_tokens_generated and (saved := _savings_line(total.local_tokens_generated, total.models[0] if total.models else "")):
+        console.print("All time: " + saved, highlight=False)
+
+
+def _usage_row(totals) -> list[str]:
+    cost = []
+    if totals.frontier_cost_usd:
+        cost.append(f"${totals.frontier_cost_usd:.2f}")
+    if totals.subscription_cost_usd:
+        cost.append(f"~${totals.subscription_cost_usd:.2f} of subscription")
+    share = totals.local_tokens_generated * 100 // max(totals.local_tokens_generated + totals.frontier_total_tokens, 1)
+    return [
+        str(totals.tasks),
+        f"{totals.local_tokens_generated:,} ({share}%)",
+        f"{totals.frontier_total_tokens:,}",
+        " + ".join(cost) or "-",
+    ]
 
 
 def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
@@ -1577,6 +2074,8 @@ def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
         f"[warning]■[/warning] Frontier ({', '.join(models)}): {prompt} in + {completion} out = "
         f"{prompt + completion} tokens" + cost,
     ]
+    if len(models) == 1 and (saved := _savings_line(local, models[0])):
+        lines.append(saved)
     console.print(
         Panel("\n".join(lines), title=f"Usage — session ({len(entries)} tasks)", border_style="panel.border")
     )
@@ -1594,6 +2093,21 @@ def _frontier_cost_note(stats) -> str:
     return f" (${stats.frontier_cost_usd:.4f})"
 
 
+def _savings_line(local_tokens: int, frontier_model: str) -> str:
+    """What the local models' output would have cost if the orchestrator
+    had written it, at its own output price (LiteLLM's price table). Empty
+    when there's nothing to price (a local orchestrator, an unknown model)."""
+    if not local_tokens or _is_local_model(frontier_model):
+        return ""
+    try:
+        price = litellm.model_cost.get(frontier_model, {}).get("output_cost_per_token")
+    except Exception:  # noqa: BLE001 - an estimate is optional
+        price = None
+    if not price:
+        return ""
+    return f"[success]≈ ${local_tokens * price:.4f} saved[/success]: what {local_tokens} tokens of local output would have cost from {frontier_model}"
+
+
 def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None:
     usage_lines = [
         _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
@@ -1604,6 +2118,8 @@ def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None
         f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
         + _frontier_cost_note(stats),
     ]
+    if saved := _savings_line(stats.local_tokens_generated, frontier_model):
+        usage_lines.append(saved)
     console.print(Panel("\n".join(usage_lines), title=title, border_style="panel.border"))
 
 

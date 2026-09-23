@@ -20,6 +20,10 @@ from localforge.hardware import HardwareProfile
 DelegateCallback = Callable[[str, ModelEntry], None]
 
 
+class DownloadDeclined(RuntimeError):
+    """The user said no to downloading a model; never retried automatically."""
+
+
 @dataclass
 class ActivityHooks:
     """Optional callbacks so a caller can show a run's activity live. Every
@@ -46,6 +50,12 @@ class ActivityHooks:
     on_todos: Callable[[list[dict]], None] | None = None
     # each piece of the orchestrator's own answer text, as it's written
     on_answer_text: Callable[[str], None] | None = None
+    # notes the user added while the task runs (/tell), fetched each step
+    poll_notes: Callable[[], list[str]] | None = None
+    # the account hit a usage limit: return "retry" to try again (after
+    # waiting), ("switch", model, provider) to carry on with another
+    # orchestrator, or None to give up. Without this hook the run fails.
+    on_limit: Callable[[Exception], object] | None = None
 
 
 # Modality -> tool name + description. Each delegate tool takes
@@ -210,6 +220,12 @@ DIRECT_TOOLS = {
     },
 }
 
+# Context the dispatcher attaches for a local model (context_files), and how
+# much of a written file the orchestrator is shown back.
+MAX_CONTEXT_FILES = 8
+MAX_CONTEXT_CHARS = 60_000
+RESULT_PREVIEW_LINES = 12
+
 # Modalities whose models are interchangeable in a pinch: all produce text.
 TEXT_MODALITIES = ("coding", "docs", "general")
 
@@ -238,11 +254,25 @@ def build_tool_schemas(
             _schema(
                 meta["tool_name"],
                 meta["description"],
-                _params(
-                    ["instructions"],
-                    instructions=("string", "Everything the local model needs: it sees nothing else (no files, no internet)."),
-                    path=("string", "Optional file to write the result to, relative to the project."),
-                ),
+                {
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": "What to build or answer, and the constraints. Describe it -- never write the code yourself.",
+                        },
+                        "path": {"type": "string", "description": "Optional file to write the result to, relative to the project."},
+                        "context_files": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Project files the local model should see (e.g. an interface it must match, a module to "
+                                "summarize). localforge gives them to it directly -- you don't need to read them first."
+                            ),
+                        },
+                    },
+                    "required": ["instructions"],
+                },
             )
         )
     for name, meta in DIRECT_TOOLS.items():
@@ -384,7 +414,7 @@ class Dispatcher:
             approver = self.workspace.approver if self.workspace is not None else None
             size = f"about {entry.disk_gb:g} GB" if entry.disk_gb else "a large download"
             if approver is None or not approver("download", f"Download {entry.name}", f"{entry.name} ({size}) for {modality} work"):
-                raise RuntimeError(
+                raise DownloadDeclined(
                     f"{entry.name} isn't downloaded and the download wasn't approved; no {modality} model is available. "
                     "Tell the user, or use a different tool."
                 )
@@ -410,17 +440,50 @@ class Dispatcher:
         if tool_name in DIRECT_TOOLS:
             return self._direct(tool_name, args)
         modality = self._tool_name_to_modality(tool_name)
-        instructions = str(args.get("instructions") or "")
+        instructions = str(args.get("instructions") or "") + self._context_block(args.get("context_files"))
         path = args.get("path")
         if path:
             return self._delegate_to_file(modality, instructions, str(path), on_delegate)
         content, warning = self._delegate(modality, instructions, on_delegate)
         return f"{warning}\n\n{content}" if warning else content
 
+    def _context_block(self, paths) -> str:
+        """Files named in context_files, attached for the local model. They go
+        from disk straight to the local model: the orchestrator never reads
+        them, which is the point (reading them itself costs frontier tokens
+        twice -- once to read, again to paste them into instructions)."""
+        if not paths or self.workspace is None:
+            return ""
+        if isinstance(paths, str):
+            paths = [paths]
+        blocks, used = [], 0
+        for raw in list(paths)[:MAX_CONTEXT_FILES]:
+            try:
+                target = self.workspace.resolve(str(raw))
+                text = target.read_text(errors="replace")
+            except (WorkspaceError, OSError) as exc:
+                blocks.append(f"\n[context file {raw} unavailable: {exc}]")
+                continue
+            room = MAX_CONTEXT_CHARS - used
+            if room <= 0:
+                blocks.append(f"\n[context file {raw} left out: context limit reached]")
+                continue
+            if len(text) > room:
+                text = text[:room] + "\n[... cut to fit ...]"
+            used += len(text)
+            blocks.append(f"\n\nFile `{self.workspace.rel(target)}`:\n```\n{text}\n```")
+        return "\n\nReference files:" + "".join(blocks) if blocks else ""
+
     def _delegate(self, modality: str, instructions: str, on_delegate: DelegateCallback | None) -> tuple[str, str | None]:
-        """(content, warning or None), with one automatic retry on a suspect result."""
+        """(content, warning or None), with one automatic retry when the first
+        attempt errors (a crash, timeout, out of memory) or looks suspect."""
         entry = self.resolve(modality)
-        result = self._run(modality, entry, instructions, on_delegate)
+        try:
+            result = self._run(modality, entry, instructions, on_delegate)
+        except DownloadDeclined:
+            raise  # the user's decision, not a failure: asking again wouldn't help
+        except Exception as first_error:  # noqa: BLE001 - recover here before bothering the orchestrator
+            return self._recover(modality, entry, instructions, on_delegate, first_error)
         if result["type"] == "file":
             return f"[generated file: {result['content']}]", None
 
@@ -441,6 +504,35 @@ class Dispatcher:
             "or delegate again with clearer/simpler instructions]"
         )
 
+    def _recover(
+        self, modality: str, entry: ModelEntry, instructions: str, on_delegate: DelegateCallback | None, error: Exception
+    ) -> tuple[str, str | None]:
+        """The first attempt raised. Try once more -- another installed model
+        if there is one, else the same model told what went wrong -- and
+        only if that fails too, raise an error naming everything tried."""
+        retry_entry = self._retry_candidate(modality, entry) or entry
+        retry_instructions = (
+            instructions
+            if retry_entry is not entry
+            else f"{instructions}\n\n(A previous attempt at this failed with: {error}. Try again, keeping the answer focused.)"
+        )
+        try:
+            result = self._run(modality, retry_entry, retry_instructions, on_delegate)
+        except Exception as second_error:  # noqa: BLE001 - reported with both causes
+            tried = entry.name if retry_entry is entry else f"{entry.name}, then {retry_entry.name}"
+            raise RuntimeError(
+                f"the local {modality} model failed twice (tried {tried}). First: {error}. Then: {second_error}"
+            ) from second_error
+        if result["type"] == "file":
+            return f"[generated file: {result['content']}]", None
+        reason = _looks_suspect(result["content"], instructions)
+        if reason is None:
+            return result["content"], None
+        return result["content"], (
+            f"[WARNING: this {modality} result may be unreliable ({reason}; an earlier attempt failed: {error}) "
+            "-- verify before use, or delegate again with clearer/simpler instructions]"
+        )
+
     def _delegate_to_file(self, modality: str, instructions: str, path: str, on_delegate: DelegateCallback | None) -> str:
         if self.workspace is None:
             return "No project folder is open, so nothing can be written; omit `path` to get the text back."
@@ -459,10 +551,19 @@ class Dispatcher:
         content, warning = self._delegate(modality, brief, on_delegate)
         if warning:
             return f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}"
-        result = self.workspace.write_file(rel, _extract_file_content(content))
+        written = _extract_file_content(content)
+        result = self.workspace.write_file(rel, written)
         if self.hooks.on_tool_result is not None:
             self.hooks.on_tool_result("write", result.splitlines()[0])
-        return result
+        if not result.startswith(("Created ", "Updated ")):
+            return result
+        # The user saw the full diff when approving. The orchestrator gets a
+        # summary and a short preview -- every line it's handed is paid for
+        # again on each later step -- and can read_file to check more.
+        lines = written.splitlines()
+        preview = "\n".join(lines[:RESULT_PREVIEW_LINES])
+        more = f"\n[... {len(lines) - RESULT_PREVIEW_LINES} more lines; read_file {rel} if you need to check them]" if len(lines) > RESULT_PREVIEW_LINES else ""
+        return f"{result.splitlines()[0]}\nFirst lines:\n{preview}{more}"
 
     def _direct(self, tool_name: str, args: dict) -> str:
         """A tool the orchestrator runs itself. Failures come back as text so

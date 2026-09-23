@@ -15,6 +15,7 @@ among others) have no tool-calling template in Ollama at all. Ollama's
 from __future__ import annotations
 
 import json
+import os
 import re
 
 import httpx
@@ -26,7 +27,17 @@ from localforge.backends.ollama import OLLAMA_BASE_URL, OllamaBackend
 PREFIXES = ("ollama/", "ollama_chat/")
 # Ollama's default context (2-4k tokens) would silently cut off the tool list
 # and history; the orchestrator prompt needs far more.
-NUM_CTX = 16384
+# Ollama silently drops whatever doesn't fit the context window, and the
+# model then reads a spliced-together prompt as if it were real (reported:
+# read_file results "coming back corrupted", line 1535 spliced into line
+# 1276, so the orchestrator re-read the same files and refused to write).
+# So: size the window to the prompt, and if the prompt is bigger than the
+# model can hold, trim it here -- visibly -- instead.
+MIN_NUM_CTX = 8192
+MAX_NUM_CTX_ENV_VAR = "LOCALFORGE_LOCAL_CONTEXT"
+DEFAULT_MAX_NUM_CTX = 32768
+CHARS_PER_TOKEN = 3  # code packs tighter than prose; erring small keeps us inside the window
+RESERVED_TOKENS = 1024  # room for the reply
 TIMEOUT = 600.0
 # Below this, open-weight models tend to misread the task as orchestrators
 # (seen live: gemma3:4b answered "hi" by creating a README).
@@ -96,6 +107,64 @@ def model_name(frontier_model: str) -> str:
     return frontier_model
 
 
+def max_context() -> int:
+    try:
+        return max(MIN_NUM_CTX, int(os.environ.get(MAX_NUM_CTX_ENV_VAR, DEFAULT_MAX_NUM_CTX)))
+    except ValueError:
+        return DEFAULT_MAX_NUM_CTX
+
+
+def _estimate_tokens(text: str) -> int:
+    return len(text) // CHARS_PER_TOKEN + 1
+
+
+def fit_to_context(messages: list[dict], render, budget_tokens: int) -> tuple[str, int]:
+    """(prompt, trimmed count) for a prompt that fits `budget_tokens`.
+
+    Oldest tool results are shortened first (they're the bulk: file reads,
+    command output), and the model is told that happened, so it can read
+    something again instead of trusting a half-truncated copy.
+    """
+    prompt = render(messages)
+    if _estimate_tokens(prompt) <= budget_tokens:
+        return prompt, 0
+    trimmed, working = 0, [dict(m) for m in messages]
+    for message in working:
+        if _estimate_tokens(render(working)) <= budget_tokens:
+            break
+        content = str(message.get("content") or "")
+        if message.get("role") == "tool" and len(content) > 200:
+            message["content"] = content[:200] + f"\n[... {len(content) - 200} characters trimmed to fit this model's context]"
+            trimmed += 1
+    while _estimate_tokens(render(working)) > budget_tokens and len(working) > 2:
+        # still too big: drop the oldest turn (after the system message)
+        del working[1]
+        trimmed += 1
+    prompt = render(working)
+    prompt, clamped = _clamp(prompt, budget_tokens)
+    trimmed += clamped
+    if trimmed:
+        prompt += (
+            f"\n\n[localforge: {trimmed} earlier item(s) were trimmed so this prompt fits the model's context. "
+            "Anything you need in full, fetch again (read_file with an offset, or a narrower search).]"
+        )
+    return prompt, trimmed
+
+
+def _clamp(prompt: str, budget_tokens: int) -> tuple[str, int]:
+    """Last resort: one message can be bigger than the whole window on its
+    own. Cut its middle, keeping the start (the instructions and tools) and
+    the end (the newest turn) -- and say so, rather than letting Ollama cut
+    it invisibly."""
+    limit = budget_tokens * CHARS_PER_TOKEN
+    if len(prompt) <= limit:
+        return prompt, 0
+    marker = "\n[... middle cut to fit this model's context ...]\n"
+    room = limit - len(marker)
+    head = room // 3
+    return prompt[:head] + marker + prompt[len(prompt) - (room - head) :], 1
+
+
 def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_text=None) -> cli_transport.CLIResponse:
     """One orchestration turn on a local model. With `on_text`, the reply is
     streamed and the final answer's text is passed on as it's written."""
@@ -108,13 +177,17 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
     except Exception as exc:  # noqa: BLE001 - reported with a clear next step
         raise LocalOrchestratorError(f"Could not get {name} from Ollama: {exc}") from exc
 
-    prompt = cli_transport._render_prompt(messages, tools)
+    budget = max_context() - RESERVED_TOKENS
+    prompt, trimmed = fit_to_context(messages, lambda msgs: cli_transport._render_prompt(msgs, tools), budget)
+    # Ask for exactly as much context as this prompt needs (capped): too
+    # small silently corrupts it, too large wastes memory on the user's machine.
+    num_ctx = min(max_context(), max(MIN_NUM_CTX, _estimate_tokens(prompt) + RESERVED_TOKENS))
     body = {
         "model": name,
         "messages": [{"role": "user", "content": prompt}],
         "stream": on_text is not None,
         "format": "json",
-        "options": {"num_ctx": NUM_CTX},
+        "options": {"num_ctx": num_ctx},
     }
     try:
         with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
