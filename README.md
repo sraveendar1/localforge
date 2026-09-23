@@ -77,6 +77,16 @@ and code before anything touches a real file. Moving a draft into the project
 shows you the diff first. It's deleted when the session ends (`/scratch` shows
 what's in it).
 
+**`localforge init`:** like Claude Code's `/init`, this writes a project
+brief — `LOCALFORGE.md`: what the project is, how it's built, how to run and
+test it, and the decisions worth keeping. A **local** model writes it, from
+the project itself plus what localforge remembers of your sessions, and you
+approve the diff like any other change. Every later session starts with it,
+so the frontier model doesn't pay to rediscover your project each time. After
+a session that changed files, the local model drafts an update and tells you;
+`/init` reviews it, `/init --refresh` rewrites from scratch. If your project
+already has a `CLAUDE.md` or `AGENTS.md`, that's used instead.
+
 **Memory:** like Claude Code, localforge keeps memory per project, outside
 the project: remembered facts (your preferences, decisions, pointers) and a
 summary of where the last session left off. Tell it "remember that…" and it
@@ -109,10 +119,12 @@ and anvil working away, the model doing the work, how long it's been, a
 running token count, and, if a step goes quiet, how long for:
 
 ```
-        🔨 ⚒️ Forging with qwen2.5-coder:7b… (2m 14s · ↓ 3.1k tokens · writing app.py, 41 tok/s) │ /summary · /stop
+localforge> add a health endpoint
+  → coding → qwen2.5-coder:7b (local)
+          ⠴ Forging with qwen2.5-coder:7b… (5s · ↓ 62 tokens · working on coding, 12 tok/s) │ /summary · /stop
+  │     app = FastAPI()
   │     @app.get("/health")
-  │     def health():
-  │         return {"ok": Tr
+localforge>
 ```
 
 The last few lines the local model is writing show under it, so you can watch

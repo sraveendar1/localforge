@@ -22,7 +22,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
+from localforge import brief, cli_transport, config, local_transport, memory, repl, theme, trust, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -1127,6 +1127,10 @@ class _LiveActivity:
                 text = f"[dim strike]{text}[/dim strike]"
             console.print(f"      {mark} {text}", highlight=False)
 
+    def _note_change(self, kind: str, allowed: bool) -> None:
+        if allowed and kind in ("write", "delete"):
+            _session.files_changed += 1
+
     def approve(self, kind: str, title: str, detail: str) -> bool:
         """Claude-Code-style permission prompt: show the diff or command, then
         yes / no / always (for this kind, this session). Without a terminal
@@ -1135,6 +1139,7 @@ class _LiveActivity:
         self._stop_spinner()
         if _session.auto_approve or kind in _session.always_allow:
             self._print_change(kind, title, detail)
+            self._note_change(kind, True)
             return True
         self._print_change(kind, title, detail)
         if not sys.stdin.isatty():
@@ -1146,11 +1151,13 @@ class _LiveActivity:
             # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
             answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
             if answer in ("y", "yes"):
+                self._note_change(kind, True)
                 return True
             if answer in ("n", "no"):
                 return False
             if answer in ("a", "always"):
                 _session.always_allow.add(kind)
+                self._note_change(kind, True)
                 return True
 
     def _print_change(self, kind: str, title: str, detail: str) -> None:
@@ -1363,11 +1370,13 @@ class _BackgroundActivity(_LiveActivity):
     def approve(self, kind: str, title: str, detail: str) -> bool:
         if _session.auto_approve or kind in _session.always_allow:
             self._print_change(kind, title, detail)
+            self._note_change(kind, True)
             return True
         self._print_change(kind, title, detail)
         answer = self.runner.ask(kind, title, detail)
         if answer.always:
             _session.always_allow.add(kind)
+        self._note_change(kind, answer.allowed)
         return answer.allowed
 
     def close(self) -> None:
@@ -1386,6 +1395,7 @@ class _SessionState:
         self.always_allow: set[str] = set()
         self.stream_output = False  # /stream on: print local output in full as well
         self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
+        self.files_changed = 0  # approved writes/deletes, so the exit hook knows if the brief is stale
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
         self.runner = None  # background.TaskRunner when the session runs tasks in the background
@@ -1717,11 +1727,31 @@ def _save_memory_at_exit() -> None:
             return
         try:
             memory.extract_facts(conversation, dispatcher, root, activity.hooks())  # before compact trims the turns
+            _draft_brief_update(root, dispatcher, activity)
             memory.compact(conversation, dispatcher, activity.hooks(), keep_recent_turns=0, root=root)
         finally:
             activity.close()
     finally:
         _session.drop_scratchpad()
+
+
+def _draft_brief_update(root: Path, dispatcher, activity) -> None:
+    """After a session that changed files, have the keeper draft an updated
+    brief and leave it pending. Never written to the project here: the user
+    reviews it with /init, like any other change."""
+    current = brief.existing_brief(root)
+    keeper = memory.keeper(dispatcher)
+    if not current or not _session.files_changed or keeper is None:
+        return
+    workspace = Workspace(root, scratch=_session.scratch.root if _session.scratch else None)
+    try:
+        context = brief.gather_context(workspace, memory.load(root), memory.facts_for_prompt(root))
+        text = brief.draft(keeper, context, current)
+    except Exception:  # noqa: BLE001 - an optional nicety at exit
+        return
+    if text and text.strip() != current.strip():
+        brief.save_pending(root, text)
+        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE} — run /init next time to review it.[/dim]")
 
 
 @app.command(name="memory")
@@ -1915,6 +1945,58 @@ def explain_to_user(question: str, approval) -> None:
         if answer := _answer_with_local_model(question, approval):
             text, model = answer
             console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (local)", border_style="panel.border"))
+
+
+@app.command()
+def init(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the brief from scratch instead of updating it."),
+) -> None:
+    """Write (or update) LOCALFORGE.md: what this project is, for every future session.
+
+    A local model reads the project and what localforge remembers, and drafts
+    it; you see the diff and approve it like any other change.
+    """
+    folder = Path.cwd().resolve()
+    if not trust.is_trusted(folder) and not _ask_trust(folder):
+        console.print("Not trusted — nothing written.")
+        raise typer.Exit(code=1)
+
+    activity = _session.make_activity("local model")
+    dispatcher = _memory_dispatcher(activity.hooks())
+    keeper = memory.keeper(dispatcher)
+    if keeper is None:
+        console.print(
+            "[error]No local model is available to write the brief.[/error] "
+            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /init again."
+        )
+        raise typer.Exit(code=1)
+
+    workspace = Workspace(folder, approver=activity.approve, scratch=_session.scratchpad_for(folder).root)
+    current = "" if refresh else brief.existing_brief(folder)
+    pending = "" if refresh else brief.take_pending(folder)
+    if pending:
+        console.print("[dim]Using the update drafted at the end of the last session.[/dim]")
+        text = pending
+    else:
+        console.print(f"[dim]Reading the project with {escape(keeper.name)} (local)…[/dim]")
+        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder))
+        try:
+            text = brief.draft(keeper, context, current)
+        except Exception as exc:  # noqa: BLE001 - reported plainly, nothing written
+            console.print(f"[error]Couldn't write the brief:[/error] {escape(str(exc))}")
+            raise typer.Exit(code=1) from None
+        finally:
+            activity.close()
+    if not text:
+        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /init --refresh.[/warning]")
+        raise typer.Exit(code=1)
+
+    result = workspace.write_file(brief.BRIEF_FILE, text)
+    console.print(result.splitlines()[0])
+    if result.startswith(("Created ", "Updated ")):
+        if _session.conversation is not None:
+            _session.conversation.brief = brief.brief_for_prompt(folder)
+        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /init again to refresh it.[/dim]")
 
 
 @app.command()

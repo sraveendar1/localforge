@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import cli_transport, local_transport, memory
+from localforge import brief, cli_transport, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
@@ -200,11 +200,14 @@ class Conversation:
     memory: str = ""
     project_snapshot: str = ""
     facts: str = ""
+    brief: str = ""  # the project brief (LOCALFORGE.md), if the project has one
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
         if self.project_snapshot:
             content += "\n\n" + self.project_snapshot
+        if self.brief:
+            content += "\n\nProject brief (from the project itself; trust it over guesswork, and say so if it's wrong):\n" + self.brief
         if self.facts:
             content += "\n\nRemembered for this project:\n" + self.facts
         if self.memory:
@@ -259,6 +262,7 @@ def run(
         if not conversation.project_snapshot:
             conversation.project_snapshot = workspace.snapshot()
         conversation.facts = memory.facts_for_prompt(workspace.root)  # may have changed via remember/forget
+        conversation.brief = brief.brief_for_prompt(workspace.root)  # may have been written/edited since
     compact_at = memory.COMPACT_AT_CHARS_LOCAL if frontier_model.startswith(local_transport.PREFIXES) else memory.COMPACT_AT_CHARS
     if conversation.chars() > compact_at:
         memory.compact(conversation, dispatcher, hooks)
