@@ -105,3 +105,11 @@ def _fresh_local_windows():
     from localforge import local_transport
 
     local_transport._windows.clear()
+
+
+@pytest.fixture(autouse=True)
+def _fresh_trained_windows():
+    """OllamaBackend caches each model's trained context length per process."""
+    from localforge.backends import ollama
+
+    ollama._trained_context.clear()

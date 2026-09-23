@@ -12,7 +12,14 @@ from collections.abc import Callable
 from localforge import brief, verify, web
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
-from localforge.backends.ollama import MAX_OUTPUT_TOKENS, prompt_budget
+from localforge.backends.ollama import (
+    MAX_OUTPUT_TOKENS,
+    MIN_NUM_CTX,
+    LocalModelOutOfMemory,
+    LocalPromptTooLarge,
+    max_context,
+    prompt_budget,
+)
 from localforge.catalog import ModelEntry, best_match, candidates, context_limit, load_catalog
 from localforge.hardware import HardwareProfile
 
@@ -226,6 +233,21 @@ DIRECT_TOOLS = {
 MAX_CONTEXT_FILES = 8
 MAX_CONTEXT_CHARS = 60_000
 RESULT_PREVIEW_LINES = 12
+
+# A model that ran out of memory at some window size is given half of it for
+# a while (other apps may be holding memory); after this long, it's tried
+# at its full size again.
+SHRUNK_WINDOW_SECONDS = 15 * 60
+_shrunk_windows: dict[str, tuple[int, float]] = {}  # model -> (window, when)
+
+
+def _shrunk_window(name: str) -> int | None:
+    found = _shrunk_windows.get(name)
+    if found is None or time.monotonic() - found[1] > SHRUNK_WINDOW_SECONDS:
+        _shrunk_windows.pop(name, None)
+        return None
+    return found[0]
+
 
 # The fixed text wrapped around a delegated prompt (preface, notes).
 PROMPT_OVERHEAD = 500
@@ -450,8 +472,14 @@ class Dispatcher:
 
     def context_limit(self, entry: ModelEntry) -> int | None:
         """The context window `entry` can run with on this machine (None:
-        the default cap). Every prompt it's given is sized to fit this."""
-        return context_limit(entry, self.hardware)
+        the default cap). Every prompt it's given is sized to fit this: the
+        memory limit, the length the model was trained for (Ollama silently
+        caps the window there and cuts the prompt), and a smaller window
+        after it recently ran out of memory."""
+        backend = BACKENDS.get(entry.runtime)
+        trained = backend.trained_context(entry.name) if hasattr(backend, "trained_context") else None
+        limits = [x for x in (context_limit(entry, self.hardware), trained, _shrunk_window(entry.name)) if x]
+        return min(limits) if limits else None
 
     def grounding(self) -> str:
         """The brief's stack/commands/conventions, for every delegated task
@@ -542,6 +570,31 @@ class Dispatcher:
         if tool_name in DIRECT_TOOLS:
             return self._direct(tool_name, args)
         modality = self._tool_name_to_modality(tool_name)
+        try:
+            return self._dispatch_delegate(modality, args, on_delegate)
+        except LocalModelOutOfMemory as exc:
+            # Not enough memory for this window right now. Halve it, remember
+            # that for a while, and run the whole step again: the prompt is
+            # re-sized (reference files trimmed, and the orchestrator told).
+            entry = self.resolve(modality)
+            window = self.context_limit(entry) or max_context()
+            smaller = window // 2
+            short = (
+                "so memory is short on this machine right now (other apps, or another model still loaded). "
+                "Nothing was written. Tell the user: closing other apps, or /upgrade to a model that fits, would help."
+            )
+            if smaller < MIN_NUM_CTX:
+                raise LocalModelOutOfMemory(f"{exc}. It doesn't fit even with the smallest context window, {short}") from None
+            _shrunk_windows[entry.name] = (smaller, time.monotonic())
+            if self.hooks.on_tool is not None:
+                self.hooks.on_tool("retry", f"{entry.name} didn't fit in memory with a {window:,}-token window; retrying with {smaller:,}")
+            try:
+                result = self._dispatch_delegate(modality, args, on_delegate)
+            except LocalModelOutOfMemory as again:
+                raise LocalModelOutOfMemory(f"{again}. It still didn't fit with half the context window ({smaller:,} tokens), {short}") from None
+            return _with_notes(result, [f"{entry.name} ran with a {smaller:,}-token context window because memory was short ({exc})"])
+
+    def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:
         instructions = str(args.get("instructions") or "")
         path = args.get("path")
         if path:
@@ -596,8 +649,11 @@ class Dispatcher:
         entry = self.resolve(modality)
         try:
             result = self._run(modality, entry, instructions, on_delegate)
-        except DownloadDeclined:
-            raise  # the user's decision, not a failure: asking again wouldn't help
+        except (DownloadDeclined, LocalModelOutOfMemory, LocalPromptTooLarge):
+            # The user's decision, or a size problem: the same prompt would
+            # fail the same way. Memory is handled in dispatch() with a
+            # smaller window; a too-large prompt goes to the orchestrator.
+            raise
         except Exception as first_error:  # noqa: BLE001 - recover here before bothering the orchestrator
             return self._recover(modality, entry, instructions, on_delegate, first_error)
         if result["type"] == "file":

@@ -166,6 +166,8 @@ def test_ollama_generate_streams_chunks_and_reads_final_token_count():
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path != "/api/generate":
+            return httpx.Response(200, json={"model_info": {}})  # the trained-window lookup
         requests.append(json.loads(request.content))
         return httpx.Response(200, content="\n".join(json.dumps(line) for line in lines).encode())
 
