@@ -65,3 +65,16 @@ def test_recommendations_covers_every_modality():
     recs = recommendations(hw, CATALOG)
     assert recs["coding"].name == "big-coder"
     assert recs["docs"].name == "only-docs"
+
+
+def test_recommendations_never_includes_internal_modalities():
+    """The judge model (tools.Dispatcher.judge()) is resolved directly, not
+    through recommendations() -- setup's plan+pull loop and /upgrade both
+    build their to-do list straight from this dict, so a modality left in
+    here would get silently offered and auto-downloaded, breaking "never
+    downloaded automatically" for the judge feature."""
+    catalog_with_judge = CATALOG + [
+        ModelEntry(name="judge-model", modality="judge", runtime="ollama", min_vram_gb=0, min_ram_gb=4, disk_gb=1, quality_tier=1)
+    ]
+    recs = recommendations(_big_gpu(), catalog_with_judge)
+    assert "judge" not in recs

@@ -13,6 +13,7 @@ import json
 from litellm import completion
 
 from localforge.catalog import (
+    INTERNAL_MODALITIES,
     ModelEntry,
     balanced_pick,
     candidates,
@@ -80,7 +81,11 @@ def recommend_models(
     """
     installed = installed or set()
     catalog = catalog if catalog is not None else load_catalog()
-    modalities = sorted({m.modality for m in catalog})
+    # INTERNAL_MODALITIES (e.g. "judge") are resolved directly by
+    # tools.Dispatcher, never through setup/the advisor: there's exactly one
+    # candidate anyway, so asking the frontier model to "pick" would just
+    # spend a tool-call round trip deciding nothing.
+    modalities = sorted({m.modality for m in catalog} - INTERNAL_MODALITIES)
 
     per_modality = {modality: candidates(modality, hardware, catalog, installed) for modality in modalities}
     choosable = {modality: entries for modality, entries in per_modality.items() if entries}

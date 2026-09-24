@@ -5,11 +5,13 @@ each tool call to the best-fitting local model via the matching backend.
 from __future__ import annotations
 
 import re
+import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
 from localforge import brief, verify, web
+from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
 from localforge.backends.ollama import (
@@ -431,6 +433,42 @@ _REFUSAL_MARKERS = (
 )
 
 
+# A dedicated judge model's verdict on whether a delegated result actually
+# satisfies its instructions -- a real semantic check, on top of (never
+# instead of) _looks_suspect()'s free heuristic above. Deliberately excludes
+# LOCAL_RULES/grounding/preferences: those are the writer's brief, and the
+# judge's only job is "does this fulfill the instructions," not restyling --
+# keeping the prompt small keeps the check cheap and fast on an 8B model.
+JUDGE_PROMPT = """You are checking another AI model's work before it reaches the model that
+assigned the task. You did not write this -- judge it strictly and briefly.
+
+Task it was given:
+{instructions}
+
+{file_line}Its output:
+{output}
+
+Does this fully do what the task asked, using only things that are actually there (no invented
+functions, files or APIs), with nothing the task required left out? Ignore style -- only
+completeness and correctness of intent.
+
+Reply with ONLY JSON: {{"pass": true or false, "reason": "one short sentence; if false, name
+the specific thing that's missing or wrong"}}"""
+
+# A judge call runs on a thread so it can overlap with verify.check() (see
+# _delegate_to_file) instead of adding its own latency on top. This caps how
+# long the caller waits for it before giving up and treating it as "no
+# verdict" -- an eval hiccup should never stall or fail an otherwise-fine task.
+JUDGE_TIMEOUT_SECONDS = 20.0
+# Kept small: the judge only needs enough of each to make the call, and a
+# huge instructions/output pair would otherwise blow its (small) context.
+JUDGE_INSTRUCTIONS_CHARS = 4000
+JUDGE_OUTPUT_CHARS = 6000
+
+
+_UNSET = object()
+
+
 def _looks_suspect(content: str, instructions: str) -> str | None:
     stripped = content.strip()
     if not stripped:
@@ -468,6 +506,8 @@ class Dispatcher:
         self._resolved_models: dict[str, ModelEntry] = {}
         self._grounding: str | None = None
         self._preferences: str | None = None
+        self._judge_entry: ModelEntry | None | object = _UNSET  # resolved once per run, like grounding()
+        self._last_delegate_model: str | None = None  # set by _run(); see its docstring
         # The last failing check (run_command matching a test/lint/build
         # pattern) not yet passed on to a delegation, so a re-delegation
         # after a test failure carries the exact error instead of the
@@ -529,6 +569,89 @@ class Dispatcher:
             self._preferences = memory.facts_for_local(self.workspace.root) if self.workspace is not None else ""
         return self._preferences
 
+    def judge(self, exclude: str | None = None) -> ModelEntry | None:
+        """The dedicated judge model (modality="judge" in the catalog,
+        e.g. atla/selene-mini -- specifically benchmarked as a judge, so
+        preferred), resolved once per run and cached, like grounding().
+        Never triggers its own download either way -- an eval feature is
+        not worth a surprise multi-GB pull.
+
+        When it isn't installed, falls back to a *different* already-installed
+        text model (coding/docs/general) -- same reasoning as resolve()'s
+        TEXT_MODALITIES stand-in: reusing what's on disk beats a fresh
+        download. `exclude` is the model that produced the output being
+        judged; deliberately never picked as its own judge -- self-grading
+        is exactly the bias a dedicated judge model exists to avoid, and on
+        the common single-local-model machine (see catalog.py's balanced
+        picks: often just one model fits at all) there's nothing else to
+        fall back to, so the check is skipped rather than run at a known
+        disadvantage on every single task. None whenever there's no other
+        installed model to judge with."""
+        if self._judge_entry is _UNSET:
+            fitting = candidates("judge", self.hardware, self.catalog, self.installed)
+            if self.installed is not None:
+                fitting = [c for c in fitting if c.name in self.installed]
+            self._judge_entry = max(fitting, key=lambda m: m.quality_tier) if fitting else None
+        if self._judge_entry is not None:
+            return self._judge_entry
+        if self.installed is None:
+            return None  # unknown what's on disk: never guess at a stand-in
+        stand_ins = [
+            m
+            for modality in TEXT_MODALITIES
+            for m in candidates(modality, self.hardware, self.catalog, self.installed)
+            if m.name in self.installed and m.name != exclude
+        ]
+        return max(stand_ins, key=lambda m: m.quality_tier) if stand_ins else None
+
+    def _judge_check(self, instructions: str, output: str, rel: str | None = None, exclude: str | None = None) -> str | None:
+        """A judge model's verdict on whether `output` actually satisfies
+        `instructions` -- a real semantic check, layered on top of (never
+        instead of) _looks_suspect()'s free heuristic, which still runs
+        unconditionally elsewhere. None when nothing installed can judge,
+        the call times out, or its reply doesn't parse as the expected
+        JSON -- never raises, since an eval hiccup must never fail a task
+        that was otherwise fine. A short, specific reason string when it
+        flagged something."""
+        entry = self.judge(exclude)
+        if entry is None:
+            return None
+        prompt = JUDGE_PROMPT.format(
+            instructions=instructions[:JUDGE_INSTRUCTIONS_CHARS],
+            file_line=f"File `{rel}`:\n" if rel else "",
+            output=output[:JUDGE_OUTPUT_CHARS],
+        )
+        try:
+            result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=self.context_limit(entry))
+        except Exception:  # noqa: BLE001 - see docstring
+            return None
+        self.local_tokens_generated += result.get("tokens", 0)
+        verdict = _extract_json(result.get("content", ""))
+        if not isinstance(verdict, dict) or verdict.get("pass") is not False:
+            return None
+        return str(verdict.get("reason") or "the judge model flagged this output").strip() or "the judge model flagged this output"
+
+    def _judge_check_async(
+        self, instructions: str, output: str, rel: str | None = None, exclude: str | None = None
+    ) -> Callable[[], str | None]:
+        """Starts the judge check on a thread and returns a function that
+        joins it. Lets a caller (see _delegate_to_file) do other local work
+        -- the syntax check -- while the judge call is in flight, instead of
+        paying its latency on top."""
+        holder: dict[str, str | None] = {}
+
+        def run() -> None:
+            holder["reason"] = self._judge_check(instructions, output, rel, exclude)
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+        def join() -> str | None:
+            thread.join(timeout=JUDGE_TIMEOUT_SECONDS)
+            return holder.get("reason")  # None if it's still not done or found nothing
+
+        return join
+
     def prompt_chars(self, modality: str, output_tokens: int = MAX_OUTPUT_TOKENS) -> int:
         """How much task text the model for `modality` can take beside its
         reply, after the fixed preamble (rules and project notes)."""
@@ -572,6 +695,12 @@ class Dispatcher:
         on_delegate = on_delegate or hooks.on_delegate
         if on_delegate is not None:
             on_delegate(modality, entry)
+        # Tracks whichever model actually produced the most recent attempt,
+        # so a judge check right after _delegate()/_delegate_to_file() can
+        # exclude the real writer -- not resolve()'s cached first-choice
+        # pick, which can differ after a crash-retry switches to another
+        # installed model (see _recover()).
+        self._last_delegate_model = entry.name
         backend = BACKENDS[entry.runtime]
         on_pull = (lambda event: hooks.on_pull(entry.name, event)) if hooks.on_pull else None
         if self.installed is not None and entry.name not in self.installed and entry.runtime == "ollama":
@@ -658,6 +787,17 @@ class Dispatcher:
         room = self.prompt_chars(modality) - len(instructions) - PROMPT_OVERHEAD
         context, notes = self._context_block(args.get("context_files"), room)
         content, warning = self._delegate(modality, instructions + context, on_delegate)
+        if not warning:
+            # Nothing else runs concurrently on this path (no file write, no
+            # syntax check to hide behind), so the judge call just adds its
+            # own short wait here instead of overlapping with something else.
+            # _last_delegate_model is whichever model actually produced
+            # `content` (not necessarily resolve()'s first-choice pick, if a
+            # crash-retry switched models) -- named here only to keep the
+            # judge (when it's a stand-in, not the dedicated model) from
+            # grading its own output.
+            if judge_reason := self._judge_check(instructions, content, exclude=self._last_delegate_model):
+                warning = f"[WARNING: the judge model flagged this result ({judge_reason}) -- verify before use, or delegate again with clearer/simpler instructions]"
         return _with_notes(f"{warning}\n\n{content}" if warning else content, notes)
 
     def _context_block(self, paths, room: int) -> tuple[str, list[str]]:
@@ -813,6 +953,13 @@ class Dispatcher:
                 notes,
             )
 
+        # Started now, joined just before the report is assembled: overlaps
+        # with the syntax check (and its retry, below) instead of adding its
+        # own wait on top of them. _last_delegate_model (set by _run(), not
+        # resolve()'s cached first-choice pick) is whichever model actually
+        # produced `written`, in case an earlier crash-retry switched models.
+        join_judge = self._judge_check_async(instructions, written, rel, exclude=self._last_delegate_model)
+
         # Check it parses before the user is asked about it. One free local
         # retry with the exact error; the paid orchestrator only hears about
         # it if the local model can't fix it.
@@ -828,6 +975,13 @@ class Dispatcher:
                 fixed = _extract_file_content(body)
                 if fixed is not None:
                     written = fixed
+                    # The fix changed what's actually being written, so the
+                    # first judge call (on the pre-fix content) is stale --
+                    # start a fresh one on the fixed content, overlapping
+                    # with this second syntax check the same way. The retry
+                    # may have run on a different model too, so re-read
+                    # _last_delegate_model rather than reuse the old exclude.
+                    join_judge = self._judge_check_async(instructions, written, rel, exclude=self._last_delegate_model)
                     language, error = verify.check(rel, written)
             if error or warning:
                 self._log_correction("syntax (still failing)", rel, error or warning)
@@ -837,19 +991,23 @@ class Dispatcher:
                     notes,
                 )
         checked = f"Syntax check: {language} parses." if language else ""
+        judge_reason = join_judge()  # by now it's had the whole syntax check (and any retry) to finish
 
         result = self.workspace.write_file(rel, written)
         if self.hooks.on_tool_result is not None:
             self.hooks.on_tool_result("write", result.splitlines()[0])
         if not result.startswith(("Created ", "Updated ")):
             return _with_notes(result, notes)
-        # The user saw the full diff when approving. The orchestrator gets a
-        # summary and a short preview -- every line it's handed is paid for
-        # again on each later step -- and can read_file to check more.
+        # The user saw the full diff when approving -- the write already
+        # happened either way, same as _looks_suspect()'s WARNING elsewhere
+        # never blocks a write, only flags it for the orchestrator to notice
+        # and re-delegate.
         lines = written.splitlines()
         preview = "\n".join(lines[:RESULT_PREVIEW_LINES])
         more = f"\n[... {len(lines) - RESULT_PREVIEW_LINES} more lines; read_file {rel} if you need to check them]" if len(lines) > RESULT_PREVIEW_LINES else ""
         report = [result.splitlines()[0]]
+        if judge_reason:
+            report.insert(0, f"[WARNING: the judge model flagged this file ({judge_reason}) -- verify before use, or delegate again with clearer/simpler instructions]")
         if checked:
             report.append(checked)
         if model_notes:

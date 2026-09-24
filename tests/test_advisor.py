@@ -40,3 +40,16 @@ def test_recommend_models_returns_none_for_modality_nothing_fits():
     recs = recommend_models(hw, "claude-opus-5", CATALOG)
     assert recs["coding"] is None
     assert recs["docs"] is None
+
+
+def test_recommend_models_never_asks_the_frontier_model_about_the_judge():
+    """There's exactly one judge candidate anyway, so asking the frontier
+    model to "pick" would just spend a tool-call round trip on setup
+    deciding nothing -- and it should never be offered for download here
+    regardless (see catalog.INTERNAL_MODALITIES)."""
+    catalog_with_judge = CATALOG + [
+        ModelEntry(name="judge-model", modality="judge", runtime="ollama", min_vram_gb=0, min_ram_gb=4, disk_gb=1, quality_tier=1)
+    ]
+    hw = HardwareProfile(os="Linux", arch="x86_64", cpu_cores=16, ram_gb=64, free_disk_gb=100, gpus=[])
+    recs = recommend_models(hw, "claude-opus-5", catalog_with_judge)
+    assert "judge" not in recs

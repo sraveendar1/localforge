@@ -207,16 +207,29 @@ def best_match(
     return balanced_pick(fitting, hardware)
 
 
+# Modalities that exist in the catalog purely for internal resolution
+# (tools.Dispatcher.judge()) and are never part of the ordinary
+# recommend/setup/upgrade flow: never suggested, never auto-pulled, never
+# spend a frontier tool-call deciding on (there's exactly one candidate
+# anyway). Left out here rather than filtered per call site, so nothing
+# downstream (setup's plan+pull, `localforge models`, /upgrade, the
+# advisor) has to remember to exclude it -- get it wrong once and setup
+# would print a "download" plan for it and then actually pull it, silently
+# breaking the "never downloaded automatically" guarantee.
+INTERNAL_MODALITIES = frozenset({"judge"})
+
+
 def recommendations(
     hardware: HardwareProfile,
     catalog: list[ModelEntry] | None = None,
     installed: set[str] | None = None,
 ) -> dict[str, ModelEntry | None]:
-    """Best-fit model per modality present in the catalog, or None if nothing fits.
-    See `best_match()` for what `installed` does.
+    """Best-fit model per modality present in the catalog (excluding
+    INTERNAL_MODALITIES), or None if nothing fits. See `best_match()` for
+    what `installed` does.
     """
     catalog = catalog if catalog is not None else load_catalog()
-    modalities = {m.modality for m in catalog}
+    modalities = {m.modality for m in catalog} - INTERNAL_MODALITIES
     result: dict[str, ModelEntry | None] = {}
     for modality in sorted(modalities):
         try:
