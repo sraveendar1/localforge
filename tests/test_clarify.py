@@ -10,7 +10,9 @@ import pytest
 from typer.testing import CliRunner
 
 import localforge.cli as cli_module
+import localforge.orchestrator as orch
 from localforge.background import Approval, TaskRunner
+from localforge.catalog import ModelEntry
 
 
 @pytest.fixture(autouse=True)
@@ -34,6 +36,7 @@ def _pending(kind="write", title="Update src/app.py", detail="--- a/src/app.py\n
 def _no_runner_afterwards():
     yield
     cli_module._session.runner = None
+    cli_module._session.conversation = None
 
 
 @pytest.mark.parametrize(
@@ -116,6 +119,51 @@ def test_the_repl_routes_questions_and_still_takes_answers():
     repl._read_eval(MagicMock(), MagicMock(), reader, runner)
     runner.ask_question.assert_called_once_with("why is this needed?")
     runner.answer.assert_called_once_with(True, always=False)
+
+
+def test_a_side_question_is_answered_from_cache_not_a_fresh_read(capsys):
+    """Reported: asking a question while a task runs just queues it. The
+    answer must come from what's already cached (brief/facts/memory), not
+    a fresh file read -- so it's instant and never competes with the
+    running task's own compute beyond the one generation call."""
+    runner = TaskRunner(lambda t: None)
+    runner._running = True
+    runner._begin("add a health endpoint")
+    cli_module._session.runner = runner
+    conversation = orch.Conversation(brief="Built with FastAPI.", facts="- never use print()", memory="Last time we added auth.")
+    cli_module._session.conversation = conversation
+
+    seen = {}
+
+    class Local:
+        def ensure_available(self, name, on_progress=None):
+            pass
+
+        def generate(self, name, prompt, on_token=None, **kw):
+            seen["prompt"] = prompt
+            return {"type": "text", "content": "This project is built with FastAPI.", "tokens": 8}
+
+    entry = ModelEntry(name="keeper", modality="general", runtime="stub", min_vram_gb=0, min_ram_gb=4, disk_gb=1, quality_tier=1)
+    with (
+        patch.object(cli_module.memory, "keeper", return_value=entry),
+        patch.dict("localforge.backends.BACKENDS", {"stub": Local()}),
+    ):
+        cli_module._answer_side_question("what is this project built with?")
+    out = " ".join(capsys.readouterr().out.replace("│", " ").split())
+    assert "built with FastAPI" in out and "keeper (local" in out
+    assert "Built with FastAPI." in seen["prompt"]  # the cached brief, not a fresh read
+    assert "never use print()" in seen["prompt"]
+    assert "Last time we added auth." in seen["prompt"]
+    assert "add a health endpoint" in seen["prompt"]  # the running task, for context
+
+
+def test_a_side_question_prints_nothing_without_a_local_model(capsys):
+    runner = TaskRunner(lambda t: None)
+    runner._running = True
+    cli_module._session.runner = runner
+    with patch.object(cli_module.memory, "keeper", return_value=None):
+        cli_module._answer_side_question("what does this do?")
+    assert capsys.readouterr().out == ""
 
 
 def test_the_trust_prompt_answers_questions_too(tmp_path, monkeypatch, capsys):

@@ -313,6 +313,69 @@ def test_the_repl_blocks_scratch_and_memory_mutations_while_busy_but_not_reads(m
     assert app.call_args_list.count(call(["memory", "clear"], standalone_mode=False)) == 0
 
 
+def test_a_question_typed_while_busy_is_answered_on_the_side_not_queued():
+    """Reported: asking a question while a task runs just queues it behind
+    the task instead of answering it. A plain question (detected by
+    _looks_like_a_question) is now handed to ask_side_question instead of
+    submit -- as long as there's a handler and a task is actually running."""
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    runner.ask_side_question.return_value = True
+    console = MagicMock()
+    reader = MagicMock()
+    reader.read.side_effect = ["what does the Dispatcher class do?", "add a README", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, console, reader, runner)
+    runner.ask_side_question.assert_called_once_with("what does the Dispatcher class do?")
+    runner.submit.assert_called_once_with("add a README")  # an ordinary task still queues
+
+
+def test_a_question_falls_back_to_the_queue_without_a_side_question_handler():
+    """ask_side_question returns False when there's no handler wired up (or
+    nothing is actually running) -- the input queues as an ordinary task,
+    same as before this feature existed."""
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    runner.ask_side_question.return_value = False
+    console = MagicMock()
+    reader = MagicMock()
+    reader.read.side_effect = ["why is main.py structured this way?", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, console, reader, runner)
+    runner.submit.assert_called_once_with("why is main.py structured this way?")
+
+
+def test_task_runner_ask_side_question_runs_the_handler_on_a_thread():
+    seen = []
+    done = threading.Event()
+
+    def handler(question):
+        seen.append(question)
+        done.set()
+
+    runner = TaskRunner(lambda task: None)
+    runner._running = True  # simulate a task already in progress
+    runner.side_question_handler = handler
+    assert runner.ask_side_question("what does this do?") is True
+    assert done.wait(timeout=2)
+    assert seen == ["what does this do?"]
+
+
+def test_task_runner_ask_side_question_is_false_without_a_handler_or_when_idle():
+    runner = TaskRunner(lambda task: None)
+    runner._running = True
+    assert runner.ask_side_question("why?") is False  # no handler set
+    runner.side_question_handler = lambda q: None
+    runner._running = False
+    assert runner.ask_side_question("why?") is False  # nothing running to answer alongside
+
+
 def test_the_repl_answers_approvals_from_the_prompt():
     from localforge import repl
 

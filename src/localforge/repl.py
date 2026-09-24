@@ -181,6 +181,25 @@ BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "ru
 # with no error surfaced, since the worker thread's failure path is silent).
 MUTATING_SUBCOMMANDS = {"memory": {"clear", "forget"}, "scratch": {"clear"}}
 HELP_COMMANDS = {"/help", "/?"}
+# Words that open a genuine question rather than an instruction -- used only
+# to decide whether input typed while a task is busy can be answered on the
+# side (see ask_side_question) instead of queued behind it. Imperfect by
+# design: getting this wrong just means a question waits in the queue like
+# before, never that a real task gets treated as a question.
+_QUESTION_WORDS = (
+    "what", "why", "how", "does", "is", "are", "can", "could", "should", "would",
+    "do", "did", "when", "where", "who", "which", "explain", "tell",
+)
+
+
+def _looks_like_a_question(text: str) -> bool:
+    stripped = text.strip()
+    if not stripped:
+        return False
+    if stripped.endswith("?"):
+        return True
+    first_word = stripped.split(None, 1)[0].lower().rstrip("?,.:;")
+    return first_word in _QUESTION_WORDS
 
 
 def _split(line: str) -> tuple[str, str]:
@@ -301,6 +320,9 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
             continue
         if runner is not None:
             if cmd == "run":
+                if runner.busy and _looks_like_a_question(remainder) and runner.ask_side_question(remainder):
+                    console.print("[dim]Answering that on the side (from what's already remembered), while the task keeps running…[/dim]")
+                    continue
                 position = runner.submit(remainder)
                 if position:
                     console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
