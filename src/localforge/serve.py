@@ -16,6 +16,9 @@ from localforge.scratchpad import Scratchpad
 from localforge.tools import ActivityHooks
 from localforge.workspace import Workspace
 
+import psutil
+from localforge.hardware import detect_hardware
+
 class Cancelled(Exception):
     """Raised from on_frontier to stop a run between rounds."""
 
@@ -52,6 +55,7 @@ class StdioServer:
         self._worker: threading.Thread | None = None
         self._pending: dict[str, tuple[threading.Event, list[str]]] = {}
         self._pending_lock = threading.Lock()
+        self._hardware: HardwareProfile | None = None
 
     def emit(self, event_type: str, **fields) -> None:
         with self._write_lock:
@@ -209,6 +213,57 @@ class StdioServer:
             self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy)
         elif message_type == "shutdown":
             return False
+        elif message_type == "system_stats":
+            if self._hardware is None:
+                self._hardware = detect_hardware()
+            cpu_percent = psutil.cpu_percent(interval=0.1)
+            vmem = psutil.virtual_memory()
+            ram_used_gb = round(vmem.used / (1024 ** 3), 2)
+            ram_total_gb = round(vmem.total / (1024 ** 3), 2)
+            gpus = [{'name': gpu.name, 'vram_gb': gpu.vram_gb, 'backend': gpu.backend} for gpu in self._hardware.gpus]
+            self.emit("hardware", os=self._hardware.os, arch=self._hardware.arch, cpu_cores=self._hardware.cpu_cores, ram_gb=ram_used_gb, free_disk_gb=self._hardware.free_disk_gb, gpus=gpus)
+        elif message_type == "doctor":
+            if self._hardware is None:
+                self._hardware = detect_hardware()
+            checks = [
+                {"name": "Ollama is running", "ok": OllamaBackend().is_running()},
+                {"name": "Frontier model configured", "ok": bool(os.environ.get(config.FRONTIER_MODEL_ENV_VAR))},
+                {"name": "Frontier API key present", "ok": any(os.environ.get(var) for var in FRONTIER_API_KEY_ENV_VARS)},
+                {"name": "Disk space", "ok": self._hardware.free_disk_gb > 10},
+            ]
+            self.emit("doctor", checks=checks)
+        elif message_type == "models":
+            if self._hardware is None:
+                self._hardware = detect_hardware()
+            installed = _installed_model_names(OllamaBackend())
+            recs = recommendations(self._hardware, installed=installed)
+
+            models = []
+            for modality, entry in recs.items():
+                if entry is None:
+                    models.append({"modality": modality, "name": "none fit this hardware", "runtime": "-", "quality_tier": "-", "installed": "no"})
+                else:
+                    on_disk = "[success]yes[/success]" if entry.name in installed else "no"
+                    models.append({"modality": modality, "name": entry.name, "runtime": entry.runtime, "quality_tier": str(entry.quality_tier), "installed": on_disk})
+
+            self.emit("models", models=models)
+        elif message_type == "installed":
+            ollama = OllamaBackend()
+            if not ollama.is_running():
+                self.emit("installed", ok=False, message="Ollama is not running.")
+            else:
+                installed_models = ollama.list_installed()
+                total_bytes = sum(m.get("size", 0) for m in installed_models)
+                models = [{"name": m["name"], "size_bytes": m.get("size", 0), "modified_at": str(m.get("modified_at", ""))[:19]} for m in installed_models]
+                self.emit("installed", models=models, total_bytes=total_bytes)
+        elif message_type == "catalog":
+            catalog_entries = load_catalog()
+            catalog = [{"name": entry.name, "runtime": entry.runtime, "modality": entry.modality, "quality_tier": str(entry.quality_tier)} for entry in catalog_entries]
+            self.emit("catalog", catalog=catalog)
+        elif message_type == "usage_history":
+            all_time_totals = usage_store.get_all_time_totals()
+            previous_session_totals = usage_store.get_previous_session_totals()
+            self.emit("usage_history", all_time_totals=all_time_totals, previous_session_totals=previous_session_totals)
         else:
             self.emit("error", message=f"Unknown message type: {message_type!r}")
         return True

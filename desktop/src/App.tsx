@@ -7,6 +7,7 @@ import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
 import { ModelPicker } from "./ModelPicker";
 import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
+import { SystemPanel } from "./SystemPanel";
 import type { ChatState } from "./state";
 import "./App.css";
 
@@ -58,6 +59,23 @@ function App() {
 
   const lastAssistant = chat.messages.map(m => m.role).lastIndexOf("assistant");
 
+  useEffect(() => {
+    if (chat.connected) {
+      send({ type: "get_state" });
+      send({ type: "memory_list" });
+      send({ type: "scratch_list" });
+    }
+  }, [chat.connected, send]);
+
+  useEffect(() => {
+    if (chat.connected) {
+      const interval = setInterval(() => {
+        send({ type: "system_stats" });
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [chat.connected, send]);
+
   return (
     <div className="flex h-full flex-col bg-mx-bg text-mx-mid">
       <header className="flex items-center gap-3 border-b border-mx-dim px-4 py-2">
@@ -72,7 +90,14 @@ function App() {
       <div className="flex min-h-0 flex-1">
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
-            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} />)}
+            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.messages.length === 0 ? (
+              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-mx-mid">
+                <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-bright glow">localforge</h1>
+                <p className="text-xs text-mx-dim">A frontier model plans. Local models do the writing.</p>
+                <p className="pt-3 text-sm text-mx-green">What are you building?</p>
+                <p className="max-w-md text-xs text-mx-dim">Describe the task in the box below. A plan appears on the right once the work has more than a couple of steps.</p>
+              </div>
+            ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} />)}
             <div ref={endRef} />
           </div>
           <ApprovalPanel approvals={chat.approvals} onDecide={decide} />
@@ -82,6 +107,7 @@ function App() {
           </div>
         </main>
         <aside className="w-72 shrink-0 space-y-4 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
+          <SystemPanel stats={chat.systemStats} />
           <UsagePanel usage={chat.usage} model={chat.model} />
           <TodoList todos={chat.todos} />
         </aside>

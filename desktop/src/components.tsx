@@ -92,7 +92,7 @@ export function TodoList({ todos }: { todos: Todo[] }) {
     <div>
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-mx-mid glow">Plan</h2>
       {todos.length === 0 ? (
-        <p className="text-xs text-mx-dim">No plan yet.</p>
+        <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>
       ) : (
         <ul className="space-y-1 text-sm">
           {todos.map((todo, i) => (

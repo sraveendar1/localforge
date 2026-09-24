@@ -22,6 +22,20 @@ def of_type(out, event_type):
     return [e for e in events(out) if e["type"] == event_type]
 
 
+def test_system_stats_request(tmp_path):
+    server, out = make_server(tmp_path)
+    server.handle({"type": "system_stats"})
+    stats = of_type(out, "system_stats")[0]
+    assert "hardware" in stats
+    assert "cpu_percent" in stats
+    assert "ram_used_gb" in stats
+    assert "ram_total_gb" in stats
+    assert isinstance(stats["hardware"], dict)
+    assert isinstance(stats["cpu_percent"], (int, float))
+    assert isinstance(stats["ram_used_gb"], (int, float))
+    assert isinstance(stats["ram_total_gb"], (int, float))
+
+
 def test_memory_list(tmp_path):
     server, out = make_server(tmp_path)
     server.handle({"type": "memory_list"})

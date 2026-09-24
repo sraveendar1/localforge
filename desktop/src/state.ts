@@ -5,6 +5,19 @@ export type Item = ToolItem | DelegateItem | NoteItem;
 export type Message = { role: "user" | "assistant" | "error"; text: string; items: Item[]; round?: number };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
+export type SystemStats = {
+  hardware: {
+    os: string;
+    arch: string;
+    cpu_cores: number;
+    ram_gb: number;
+    free_disk_gb: number;
+    gpus: any[];
+  };
+  cpuPercent: number;
+  ramUsedGb: number;
+  ramTotalGb: number;
+};
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -15,8 +28,27 @@ export type ChatState = {
   model: string;
   autoApprove: boolean;
   usage: Usage;
+  systemStats: SystemStats | null;
 };
-export const initialState: ChatState = { messages: [], approvals: [], todos: [], status: "", connected: false, running: false, model: "", autoApprove: false, usage: { frontierPromptTokens: 0, frontierCompletionTokens: 0, frontierCostUsd: 0, localTokensGenerated: 0, frontierViaSubscription: false, localModels: {} } };
+export const initialState: ChatState = {
+  messages: [],
+  approvals: [],
+  todos: [],
+  status: "",
+  connected: false,
+  running: false,
+  model: "",
+  autoApprove: false,
+  usage: {
+    frontierPromptTokens: 0,
+    frontierCompletionTokens: 0,
+    frontierCostUsd: 0,
+    localTokensGenerated: 0,
+    frontierViaSubscription: false,
+    localModels: {}
+  },
+  systemStats: null
+};
 
 // Apply fn to the last assistant message, returning a new array.
 function updateLastAssistant(messages: Message[], fn: (m: Message) => Message): Message[] {
@@ -132,6 +164,8 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
       return withStats(addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error")), ev.stats);
     case "settings":
       return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model };
+    case "system_stats":
+      return { ...state, systemStats: { hardware: ev.hardware ?? {}, cpuPercent: Number(ev.cpu_percent ?? 0), ramUsedGb: Number(ev.ram_used_gb ?? 0), ramTotalGb: Number(ev.ram_total_gb ?? 0) } };
     default:
       return state;
   }
@@ -157,3 +191,5 @@ export type Usage = {
   frontierViaSubscription: boolean;
   localModels: { [key: string]: { runs: number; tokens: number; active: boolean } };
 };
+
+
