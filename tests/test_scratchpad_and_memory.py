@@ -197,15 +197,18 @@ def test_unknown_types_fall_back_and_empty_facts_are_refused(project):
         memory.remember(project, "y", "   ")
 
 
-def test_memory_is_stored_outside_the_project(project):
+def test_memory_is_stored_in_the_project_and_kept_out_of_git(project):
     memory.remember(project, "a", "b")
     memory.save(project, "summary")
-    assert not any(p.suffix == ".md" for p in project.rglob("*"))
-    assert memory.project_dir(project).parent == cli_module.config.CONFIG_DIR / "projects"
+    folder = project.resolve() / ".localforge"
+    assert (folder / "session.md").is_file() and (folder / "memory" / "MEMORY.md").is_file()
+    assert (folder / ".gitignore").read_text().rstrip().endswith("*")  # git ignores the folder by default
+    assert not any(p.suffix == ".md" for p in project.rglob("*") if folder not in p.parents)  # nowhere else
+    assert not (cli_module.config.CONFIG_DIR / "projects").exists()
 
 
 def test_old_single_file_memory_is_migrated(project):
-    old = cli_module.config.CONFIG_DIR / "memory" / (memory.project_dir(project).name + ".md")
+    old = cli_module.config.CONFIG_DIR / "memory" / (memory._central_dir(project).name + ".md")
     old.parent.mkdir(parents=True)
     old.write_text("## Goal\nold summary\n")
     assert memory.load(project) == "## Goal\nold summary"
@@ -288,3 +291,34 @@ def test_resuming_mentions_summary_and_facts(project, monkeypatch, capsys):
     memory.save(project, "where we left off")
     conv = cli_module._SessionState().conversation_for(project)
     assert conv.memory == "where we left off" and "fact a" in conv.facts
+
+
+# --- memory moved into the project (asked for: "memory in the trusted folder makes a lot more sense") ---
+
+
+def test_memory_from_the_old_central_place_is_moved_in(project):
+    central = memory._central_dir(project)
+    (central / "memory").mkdir(parents=True)
+    (central / "session.md").write_text("## Goal\nfrom before\n")
+    (central / "usage.json").write_text("{}")
+    assert memory.load(project) == "## Goal\nfrom before"
+    folder = project.resolve() / ".localforge"
+    assert (folder / "usage.json").is_file() and (folder / ".gitignore").is_file()
+    assert not central.exists()
+
+
+def test_file_tools_cannot_touch_localforges_memory(project):
+    from localforge.workspace import Workspace, WorkspaceError
+
+    memory.remember(project, "prefers-tabs", "tabs")
+    ws = Workspace(project, lambda *a: True)
+    with pytest.raises(WorkspaceError, match="remember/forget"):
+        ws.resolve(".localforge/memory/MEMORY.md")
+    assert ".localforge" not in ws.list_files()  # and it isn't listed or searched
+
+
+def test_a_moved_project_keeps_its_memory(project, tmp_path_factory):
+    memory.remember(project, "prefers-tabs", "tabs, not spaces")
+    moved = tmp_path_factory.mktemp("elsewhere") / "renamed-project"
+    project.rename(moved)
+    assert "tabs, not spaces" in memory.facts_for_prompt(moved)

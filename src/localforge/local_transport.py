@@ -27,6 +27,7 @@ from localforge.backends.ollama import (
     MIN_NUM_CTX,
     OLLAMA_BASE_URL,
     OllamaBackend,
+    error_from,
     max_context,
 )
 
@@ -84,7 +85,8 @@ def _stream_chat(client: httpx.Client, body: dict, streamer: AnswerStreamer) -> 
     parts: list[str] = []
     final: dict = {}
     with client.stream("POST", "/api/chat", json=body) as resp:
-        resp.raise_for_status()
+        if (error := error_from(resp, body["model"])) is not None:
+            raise LocalOrchestratorError(str(error))
         for line in resp.iter_lines():
             if not line:
                 continue
@@ -127,7 +129,11 @@ def context_window(name: str) -> int:
         except Exception:  # noqa: BLE001 - sizing is best-effort; the default cap still protects the prompt
             _windows[name] = None
     limit = _windows[name]
-    return min(limit, max_context()) if limit else max_context()
+    # Never more than the model was trained for: Ollama would silently cap
+    # the window there and cut the prompt (a local orchestrator got 32k
+    # whatever the model was; an 8k-trained model lost most of it).
+    trained = OllamaBackend().trained_context(name)
+    return min(x for x in (limit, trained, max_context()) if x)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -210,7 +216,8 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
         with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
             if on_text is None:
                 resp = client.post("/api/chat", json=body)
-                resp.raise_for_status()
+                if (error := error_from(resp, name)) is not None:
+                    raise LocalOrchestratorError(str(error))
                 data = resp.json()
                 raw = str((data.get("message") or {}).get("content") or "")
             else:

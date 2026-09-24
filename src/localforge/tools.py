@@ -9,10 +9,17 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from localforge import web
+from localforge import brief, verify, web
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
-from localforge.backends.ollama import MAX_OUTPUT_TOKENS, prompt_budget
+from localforge.backends.ollama import (
+    MAX_OUTPUT_TOKENS,
+    MIN_NUM_CTX,
+    LocalModelOutOfMemory,
+    LocalPromptTooLarge,
+    max_context,
+    prompt_budget,
+)
 from localforge.catalog import ModelEntry, best_match, candidates, context_limit, load_catalog
 from localforge.hardware import HardwareProfile
 
@@ -227,6 +234,41 @@ MAX_CONTEXT_FILES = 8
 MAX_CONTEXT_CHARS = 60_000
 RESULT_PREVIEW_LINES = 12
 
+# A model that ran out of memory at some window size is given half of it for
+# a while (other apps may be holding memory); after this long, it's tried
+# at its full size again.
+SHRUNK_WINDOW_SECONDS = 15 * 60
+_shrunk_windows: dict[str, tuple[int, float]] = {}  # model -> (window, when)
+
+
+def _shrunk_window(name: str) -> int | None:
+    found = _shrunk_windows.get(name)
+    if found is None or time.monotonic() - found[1] > SHRUNK_WINDOW_SECONDS:
+        _shrunk_windows.pop(name, None)
+        return None
+    return found[0]
+
+
+# The orchestrator is the paid model: code is the local models' job. These
+# stop it from writing code itself -- in edit_file, or pasted into a
+# delegation's instructions (which also makes the local model a copy-typist).
+MAX_EDIT_LINES = 12
+MAX_CODE_LINES_IN_INSTRUCTIONS = 15
+_FENCED = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+
+# A command that checks work: tests, linters, type checkers, builds. Shared
+# with orchestrator.py's completion check, which imports it from here.
+CHECK_COMMAND = re.compile(
+    r"\b(test|tests|pytest|unittest|jest|vitest|mocha|spec|check|lint|ruff|flake8|pylint|mypy|pyright|tsc|eslint|"
+    r"build|compile|cargo|go (?:vet|build|test)|make|gradle|mvn|dotnet)\b",
+    re.I,
+)
+
+
+def _code_lines(text: str) -> int:
+    return sum(len(block.strip("\n").splitlines()) for block in _FENCED.findall(text or ""))
+
+
 # The fixed text wrapped around a delegated prompt (preface, notes).
 PROMPT_OVERHEAD = 500
 
@@ -325,13 +367,52 @@ def _cut_off_warning(modality: str) -> str:
     )
 
 
-def _prompt_for(modality: str, instructions: str) -> str:
-    prefaces = {
-        "coding": "You are a focused coding assistant. Produce working code for this task:\n\n",
-        "docs": "You are a technical writer. Write clear documentation for this task:\n\n",
-        "general": "",
-    }
-    return prefaces.get(modality, "") + instructions
+# Modality -> most recent delegation's (path, instructions), so a
+# re-delegation of the same file can carry its previous attempt and the
+# failure forward, instead of the local model starting from nothing again.
+_PREFACES = {
+    "coding": "You are a focused coding assistant working in an existing project. Produce working code for this task.",
+    "docs": "You are a technical writer working in an existing project. Write clear documentation for this task.",
+    "general": "You are helping with an existing software project.",
+}
+# Keeps a local model inside the project instead of guessing.
+LOCAL_RULES = (
+    "Rules: match the style and conventions of the existing code and the project notes. Use only functions, "
+    "modules and APIs that exist in the files you're given, the standard library, or the project's declared "
+    "dependencies -- never invent them. If something you need is missing or unclear, make the smallest sensible "
+    "assumption and say so in your NOTES."
+)
+
+
+def _prompt_for(modality: str, instructions: str, grounding: str = "", preferences: str = "") -> str:
+    """What a local model is sent: who it is, the rules, what this project is
+    built with and how (from the brief and remembered preferences), then the task."""
+    parts = [_PREFACES.get(modality, _PREFACES["general"]), LOCAL_RULES]
+    if grounding:
+        parts.append("Project notes (from the project's brief):\n" + grounding)
+    if preferences:
+        parts.append("Remembered preferences and corrections for this project -- follow these:\n" + preferences)
+    return "\n\n".join(parts) + "\n\nTask:\n" + instructions
+
+
+_NOTES = re.compile(r"^\s*NOTES:\s*", re.I | re.M)
+MAX_NOTES_CHARS = 500
+
+
+def _split_notes(reply: str) -> tuple[str, str]:
+    """(the reply without its NOTES, the notes). The local model is asked to
+    put a few NOTES lines after the file's code block: what it assumed or
+    didn't do. They're for the orchestrator, never written into the file."""
+    lines = reply.rstrip().splitlines()
+    fences = [i for i, line in enumerate(lines) if line.strip().startswith("```")]
+    start = fences[-1] + 1 if len(fences) >= 2 else 0
+    for i in range(start, len(lines)):
+        if _NOTES.match(lines[i]):
+            notes = _NOTES.sub("", "\n".join(lines[i:]), count=1).strip()
+            if notes.lower().rstrip(".") in ("none", "n/a", ""):
+                notes = ""
+            return "\n".join(lines[:i]), notes[:MAX_NOTES_CHARS]
+    return reply, ""
 
 
 # Cheap, deterministic tripwires for the clearest local-model failure modes
@@ -385,6 +466,14 @@ class Dispatcher:
         self.installed = installed
         self.hooks = hooks or ActivityHooks()
         self._resolved_models: dict[str, ModelEntry] = {}
+        self._grounding: str | None = None
+        self._preferences: str | None = None
+        # The last failing check (run_command matching a test/lint/build
+        # pattern) not yet passed on to a delegation, so a re-delegation
+        # after a test failure carries the exact error instead of the
+        # frontier model having to paste it in by hand.
+        self._last_check_failure: str | None = None
+        self._check_failure_shown = False
         self.local_tokens_generated = 0  # running total, for usage metrics
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
@@ -415,16 +504,40 @@ class Dispatcher:
 
     def context_limit(self, entry: ModelEntry) -> int | None:
         """The context window `entry` can run with on this machine (None:
-        the default cap). Every prompt it's given is sized to fit this."""
-        return context_limit(entry, self.hardware)
+        the default cap). Every prompt it's given is sized to fit this: the
+        memory limit, the length the model was trained for (Ollama silently
+        caps the window there and cuts the prompt), and a smaller window
+        after it recently ran out of memory."""
+        backend = BACKENDS.get(entry.runtime)
+        trained = backend.trained_context(entry.name) if hasattr(backend, "trained_context") else None
+        limits = [x for x in (context_limit(entry, self.hardware), trained, _shrunk_window(entry.name)) if x]
+        return min(limits) if limits else None
+
+    def grounding(self) -> str:
+        """The brief's stack/commands/conventions, for every delegated task
+        (read once per task: /init may have changed it since the last one)."""
+        if self._grounding is None:
+            self._grounding = brief.grounding_for_local(self.workspace.root) if self.workspace is not None else ""
+        return self._grounding
+
+    def preferences(self) -> str:
+        """Remembered facts, in the form the local models get (feedback/user/
+        project types only -- not raw pointers/references)."""
+        if self._preferences is None:
+            from localforge import memory
+
+            self._preferences = memory.facts_for_local(self.workspace.root) if self.workspace is not None else ""
+        return self._preferences
 
     def prompt_chars(self, modality: str, output_tokens: int = MAX_OUTPUT_TOKENS) -> int:
-        """How much prompt the model for `modality` can take beside its reply."""
+        """How much task text the model for `modality` can take beside its
+        reply, after the fixed preamble (rules and project notes)."""
+        preamble = len(_prompt_for(modality, "", self.grounding(), self.preferences()))
         try:
             entry = self.resolve(modality)
         except Exception:  # noqa: BLE001 - no model: the call will fail with its own error
-            return prompt_budget(None, output_tokens)
-        return prompt_budget(self.context_limit(entry), output_tokens)
+            return prompt_budget(None, output_tokens) - preamble
+        return prompt_budget(self.context_limit(entry), output_tokens) - preamble
 
     def _retry_candidate(self, modality: str, current: ModelEntry) -> ModelEntry | None:
         """A different model for `modality` to retry with, if this
@@ -470,14 +583,19 @@ class Dispatcher:
                     f"{entry.name} isn't downloaded and the download wasn't approved; no {modality} model is available. "
                     "Tell the user, or use a different tool."
                 )
+            backend.ensure_available(entry.name, on_progress=on_pull)
             self.installed.add(entry.name)
+            from localforge import upgrades
+
+            upgrades.mark_managed(entry.name)  # localforge downloaded it, so an upgrade may replace it
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
         window = {"context_limit": self.context_limit(entry)}
+        prompt = _prompt_for(modality, instructions, self.grounding(), self.preferences())
         if hooks.on_token is not None:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions), on_token=hooks.on_token, **window)
+            result = backend.generate(entry.name, prompt, on_token=hooks.on_token, **window)
         else:
-            result = backend.generate(entry.name, _prompt_for(modality, instructions), **window)
+            result = backend.generate(entry.name, prompt, **window)
         tokens = result.get("tokens", 0)
         self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
         if hooks.on_done is not None:
@@ -493,7 +611,47 @@ class Dispatcher:
         if tool_name in DIRECT_TOOLS:
             return self._direct(tool_name, args)
         modality = self._tool_name_to_modality(tool_name)
+        try:
+            return self._dispatch_delegate(modality, args, on_delegate)
+        except LocalModelOutOfMemory as exc:
+            # Not enough memory for this window right now. Halve it, remember
+            # that for a while, and run the whole step again: the prompt is
+            # re-sized (reference files trimmed, and the orchestrator told).
+            entry = self.resolve(modality)
+            window = self.context_limit(entry) or max_context()
+            smaller = window // 2
+            short = (
+                "so memory is short on this machine right now (other apps, or another model still loaded). "
+                "Nothing was written. Tell the user: closing other apps, or /upgrade to a model that fits, would help."
+            )
+            if smaller < MIN_NUM_CTX:
+                raise LocalModelOutOfMemory(f"{exc}. It doesn't fit even with the smallest context window, {short}") from None
+            _shrunk_windows[entry.name] = (smaller, time.monotonic())
+            if self.hooks.on_tool is not None:
+                self.hooks.on_tool("retry", f"{entry.name} didn't fit in memory with a {window:,}-token window; retrying with {smaller:,}")
+            try:
+                result = self._dispatch_delegate(modality, args, on_delegate)
+            except LocalModelOutOfMemory as again:
+                raise LocalModelOutOfMemory(f"{again}. It still didn't fit with half the context window ({smaller:,} tokens), {short}") from None
+            return _with_notes(result, [f"{entry.name} ran with a {smaller:,}-token context window because memory was short ({exc})"])
+
+    def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:
         instructions = str(args.get("instructions") or "")
+        if args.get("path") and self._last_check_failure and not self._check_failure_shown:
+            # A check failed since the last write and hasn't been carried
+            # forward yet: hand the exact failure to the model writing the
+            # fix, rather than relying on the orchestrator to paste it in.
+            self._check_failure_shown = True
+            instructions = (
+                f"{instructions}\n\n(The project's checks failed after the last change -- fix this too:\n"
+                f"{self._last_check_failure}\n)"
+            )
+        if (code := _code_lines(instructions)) > MAX_CODE_LINES_IN_INSTRUCTIONS:
+            return (
+                f"{TASK_MODALITIES[modality]['tool_name']} failed: your instructions contain {code} lines of code, and "
+                "writing code is the local model's job (you're the paid model). Nothing was sent. Describe what's "
+                "needed instead: the behaviour, names, signatures and constraints; name existing files in context_files."
+            )
         path = args.get("path")
         if path:
             return self._delegate_to_file(modality, instructions, args.get("context_files"), str(path), on_delegate)
@@ -547,8 +705,11 @@ class Dispatcher:
         entry = self.resolve(modality)
         try:
             result = self._run(modality, entry, instructions, on_delegate)
-        except DownloadDeclined:
-            raise  # the user's decision, not a failure: asking again wouldn't help
+        except (DownloadDeclined, LocalModelOutOfMemory, LocalPromptTooLarge):
+            # The user's decision, or a size problem: the same prompt would
+            # fail the same way. Memory is handled in dispatch() with a
+            # smaller window; a too-large prompt goes to the orchestrator.
+            raise
         except Exception as first_error:  # noqa: BLE001 - recover here before bothering the orchestrator
             return self._recover(modality, entry, instructions, on_delegate, first_error)
         if result["type"] == "file":
@@ -618,8 +779,9 @@ class Dispatcher:
         rel = self.workspace.rel(target)
         current = target.read_text(errors="replace") if target.is_file() else None
         directive = (
-            f"\n\nWrite the COMPLETE contents of the file `{rel}`. "
-            "Reply with only the file's contents in one code block -- no explanation before or after."
+            f"\n\nWrite the COMPLETE contents of the file `{rel}`. Reply with the file's contents in one code block, "
+            "then, after the block, at most three short lines starting with NOTES: -- anything you assumed or "
+            "couldn't do (or NOTES: none). Nothing before the code block."
         )
         current_block = ""
         if current is not None:
@@ -639,16 +801,43 @@ class Dispatcher:
                 "a new, smaller module first."
             )
         context, notes = self._context_block(context_files, room)
-        brief = instructions + context + directive + current_block
-        content, warning = self._delegate(modality, brief, on_delegate)
+        task = instructions + context + directive + current_block
+        content, warning = self._delegate(modality, task, on_delegate)
         if warning:
             return _with_notes(f"{warning}\n\nNothing was written to {rel}. The local model returned:\n{content[:2000]}", notes)
-        written = _extract_file_content(content)
+        body, model_notes = _split_notes(content)
+        written = _extract_file_content(body)
         if written is None:
             return _with_notes(
                 f"{_cut_off_warning(modality)}\n\nNothing was written to {rel}: the reply opened a code block and never closed it.",
                 notes,
             )
+
+        # Check it parses before the user is asked about it. One free local
+        # retry with the exact error; the paid orchestrator only hears about
+        # it if the local model can't fix it.
+        language, error = verify.check(rel, written)
+        if error:
+            self._log_correction("syntax", rel, error)
+            if self.hooks.on_tool is not None:
+                self.hooks.on_tool("retry", f"{rel}: {error[:120]}; asking the local model to fix it")
+            retry = f"{task}\n\nYour previous version of `{rel}` failed a syntax check: {error}\nFix it and write the complete file again."
+            content, warning = self._delegate(modality, retry, on_delegate)
+            if not warning:
+                body, model_notes = _split_notes(content)
+                fixed = _extract_file_content(body)
+                if fixed is not None:
+                    written = fixed
+                    language, error = verify.check(rel, written)
+            if error or warning:
+                self._log_correction("syntax (still failing)", rel, error or warning)
+                return _with_notes(
+                    f"{tool} failed: the local model's {rel} doesn't parse, even after one retry with the error "
+                    f"({error or warning}). Nothing was written. Try smaller or clearer instructions, or split the file.",
+                    notes,
+                )
+        checked = f"Syntax check: {language} parses." if language else ""
+
         result = self.workspace.write_file(rel, written)
         if self.hooks.on_tool_result is not None:
             self.hooks.on_tool_result("write", result.splitlines()[0])
@@ -660,7 +849,18 @@ class Dispatcher:
         lines = written.splitlines()
         preview = "\n".join(lines[:RESULT_PREVIEW_LINES])
         more = f"\n[... {len(lines) - RESULT_PREVIEW_LINES} more lines; read_file {rel} if you need to check them]" if len(lines) > RESULT_PREVIEW_LINES else ""
-        return _with_notes(f"{result.splitlines()[0]}\nFirst lines:\n{preview}{more}", notes)
+        report = [result.splitlines()[0]]
+        if checked:
+            report.append(checked)
+        if model_notes:
+            report.append(f"The local model's notes: {model_notes}")
+        return _with_notes("\n".join(report) + f"\nFirst lines:\n{preview}{more}", notes)
+
+    def _log_correction(self, kind: str, path: str, detail: str) -> None:
+        if self.workspace is not None:
+            from localforge import memory
+
+            memory.note_correction(self.workspace.root, kind, path, detail)
 
     def _direct(self, tool_name: str, args: dict) -> str:
         """A tool the orchestrator runs itself. Failures come back as text so
@@ -716,6 +916,13 @@ class Dispatcher:
         if tool_name == "search":
             return ws.search(args["pattern"], args.get("path") or ".", args.get("glob") or "")
         if tool_name == "edit_file":
+            new_lines = len(str(args["new_string"]).splitlines())
+            if new_lines > MAX_EDIT_LINES:
+                return (
+                    f"edit_file failed: that edit writes {new_lines} lines, and edit_file is for small fix-ups (up to "
+                    f"{MAX_EDIT_LINES}). Nothing was changed. Have a local model write it: delegate_coding_task with "
+                    f"path={args['path']!r}, describing the change."
+                )
             return ws.edit_file(args["path"], args["old_string"], args["new_string"])
         if tool_name == "make_dir":
             return ws.make_dir(args["path"])
@@ -724,7 +931,15 @@ class Dispatcher:
         if tool_name == "delete_path":
             return ws.delete_path(args["path"], bool(args.get("recursive")))
         if tool_name == "run_command":
-            return ws.run_command(args.get("command") or args.get("instructions") or "", args.get("timeout") or 300)
+            command = args.get("command") or args.get("instructions") or ""
+            result = ws.run_command(command, args.get("timeout") or 300)
+            if CHECK_COMMAND.search(command):
+                if result.startswith("exit code 0"):
+                    self._last_check_failure = None
+                elif not result.startswith("The user declined"):
+                    self._last_check_failure = result[:600]
+                    self._check_failure_shown = False
+            return result
         raise ValueError(f"unknown tool {tool_name}")
 
 

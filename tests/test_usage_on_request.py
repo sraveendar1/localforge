@@ -49,7 +49,7 @@ def test_run_does_not_print_usage_by_default():
 def test_run_usage_flag_prints_the_panel():
     out = _run(["build it", "-m", "gpt-5", "--usage"], RunResult("the answer", _stats())).output
     assert "Usage" in out
-    assert "40 in + 10 out = 50 tokens" in out
+    assert "Orchestrator read: 40 tokens" in out and ": 10 tokens" in out and "50 frontier tokens in all" in out
 
 
 def test_usage_command_reports_last_task_then_session_totals():
@@ -58,10 +58,10 @@ def test_usage_command_reports_last_task_then_session_totals():
 
     out = _usage_text()
     assert "last task" in out
-    assert "60 in + 20 out = 80 tokens" in out
+    assert "Orchestrator read: 60 tokens" in out and ": 20 tokens" in out and "80 frontier tokens in all" in out
     assert "session (2 tasks)" in out
-    assert "Local models: 400 tokens" in out
-    assert "100 in + 30 out = 130 tokens ($0.0300)" in out
+    assert "local models: 400 tokens" in out
+    assert "Orchestrator read: 100 tokens" in out and "130 frontier tokens in all ($0.0300)" in out
 
 
 def test_usage_session_keeps_billed_and_subscription_cost_apart():
@@ -78,7 +78,7 @@ def test_failed_run_still_counts_toward_usage_but_prints_nothing():
     assert "tokens" not in out
 
     usage = _usage_text()
-    assert "7 in + 3 out = 10 tokens" in usage
+    assert "Orchestrator read: 7 tokens" in usage and ": 3 tokens" in usage and "10 frontier tokens in all" in usage
 
 
 def test_usage_before_any_task_explains_itself():

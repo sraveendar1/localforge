@@ -106,8 +106,10 @@ def record(root: Path, session_id: str, model: str, stats) -> None:
         all_time.started = time.time()
     all_time.add(model, stats)
 
+    from localforge import memory
+
     path = usage_file(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    memory.ensure_dir(root)
     payload = {"all_time": all_time.to_dict(), "sessions": sessions[-SESSIONS_KEPT:]}
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(payload, indent=2) + "\n")

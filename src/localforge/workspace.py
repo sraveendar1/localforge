@@ -26,7 +26,8 @@ from collections.abc import Callable
 # approver every change is refused.
 Approver = Callable[[str, str, str], bool]
 
-SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", "dist", "build", ".idea", ".next"}
+LOCALFORGE_DIR = ".localforge"  # memory.LOCAL_DIR: localforge's own per-project folder
+SKIP_DIRS = {".git", ".localforge", "node_modules", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", "dist", "build", ".idea", ".next"}
 MAX_READ_LINES = 400
 MAX_READ_CHARS = 40_000
 MAX_LIST = 300
@@ -76,6 +77,12 @@ class Workspace:
         candidate = (self.root / path).resolve()
         if candidate != self.root and self.root not in candidate.parents:
             raise WorkspaceError(f"{path!r} is outside the project folder ({self.root})")
+        memory_folder = self.root / LOCALFORGE_DIR
+        if candidate == memory_folder or memory_folder in candidate.parents:
+            # localforge's own memory: changed only through remember/forget
+            # and compaction, never by file tools (a delegated write could
+            # otherwise overwrite MEMORY.md with whatever a model produced).
+            raise WorkspaceError(f"{path!r} is localforge's memory for this project; use remember/forget instead")
         return candidate
 
     def in_scratch(self, path: Path) -> bool:

@@ -79,7 +79,7 @@ def test_run_usage_flag_still_prints_usage_when_orchestration_does_not_converge(
     assert "did not converge" in result.output
     assert "Usage" in result.output  # asked for, so shown even on failure
     assert "700 tokens" in result.output
-    assert "150 tokens" in result.output  # 100 in + 50 out
+    assert "150 frontier tokens in all" in result.output  # 100 read + 50 written
 
 
 # --- Bug 2: tool schemas were exposed for modalities nothing fits ---

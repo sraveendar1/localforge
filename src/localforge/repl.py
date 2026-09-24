@@ -31,7 +31,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /run <task>       work on a task in this folder (or just type it directly)
   /clear            start a fresh conversation (/clear --forget also drops saved memory)
   /compact          have a local model condense the conversation into session memory
-  /init             write LOCALFORGE.md: what this project is, for future sessions
+  /init             write AGENTS.md: what this project is, for future sessions
   /memory           show this folder's memory (/memory forget <name>, /memory clear)
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
@@ -50,6 +50,8 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /catalog          full model catalog
   /installed        models actually on disk
   /delete <names>   delete installed model(s), omit names to choose interactively
+  /upgrade          swap installed models for better ones that fit, and remove the old ones
+  /tasks            show unfinished work left from earlier sessions
   /theme <name>     show/switch color theme (matrix, dark, light)
   /uninstall        remove localforge and everything it manages
   /help             show this list
@@ -168,7 +170,7 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init"}
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init", "upgrade"}
 HELP_COMMANDS = {"/help", "/?"}
 
 

@@ -128,7 +128,10 @@ def test_the_dispatcher_gives_each_model_its_own_window():
     with patch.dict("localforge.tools.BACKENDS", {"stub": Stub()}):
         d.dispatch("delegate_docs_task", {"instructions": "write a changelog entry"})
     assert calls[0]["context_limit"] == 8192
-    assert d.prompt_chars("docs") == (8192 - 4096) * ollama.CHARS_PER_TOKEN  # half kept for the reply
+    from localforge.tools import _prompt_for
+
+    preamble = len(_prompt_for("docs", "", d.grounding()))  # the rules and project notes come first
+    assert d.prompt_chars("docs") == (8192 - 4096) * ollama.CHARS_PER_TOKEN - preamble  # half kept for the reply
 
 
 def test_a_small_window_still_leaves_room_for_the_reply():

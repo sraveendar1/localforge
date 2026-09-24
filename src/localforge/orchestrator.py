@@ -17,6 +17,7 @@ from litellm import completion
 from localforge import brief, cli_transport, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
+from localforge.tools import CHECK_COMMAND as _CHECK_COMMAND
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
 from localforge.workspace import Workspace
 
@@ -147,6 +148,7 @@ def _collapse_old_tool_results(messages: list[dict], tool_message_indices: list[
 NOTE_PREFIX = "[Note from the user, added while you were working]: "
 STEPS_LEFT_PREFIX = "[localforge: step limit] "
 CHECKPOINT_PREFIX = "[localforge: checkpoint] "
+COMPLETION_PREFIX = "[localforge: completion check] "
 NUDGE = (
     "You said what you'll do but didn't call any tool, so nothing happened. "
     "Do it now with the tools, or if no action is needed, give your final answer."
@@ -154,6 +156,93 @@ NUDGE = (
 
 # An answer that only announces work ("I will create...", "Let me write...").
 _PROMISE = re.compile(r"\b(I will|I'll|I am going to|I'm going to|Let me)\s+(now\s+)?(create|write|add|make|build|update|edit|run|fix|generate|implement|set up|delegate)\b", re.I)
+
+
+# --- is the task actually done? ---------------------------------------------------
+#
+# Reported: "if there is an issue, the overall process stops, so I need some
+# check/loop to ensure the task is completed". A final answer used to end the
+# task whatever state it was in: plan items undone, code changed but never
+# checked, or an error the orchestrator chose not to work around. Now the
+# final answer is checked first, and anything missing goes back to the
+# orchestrator -- at most MAX_COMPLETION_CHECKS times, so it can't loop.
+
+MAX_COMPLETION_CHECKS = 3
+_CHANGED = ("Created ", "Updated ", "Deleted ", "Moved ")
+# A command that checks work: tests, linters, type checkers, builds.
+_GAVE_UP = re.compile(
+    r"\b(couldn'?t|could not|can'?t|cannot|unable to|wasn'?t able|weren'?t able|failed to|gave up|"
+    r"blocked|not (?:yet )?(?:done|finished|complete|implemented|working))\b",
+    re.I,
+)
+
+
+@dataclass
+class _Progress:
+    """What this task has done, for the completion check."""
+
+    changed_at: int = 0  # step of the last file change
+    checked_at: int = 0  # step of the last check (a test/lint/build run, or reading a changed file back)
+    changed: set[str] = field(default_factory=set)
+    todos: list[dict] | None = None
+    checks: int = 0  # completion checks sent so far
+    asked_to_unblock: bool = False
+
+    def note(self, name: str, args: dict, result: str, step: int) -> None:
+        text = (result or "").strip()
+        if name == "update_todos":
+            self.todos = [t for t in args.get("todos") or [] if isinstance(t, dict)]
+        elif text.startswith(_CHANGED):
+            self.changed_at = step
+            self.changed.add(str(args.get("path") or args.get("destination") or args.get("source") or ""))
+        elif name == "run_command" and _CHECK_COMMAND.search(str(args.get("command") or "")):
+            self.checked_at = step  # ran it (passing or not: the orchestrator saw the result), or the user declined
+        elif name == "read_file" and str(args.get("path") or "") in self.changed:
+            self.checked_at = step
+
+
+def _completion_gaps(progress: _Progress, answer: str, brief_text: str) -> str | None:
+    """What's missing before this answer can end the task, or None."""
+    gaps = []
+    open_items = [t.get("content", "") for t in progress.todos or [] if t.get("status") != "completed"]
+    if open_items:
+        gaps.append(
+            "Your plan still has unfinished items:\n" + "\n".join(f"- {item}" for item in open_items[:8])
+            + "\nFinish them (and mark them completed with update_todos), or say why one can't be done."
+        )
+    if progress.changed_at > progress.checked_at:
+        how = _definition_of_done(brief_text)
+        gaps.append(
+            "You changed files but haven't checked them since: "
+            + ", ".join(sorted(p for p in progress.changed if p)[:6])
+            + ". Run the project's tests or checks"
+            + (f" (from AGENTS.md: {how})" if how else "")
+            + ", or if it has none, read back the parts that matter. Fix anything that fails."
+        )
+    if not progress.asked_to_unblock and _GAVE_UP.search(answer or ""):
+        progress.asked_to_unblock = True
+        gaps.append(
+            "Your answer says something isn't done or didn't work. If there's another way to get it done -- "
+            "fix the error, smaller steps, clearer instructions to the local model, a different approach -- do "
+            "that now. If it truly needs the user (a decision, credentials, access), finish and say exactly what "
+            "they need to do."
+        )
+    if not gaps:
+        return None
+    return (
+        COMPLETION_PREFIX
+        + "Before you finish, the task isn't complete yet:\n\n"
+        + "\n\n".join(gaps)
+        + "\n\nThen give your final answer. (If the user declined something, don't retry it; say so.)"
+    )
+
+
+def _definition_of_done(brief_text: str) -> str:
+    """The brief's check commands, from its "Definition of done" section, or
+    "Running and testing" in an older brief."""
+    from localforge import brief as brief_module
+
+    return " ".join(brief_module.section(brief_text, ("definition of done", "running and testing")).split())[:300]
 
 
 def _complete_streaming(frontier_model: str, messages: list[dict], tools: list[dict], on_text) -> object:
@@ -217,6 +306,8 @@ def _record_frontier_usage(response, stats: RunStats) -> None:
 
 SYSTEM_PROMPT = """You are the orchestrator inside localforge, a coding harness in the user's terminal, working in their project folder. You plan, investigate and review; local open-weight models running on the user's machine write the code and docs.
 
+Your job has four parts: plan the work, delegate the writing to local models, validate what they produce (read the parts that matter, run the tests), and reconcile -- when a result is wrong, work out why and re-delegate with sharper instructions, or fix a few lines yourself with edit_file. The finished work must be as good as if you had written all of it yourself; the savings come from who types it, never from accepting less.
+
 You are the expensive model; the local models are free. Every token you read or write costs money, so your job is to decide and direct, not to do the work:
 - Never write code (or whole documents) yourself -- not in edit_file, not inside `instructions`. Describe what's needed and let the local model write it. A spec that already contains the code wastes the local model and doubles your cost.
 - Don't read files just to pass their contents along. Name them in `context_files` and localforge hands them to the local model directly. To understand a large file or module, ask a local model to summarize it (delegate_general_task with context_files) rather than reading it all yourself.
@@ -237,6 +328,7 @@ How to work:
 - This is an ongoing conversation: the user's earlier messages and your earlier work are above, and older turns may be condensed into a session-memory note.
 - If the user declines a change or command, don't retry it unchanged; ask or adjust.
 - When a step fails (a delegation errors, a local model stalls or returns junk, a command exits non-zero), don't stop at the first error. Read the error and work out the cause, then unblock it: retry once if it looks transient, give the local model smaller or clearer instructions, split the work, try a different tool, or check the situation first (read_file, list_files, run_command). If the same thing still fails after a couple of different attempts, stop and tell the user plainly what is blocked, what you tried, and what they could do.
+- Definition of done: before your final answer, make sure the work is complete -- every item of your plan done, and changed code checked with the project's tests or checks (the brief's "Definition of done" says which). localforge checks this and sends you back if something's missing.
 - Finish with a short summary of what you changed (files, commands run, results) and anything left to do.
 
 Local models occasionally produce bad results: empty output, a refusal, something far too short for what was asked, or content that doesn't actually satisfy the subtask. Do not accept a delegated result at face value -- check it against what you asked for before using it (read_file the written file when it matters). If a result is prefixed with [WARNING: ...], that is an automated flag that something looked wrong; treat it with extra scrutiny. If a result is clearly bad, delegate that subtask again with more specific or simpler instructions rather than passing the bad result through. If you've retried and still can't get a usable result, say so plainly in your final answer instead of presenting a broken result as if it were fine."""
@@ -254,7 +346,8 @@ class Conversation:
     memory: str = ""
     project_snapshot: str = ""
     facts: str = ""
-    brief: str = ""  # the project brief (LOCALFORGE.md), if the project has one
+    brief: str = ""  # the project brief (AGENTS.md), if the project has one
+    last_progress: _Progress | None = None  # what the most recent task did, for open-work tracking if it stops
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
@@ -329,7 +422,7 @@ def run(
 
     turn_start = len(messages) - 1  # index of this turn's user message
     try:
-        return _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate)
+        result = _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate)
     except KeyboardInterrupt:
         # Ctrl+C: stop this task only. Drop its half-finished steps (an
         # assistant tool call without its result would make the next request
@@ -338,7 +431,29 @@ def run(
         messages.append({"role": "assistant", "content": "(The user stopped this task before it finished.)"})
         conversation.reindex_tools()
         stats.local_tokens_generated = dispatcher.local_tokens_generated
+        _remember_if_unfinished(workspace, task, "the user stopped it", conversation.last_progress)
         raise TaskCancelled(stats) from None
+    except OrchestrationError:
+        _remember_if_unfinished(workspace, task, "it didn't finish in time", conversation.last_progress)
+        raise
+    else:
+        if workspace is not None:
+            memory.clear_open_work(workspace.root, task)  # done (or the user will see it in the answer, not silently)
+        return result
+
+
+def _remember_if_unfinished(workspace, task: str, why: str, progress: _Progress | None) -> None:
+    """A task that stops before it's done is saved, not left to a summary a
+    small model might drop (reported: "if there's an issue the process
+    stops, so I need some check/loop to ensure the task is completed").
+    The next session offers to continue it (see cli._offer_open_work_at_start)."""
+    if workspace is None:
+        return
+    open_items, unchecked = _open_items_and_unchecked(progress)
+    try:
+        memory.save_open_work(workspace.root, task, why, open_items, unchecked)
+    except Exception:  # noqa: BLE001, S110 - best-effort; never worth failing the stop/error path over
+        pass
 
 
 def _call_frontier(orchestrator: dict, hooks, messages, tools):
@@ -379,11 +494,12 @@ def _call_frontier(orchestrator: dict, hooks, messages, tools):
                     attempt = 0
                     continue
                 raise limit from None
-            if limit is not None or attempt >= 2 or not _is_transient(exc):
+            if limit is not None or attempt >= MAX_FRONTIER_ATTEMPTS or not _is_transient(exc):
                 raise
             if hooks.on_tool is not None:
-                hooks.on_tool("retry", f"the orchestrator call failed ({str(exc)[:120]}); retrying once")
-            time.sleep(RETRY_DELAY_SECONDS)
+                left = MAX_FRONTIER_ATTEMPTS - attempt
+                hooks.on_tool("retry", f"the orchestrator call failed ({str(exc)[:120]}); retrying ({left} more {'try' if left == 1 else 'tries'})")
+            time.sleep(RETRY_DELAY_SECONDS * 3 ** (attempt - 1))  # 2s, then 6s: a blip usually clears
 
 
 def _as_usage_limit(exc: Exception, orchestrator: dict) -> cli_transport.UsageLimitError | None:
@@ -402,6 +518,9 @@ def _as_usage_limit(exc: Exception, orchestrator: dict) -> cli_transport.UsageLi
 
 
 RETRY_DELAY_SECONDS = 2.0
+# A transient orchestrator failure (a dropped connection, an intermittent CLI
+# exit) is tried this many times in all before the task stops.
+MAX_FRONTIER_ATTEMPTS = 3
 _PERMANENT = ("limit", "quota", "spend", "credit", "billing", "log in", "login", "logged", "auth", "api key",
               "unauthorized", "forbidden", "not installed", "is required", "not running", "invalid", "not found")
 _TRANSIENT_TYPES = {"APIConnectionError", "Timeout", "InternalServerError", "ServiceUnavailableError", "APIError",
@@ -439,6 +558,8 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     last_error: dict[tuple[str, str], str] = {}
     used_tools = nudged = False
     progress = 0  # new, successful steps since the last checkpoint
+    task = _Progress()
+    conversation.last_progress = task  # visible to run() if this task stops before finishing
 
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
@@ -467,6 +588,12 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                 # gemma3:4b). Ask once to actually do it, or to just answer.
                 nudged = True
                 messages.append({"role": "user", "content": NUDGE})
+                continue
+            if task.checks < MAX_COMPLETION_CHECKS and (gaps := _completion_gaps(task, message.content or "", conversation.brief)):
+                task.checks += 1
+                if hooks.on_tool is not None:
+                    hooks.on_tool("check", "the task isn't finished yet; sending the orchestrator back to it")
+                messages.append({"role": "user", "content": gaps})
                 continue
             _finish()
             return RunResult(answer=message.content or "", stats=stats)
@@ -513,6 +640,11 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                     )
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
             conversation.tool_indices.append(len(messages) - 1)
+            try:
+                call_args = json.loads(call.function.arguments or "{}")
+            except (TypeError, ValueError):
+                call_args = {}
+            task.note(name, call_args if isinstance(call_args, dict) else {}, result, round_number)
 
         _collapse_old_tool_results(messages, conversation.tool_indices)
 
@@ -538,6 +670,17 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
             )
 
     return _stop(messages, stats, _finish, f"Stopped after {MAX_ROUNDS} steps without finishing.")
+
+
+def _open_items_and_unchecked(progress: _Progress | None) -> tuple[list[str], list[str]]:
+    """(plan items not done, files changed since the last check) -- the same
+    two things the completion check looks for, computed for a task that
+    stopped before it could finish rather than by giving a final answer."""
+    if progress is None:
+        return [], []
+    open_items = [t.get("content", "") for t in progress.todos or [] if t.get("status") != "completed"]
+    unchecked = sorted(p for p in progress.changed if p) if progress.changed_at > progress.checked_at else []
+    return open_items, unchecked
 
 
 def _stop(messages, stats, finish, why: str):

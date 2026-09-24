@@ -1,11 +1,19 @@
-"""Memory, modeled on Claude Code's: kept per project, outside the project.
+"""Memory, modeled on Claude Code's: kept per project, in the project.
 
-    ~/.config/localforge/projects/<folder>-<hash>/
+    <project>/.localforge/
+        .gitignore          "*": git ignores the folder unless the user
+                              deletes this to share memory with the team
         session.md          what the last session left off with (condensed)
         memory/MEMORY.md    index: one line per memory, loaded every session
         memory/<name>.md    one fact per file, with frontmatter:
                               name, description, type (user | feedback |
                               project | reference)
+        usage.json          /usage history (usage_store.py)
+        brief-update.md     a drafted AGENTS.md update awaiting /init (brief.py)
+
+It used to live under ~/.config/localforge/projects/<folder>-<hash>/; the
+user asked for it in the (trusted) project folder instead, so it moves with
+the folder. An old folder there is moved in on first use.
 
 Two things keep it current:
 
@@ -70,12 +78,45 @@ INDEX = "MEMORY.md"
 MAX_FACTS_CHARS = 8_000  # fact contents given to the orchestrator each session
 
 
-def project_dir(root: Path) -> Path:
-    """localforge's own folder for one project: never inside the project."""
+LOCAL_DIR = ".localforge"
+_GITIGNORE = (
+    "# localforge's memory and usage for this project (see AGENTS.md for the shared brief).\n"
+    "# Kept out of git by default; delete this file to share it with your team.\n"
+    "*\n"
+)
+
+
+def _central_dir(root: Path) -> Path:
+    """Where an older localforge kept this project's memory."""
     root = Path(root).resolve()
     slug = re.sub(r"[^A-Za-z0-9]+", "-", root.name).strip("-") or "project"
     digest = hashlib.sha1(str(root).encode()).hexdigest()[:10]
     return config.CONFIG_DIR / "projects" / f"{slug}-{digest}"
+
+
+def project_dir(root: Path) -> Path:
+    """localforge's folder for one project: `.localforge/` inside it."""
+    folder = Path(root).resolve() / LOCAL_DIR
+    central = _central_dir(root)
+    if central.is_dir() and not folder.exists():
+        try:  # memory from before it lived in the project: move it in
+            import shutil
+
+            shutil.move(str(central), str(folder))
+            (folder / ".gitignore").write_text(_GITIGNORE)
+        except OSError:
+            pass
+    return folder
+
+
+def ensure_dir(root: Path) -> Path:
+    """project_dir(), created (with its .gitignore) before anything is written."""
+    folder = project_dir(root)
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text(_GITIGNORE)
+    return folder
 
 
 def memory_file(root: Path) -> Path:
@@ -90,10 +131,9 @@ def memory_dir(root: Path) -> Path:
 def _migrate(root: Path) -> None:
     """Move a summary saved by an older localforge (memory/<folder>-<hash>.md)."""
     new = memory_file(root)
-    old = config.CONFIG_DIR / "memory" / new.parent.name
-    old = old.with_suffix(".md")
+    old = (config.CONFIG_DIR / "memory" / _central_dir(root).name).with_suffix(".md")
     if old.is_file() and not new.exists():
-        new.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(root)
         old.replace(new)
 
 
@@ -107,9 +147,8 @@ def load(root: Path) -> str:
 
 
 def save(root: Path, text: str) -> None:
-    path = memory_file(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.strip() + "\n")
+    ensure_dir(root)
+    memory_file(root).write_text(text.strip() + "\n")
 
 
 def forget(root: Path) -> None:
@@ -176,6 +215,7 @@ def remember(root: Path, name: str, content: str, description: str = "", type: s
         raise ValueError("a memory needs content")
     kind = type if type in MEMORY_TYPES else "project"
     description = " ".join(str(description or content).split())[:150]
+    ensure_dir(root)
     folder = memory_dir(root)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{slug}.md").write_text(
@@ -206,18 +246,148 @@ def facts_for_prompt(root: Path) -> str:
     return text if len(text) <= MAX_FACTS_CHARS else text[:MAX_FACTS_CHARS] + "\n[... more memories not shown]"
 
 
+# What the code-writing (local) models are told from memory: preferences,
+# corrections and project decisions -- the facts that shape code. Before,
+# remembered facts reached only the orchestrator, so "never use print()"
+# never reached the model actually writing the code.
+LOCAL_FACT_TYPES = ("feedback", "user", "project")
+LOCAL_FACTS_CHARS = 1_200
+
+
+def facts_for_local(root: Path, limit: int = LOCAL_FACTS_CHARS) -> str:
+    lines = [f"- {f['content']}" for f in list_facts(root) if f.get("type", "project") in LOCAL_FACT_TYPES]
+    text = "\n".join(" ".join(line.split()) for line in lines)
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n[...]"
+
+
+# --- corrections given to local models --------------------------------------------
+#
+# Every time a local model's work is corrected (it didn't parse, a check
+# failed after it, the orchestrator re-delegated the same file), a line is
+# logged here. At /exit the memory keeper reads the log, and a correction
+# that keeps coming up becomes a lasting "feedback" rule -- which then goes
+# to every code-writing model (facts_for_local).
+
+CORRECTIONS = "corrections.jsonl"
+MAX_CORRECTIONS = 200
+
+
+def note_correction(root: Path, kind: str, path: str, detail: str) -> None:
+    import json
+
+    try:
+        folder = ensure_dir(root)
+        log = folder / CORRECTIONS
+        lines = log.read_text().splitlines() if log.is_file() else []
+        entry = {"when": time.strftime("%Y-%m-%d %H:%M"), "kind": kind, "path": path, "detail": " ".join(str(detail).split())[:400]}
+        lines.append(json.dumps(entry))
+        log.write_text("\n".join(lines[-MAX_CORRECTIONS:]) + "\n")
+    except OSError:
+        pass  # a nice-to-have; never a reason to fail the task
+
+
+def recent_corrections(root: Path, limit: int = 40) -> list[dict]:
+    import json
+
+    log = project_dir(root) / CORRECTIONS
+    try:
+        lines = log.read_text().splitlines() if log.is_file() else []
+    except OSError:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+# --- unfinished work ---------------------------------------------------------------
+#
+# A task that ends before it's done -- stopped, paused past a usage limit,
+# out of steps, or finished with plan items open -- is saved here, not left
+# to a summary a small model might drop. The next session offers to continue
+# it, and the orchestrator sees it in its instructions meanwhile.
+
+OPEN_WORK = "open-work.json"
+MAX_OPEN_WORK = 5
+RESUME_PREFIX = "[Continuing unfinished work] "
+
+
+def open_work(root: Path) -> list[dict]:
+    import json
+
+    path = project_dir(root) / OPEN_WORK
+    try:
+        data = json.loads(path.read_text()) if path.is_file() else []
+    except (OSError, ValueError):
+        return []
+    return [d for d in data if isinstance(d, dict) and d.get("task")] if isinstance(data, list) else []
+
+
+def _save_open_work(root: Path, items: list[dict]) -> None:
+    import json
+
+    path = ensure_dir(root) / OPEN_WORK
+    if items:
+        path.write_text(json.dumps(items[-MAX_OPEN_WORK:], indent=1) + "\n")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def save_open_work(root: Path, task: str, why: str, open_items: list[str], unchecked: list[str]) -> None:
+    items = [w for w in open_work(root) if w.get("task") != task]
+    items.append(
+        {"task": task, "why": why, "open_items": open_items[:12], "unchecked": unchecked[:12], "when": time.strftime("%Y-%m-%d %H:%M")}
+    )
+    try:
+        _save_open_work(root, items)
+    except OSError:
+        pass
+
+
+def clear_open_work(root: Path, task: str) -> None:
+    items = open_work(root)
+    kept = [w for w in items if w.get("task") != task]
+    if len(kept) != len(items):
+        try:
+            _save_open_work(root, kept)
+        except OSError:
+            pass
+
+
+def describe_open_work(entry: dict) -> str:
+    lines = [f"Task: {entry['task']}", f"Stopped because: {entry.get('why') or 'unknown'} ({entry.get('when', '')})"]
+    if entry.get("open_items"):
+        lines.append("Plan items not done:\n" + "\n".join(f"- {i}" for i in entry["open_items"]))
+    if entry.get("unchecked"):
+        lines.append("Changed but not checked yet: " + ", ".join(entry["unchecked"]))
+    return "\n".join(lines)
+
+
+def open_work_for_prompt(root: Path) -> str:
+    return "\n\n".join(describe_open_work(w) for w in open_work(root))
+
+
 # --- compaction ----------------------------------------------------------------
 
 
 def _turn_starts(messages: list[dict]) -> list[int]:
     """Indices (after the system message) where a user turn begins. Notes
     and nudges localforge added mid-task are user-role too, but not turns."""
-    from localforge.orchestrator import NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX
+    from localforge.orchestrator import (
+        CHECKPOINT_PREFIX,
+        COMPLETION_PREFIX,
+        NOTE_PREFIX,
+        NUDGE,
+        STEPS_LEFT_PREFIX,
+    )
 
     return [
         i
         for i, m in enumerate(messages)
-        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX))
+        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX))
     ]
 
 
@@ -340,6 +510,11 @@ Skip anything temporary, obvious from the code, or already in the existing memor
 Existing memories:
 {existing}
 
+Corrections given to the code-writing models (this and earlier sessions):
+{corrections}
+When the same kind of correction shows up more than once, save it as a "feedback" memory phrased as a rule for
+the code-writing models (e.g. "Use logging, never print()"), unless an existing memory already says it.
+
 Session:
 {transcript}
 
@@ -362,9 +537,14 @@ def extract_facts(conversation, dispatcher, root: Path, hooks=None) -> int:
     if hooks is not None and hooks.on_tool is not None:
         hooks.on_tool("compact", f"saving what's worth remembering with {entry.name}")
     try:
-        transcript = _render(turns, _room(dispatcher, entry, EXTRACT_PROMPT, existing))
+        corrections = "\n".join(
+            f"- {c.get('kind')} {c.get('path') or ''}: {c.get('detail', '')[:200]}" for c in recent_corrections(root, 30)
+        ) or "(none)"
+        transcript = _render(turns, _room(dispatcher, entry, EXTRACT_PROMPT, existing, corrections))
         result = BACKENDS[entry.runtime].generate(
-            entry.name, EXTRACT_PROMPT.format(existing=existing, transcript=transcript), context_limit=dispatcher.context_limit(entry)
+            entry.name,
+            EXTRACT_PROMPT.format(existing=existing, corrections=corrections, transcript=transcript),
+            context_limit=dispatcher.context_limit(entry),
         )
     except Exception:  # noqa: BLE001 - memory is best-effort
         return 0

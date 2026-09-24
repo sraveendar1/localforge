@@ -75,7 +75,8 @@ def test_retrying_a_failed_call_actually_runs_it_again():
 
 def test_a_call_that_keeps_failing_is_stopped_with_a_useful_message():
     call = ("delegate_coding_task", '{"instructions": "write x"}')
-    replies = iter([_tool_reply(*call)] * 4 + [_final("blocked: explained to the user")])
+    # a "blocked" answer is asked once whether there's another way (the completion check), then stands
+    replies = iter([_tool_reply(*call)] * 4 + [_final("blocked: explained to the user")] * 2)
     flaky = FlakyDispatcher(fail_times=99)
     result, conv = _run(replies, flaky)
     assert flaky.calls == orch.MAX_ATTEMPTS_PER_CALL

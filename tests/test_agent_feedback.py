@@ -69,6 +69,8 @@ def _capture(response_lines):
     requests = []
 
     def handler(request):
+        if request.url.path != "/api/generate":
+            return httpx.Response(200, json={"model_info": {}})  # the trained-window lookup
         requests.append(json.loads(request.content))
         return httpx.Response(200, content="\n".join(json.dumps(x) for x in response_lines).encode())
 

@@ -209,10 +209,22 @@ def _signature(tool: dict) -> str:
     return f"{tool['function']['name']}({', '.join(names)})"
 
 
-def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
-    """Flatten the conversation + tool schemas into one prompt, asking for a
-    strict JSON reply we can parse back into tool calls with arguments.
-    """
+_PROTOCOL = (
+    "If the user's latest message doesn't ask you to build, change or look into something "
+    "(a greeting, a question, a chat), answer it directly with final_answer and use no tools.\n"
+    "Reply with ONLY a single JSON object, no prose and no code fence.\n"
+    'To use tools (one or more): {"tool_calls": [{"name": "<tool>", "arguments": {"<arg>": <value>, ...}}]}\n'
+    "Independent steps (reading several files, several searches) go in ONE reply as several tool_calls: "
+    "every reply re-sends the whole conversation, so fewer replies cost less.\n"
+    'When finished:  {"final_answer": "<your reply to the user>"}'
+)
+
+
+def _render_parts(messages: list[dict], tools: list[dict]) -> tuple[str, str]:
+    """(instructions, conversation): the system message, tool list and reply
+    protocol -- the same on every step of a task -- and the transcript, which
+    only grows at the end. Kept apart so a CLI that takes its own system
+    prompt can get the first as that (see complete())."""
     tool_lines = []
     for t in tools:
         tool_lines.append(f"- {_signature(t)}: {t['function']['description']}")
@@ -229,18 +241,34 @@ def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
         content = m.get("content") or ""
         transcript.append(f"[{'tool result' if role == 'tool' else role}]\n{content}")
 
-    return (
+    instructions = (
         (str(system[0].get("content")) + "\n\n" if system else "")
         + "Decide the next step. The tools below are the only ones you have.\n\n"
         "Available tools (arguments marked ? are optional):\n"
         + ("\n".join(tool_lines) if tool_lines else "(none)")
-        + "\n\nConversation so far:\n"
-        + "\n\n".join(transcript)
-        + "\n\nIf the user's latest message doesn't ask you to build, change or look into something "
-        "(a greeting, a question, a chat), answer it directly with final_answer and use no tools.\n"
-        "Reply with ONLY a single JSON object, no prose and no code fence.\n"
-        'To use tools (one or more): {"tool_calls": [{"name": "<tool>", "arguments": {"<arg>": <value>, ...}}]}\n'
-        'When finished:  {"final_answer": "<your reply to the user>"}'
+    )
+    return instructions, "Conversation so far:\n" + "\n\n".join(transcript)
+
+
+def _render_prompt(messages: list[dict], tools: list[dict]) -> str:
+    """Flatten the conversation + tool schemas into one prompt, asking for a
+    strict JSON reply we can parse back into tool calls with arguments.
+    """
+    instructions, conversation = _render_parts(messages, tools)
+    return instructions + "\n\n" + conversation + "\n\n" + _PROTOCOL
+
+
+def _render_split(messages: list[dict], tools: list[dict]) -> tuple[str, str]:
+    """(system prompt, prompt) for a CLI that takes a system prompt of its
+    own. Replacing claude's default one matters: measured live, `claude -p`
+    sent ~8,100 tokens of Claude Code's own instructions with every step --
+    irrelevant here, with its tools off -- against ~1,960 with ours (a
+    one-word reply cost 7x as much). The fixed part also stays the same all
+    task long, so the CLI can cache it."""
+    instructions, conversation = _render_parts(messages, tools)
+    return (
+        instructions + "\n\n" + _PROTOCOL,
+        conversation + "\n\nDecide the next step. Reply with ONLY a single JSON object, as your instructions describe.",
     )
 
 
@@ -289,8 +317,11 @@ def _read_usage(blob: dict | None) -> _Usage:
                 return int(v)
         return 0
 
+    # Claude reports cached input apart from input_tokens (a first step
+    # showed input 9 and cache writes 8,099); it's all input the model read.
+    cached = pick("cache_creation_input_tokens") + pick("cache_read_input_tokens")
     return _Usage(
-        prompt_tokens=pick("input_tokens", "prompt_tokens", "input", "prompt"),
+        prompt_tokens=pick("input_tokens", "prompt_tokens", "input", "prompt") + cached,
         completion_tokens=pick("output_tokens", "completion_tokens", "output", "candidates"),
     )
 
@@ -322,10 +353,25 @@ def _unwrap_envelope(stdout: str, spec: dict) -> tuple[str, _Usage, float]:
     if isinstance(envelope, dict) and spec["result_key"] in envelope:
         return (
             str(envelope.get(spec["result_key"]) or ""),
-            _read_usage(envelope.get(spec.get("usage_key", "usage"))),
+            _model_usage(envelope.get("modelUsage")) or _read_usage(envelope.get(spec.get("usage_key", "usage"))),
             float(envelope.get("total_cost_usd", 0.0) or 0.0),
         )
     return stdout, _Usage(), 0.0
+
+
+def _model_usage(per_model) -> _Usage | None:
+    """Every model a step used, added up. claude's top-level `usage` covers
+    only the main model: a step whose built-in advisor tool ran Opus showed
+    Haiku's tokens while Opus was 75% of the cost (seen live)."""
+    if not isinstance(per_model, dict) or not per_model:
+        return None
+    prompt = completion = 0
+    for counts in per_model.values():
+        if not isinstance(counts, dict):
+            continue
+        prompt += sum(int(counts.get(k) or 0) for k in ("inputTokens", "cacheReadInputTokens", "cacheCreationInputTokens"))
+        completion += int(counts.get("outputTokens") or 0)
+    return _Usage(prompt_tokens=prompt, completion_tokens=completion)
 
 
 def message_from_reply(raw: str) -> _Message:
@@ -443,10 +489,14 @@ def complete(
     if not available(provider):
         raise CLINotAvailableError(requirements_message(provider))
 
-    prompt = _render_prompt(messages, tools)
     streaming = on_text is not None and bool(spec.get("stream_args"))
     output_args = spec["stream_args"] if streaming else spec.get("json_args", [])
     cmd = [spec["command"], *spec["headless_args"], *spec.get("isolation_args", []), *output_args]
+    if spec.get("system_prompt_flag"):
+        system_prompt, prompt = _render_split(messages, tools)
+        cmd += [spec["system_prompt_flag"], system_prompt]
+    else:
+        prompt = _render_prompt(messages, tools)
     if model and spec.get("model_flag"):
         cmd += [spec["model_flag"], model.removeprefix(f"{provider}/")]  # gemini/x is LiteLLM's name; the CLI wants x
     if spec.get("effort_flag"):

@@ -27,6 +27,37 @@ class LocalModelStuck(RuntimeError):
     """A generation was stopped: it looped, or ran far too long."""
 
 
+class LocalModelOutOfMemory(RuntimeError):
+    """Ollama couldn't load the model with the context window asked for."""
+
+
+class LocalPromptTooLarge(RuntimeError):
+    """The prompt is bigger than the window the model can read here. Raised
+    instead of sending it: Ollama would cut it without a word."""
+
+
+_MEMORY_MARKERS = (
+    "requires more system memory", "out of memory", "insufficient memory", "not enough memory",
+    "failed to allocate", "unable to allocate", "cudamalloc", "memory layout cannot be allocated",
+)
+
+
+def error_from(resp: httpx.Response, model_name: str) -> Exception | None:
+    """Ollama's own reason for a failed request (it's in the body; a bare
+    raise_for_status() threw it away and said only "500 Server Error")."""
+    if resp.status_code < 400:
+        return None
+    try:
+        resp.read()
+        detail = resp.json().get("error") or resp.text
+    except Exception:  # noqa: BLE001 - not JSON: the raw text will do
+        detail = getattr(resp, "text", "") or ""
+    detail = str(detail or f"HTTP {resp.status_code}").strip()[:400]
+    if any(marker in detail.lower() for marker in _MEMORY_MARKERS):
+        return LocalModelOutOfMemory(f"{model_name} couldn't be loaded: {detail}")
+    return RuntimeError(f"{model_name}: Ollama returned an error ({resp.status_code}): {detail}")
+
+
 # Guards for a streamed generation (see _generate_streaming).
 MAX_OUTPUT_TOKENS = 8192  # a whole source file fits; an endless ramble doesn't
 MAX_GENERATION_SECONDS = 900
@@ -83,10 +114,19 @@ def prompt_budget(limit: int | None = None, output_tokens: int = MAX_OUTPUT_TOKE
     return max(0, cap - reply_room(limit, output_tokens)) * CHARS_PER_TOKEN
 
 
-def _with_context(prompt: str, output_tokens: int, kwargs: dict) -> dict:
+def _with_context(prompt: str, output_tokens: int, kwargs: dict, trained: int | None = None, model_name: str = "") -> dict:
     limit = kwargs.pop("context_limit", None)
+    # Ollama silently caps num_ctx at what the model was trained for (asked
+    # for 262k, it loaded 32k -- verified live), so that's a limit too.
+    limit = min(x for x in (limit, trained, max_context()) if x)
     options = {"num_predict": output_tokens, **kwargs.pop("options", {})}
     prompt_tokens = estimate_tokens(prompt)
+    if prompt_tokens + 256 > limit:
+        raise LocalPromptTooLarge(
+            f"{model_name or 'the local model'} can read about {limit:,} tokens here and this prompt is about "
+            f"{prompt_tokens:,}. Nothing was sent (Ollama would have cut it silently). Send fewer or shorter "
+            "context_files, or split the task."
+        )
     options.setdefault("num_ctx", context_size(prompt_tokens, options["num_predict"], limit))
     # The reply must fit in what's left of the window.
     options["num_predict"] = max(256, min(options["num_predict"], options["num_ctx"] - prompt_tokens))
@@ -107,6 +147,9 @@ def _is_repeating(text: str, window: int = 120, times: int = 4) -> bool:
     if len(set(tail)) < 12:
         return False  # blank space or a divider line like "=====", not a loop
     return text[-window * times * 2 :].count(tail) >= times
+
+
+_trained_context: dict[str, int | None] = {}
 
 
 class OllamaBackend:
@@ -146,6 +189,21 @@ class OllamaBackend:
             resp = client.request("DELETE", "/api/delete", json={"name": model_name})
             resp.raise_for_status()
 
+    def trained_context(self, model_name: str) -> int | None:
+        """The context length `model_name` was trained for, from Ollama (asked
+        once per model). None if Ollama can't say."""
+        if model_name not in _trained_context:
+            try:
+                with self._client() as client:
+                    resp = client.post("/api/show", json={"model": model_name})
+                    resp.raise_for_status()
+                    info = resp.json().get("model_info") or {}
+            except (httpx.HTTPError, ValueError):
+                return None  # not cached: Ollama may just be starting
+            found = next((v for k, v in info.items() if k.endswith(".context_length") and isinstance(v, int)), None)
+            _trained_context[model_name] = found
+        return _trained_context[model_name]
+
     def ensure_available(self, model_name: str, on_progress: ProgressCallback | None = None) -> None:
         if not self.is_running():
             raise OllamaNotRunningError(
@@ -174,13 +232,14 @@ class OllamaBackend:
         """
         if on_token is not None:
             return self._generate_streaming(model_name, prompt, on_token, **kwargs)
-        options = _with_context(prompt, MAX_QUIET_OUTPUT_TOKENS, kwargs)
+        options = _with_context(prompt, MAX_QUIET_OUTPUT_TOKENS, kwargs, self.trained_context(model_name), model_name)
         with self._client(GENERATE_TIMEOUT) as client:
             resp = client.post(
                 "/api/generate",
                 json={"model": model_name, "prompt": prompt, "stream": False, "options": options, **kwargs},
             )
-            resp.raise_for_status()
+            if (error := error_from(resp, model_name)) is not None:
+                raise error
             data = resp.json()
             # "eval_count" is Ollama's count of tokens it generated for this
             # response -- used for usage metrics, not for the API call itself.
@@ -199,12 +258,13 @@ class OllamaBackend:
         parts: list[str] = []
         tokens, truncated = 0, False
         started = time.monotonic()
-        options = _with_context(prompt, MAX_OUTPUT_TOKENS, kwargs)
+        options = _with_context(prompt, MAX_OUTPUT_TOKENS, kwargs, self.trained_context(model_name), model_name)
         with self._client(GENERATE_TIMEOUT) as client:
             with client.stream(
                 "POST", "/api/generate", json={"model": model_name, "prompt": prompt, "stream": True, "options": options, **kwargs}
             ) as resp:
-                resp.raise_for_status()
+                if (error := error_from(resp, model_name)) is not None:
+                    raise error
                 for line in resp.iter_lines():
                     if not line:
                         continue
@@ -213,7 +273,10 @@ class OllamaBackend:
                     except json.JSONDecodeError:
                         continue
                     if event.get("error"):
-                        raise RuntimeError(f"{model_name}: {event['error']}")
+                        detail = str(event["error"])
+                        if any(marker in detail.lower() for marker in _MEMORY_MARKERS):
+                            raise LocalModelOutOfMemory(f"{model_name} ran out of memory: {detail}")
+                        raise RuntimeError(f"{model_name}: {detail}")
                     chunk = event.get("response", "")
                     if chunk:
                         parts.append(chunk)
