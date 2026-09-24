@@ -249,6 +249,18 @@ def _shrunk_window(name: str) -> int | None:
     return found[0]
 
 
+# The orchestrator is the paid model: code is the local models' job. These
+# stop it from writing code itself -- in edit_file, or pasted into a
+# delegation's instructions (which also makes the local model a copy-typist).
+MAX_EDIT_LINES = 12
+MAX_CODE_LINES_IN_INSTRUCTIONS = 15
+_FENCED = re.compile(r"```[^\n]*\n(.*?)```", re.S)
+
+
+def _code_lines(text: str) -> int:
+    return sum(len(block.strip("\n").splitlines()) for block in _FENCED.findall(text or ""))
+
+
 # The fixed text wrapped around a delegated prompt (preface, notes).
 PROMPT_OVERHEAD = 500
 
@@ -596,6 +608,12 @@ class Dispatcher:
 
     def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:
         instructions = str(args.get("instructions") or "")
+        if (code := _code_lines(instructions)) > MAX_CODE_LINES_IN_INSTRUCTIONS:
+            return (
+                f"{TASK_MODALITIES[modality]['tool_name']} failed: your instructions contain {code} lines of code, and "
+                "writing code is the local model's job (you're the paid model). Nothing was sent. Describe what's "
+                "needed instead: the behaviour, names, signatures and constraints; name existing files in context_files."
+            )
         path = args.get("path")
         if path:
             return self._delegate_to_file(modality, instructions, args.get("context_files"), str(path), on_delegate)
@@ -852,6 +870,13 @@ class Dispatcher:
         if tool_name == "search":
             return ws.search(args["pattern"], args.get("path") or ".", args.get("glob") or "")
         if tool_name == "edit_file":
+            new_lines = len(str(args["new_string"]).splitlines())
+            if new_lines > MAX_EDIT_LINES:
+                return (
+                    f"edit_file failed: that edit writes {new_lines} lines, and edit_file is for small fix-ups (up to "
+                    f"{MAX_EDIT_LINES}). Nothing was changed. Have a local model write it: delegate_coding_task with "
+                    f"path={args['path']!r}, describing the change."
+                )
             return ws.edit_file(args["path"], args["old_string"], args["new_string"])
         if tool_name == "make_dir":
             return ws.make_dir(args["path"])

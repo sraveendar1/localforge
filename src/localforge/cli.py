@@ -2374,11 +2374,8 @@ def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
         notes.append(f"~${subscription:.4f} of subscription usage, not billed separately")
     cost = f" ({'; '.join(notes)})" if notes else ""
     lines = [
-        _usage_bar(local, prompt + completion),
-        "",
-        f"[success]■[/success] Local models: {local} tokens",
-        f"[warning]■[/warning] Frontier ({', '.join(models)}): {prompt} in + {completion} out = "
-        f"{prompt + completion} tokens" + cost,
+        *_work_split_lines(local, prompt, completion, ", ".join(models)),
+        f"  [dim]{prompt + completion} frontier tokens in all{cost}[/dim]",
     ]
     if len(models) == 1 and (saved := _savings_line(local, models[0])):
         lines.append(saved)
@@ -2416,17 +2413,30 @@ def _savings_line(local_tokens: int, frontier_model: str) -> str:
 
 def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None:
     usage_lines = [
-        _usage_bar(stats.local_tokens_generated, stats.frontier_total_tokens),
-        "",
-        f"[success]■[/success] Local models: {stats.local_tokens_generated} tokens — "
-        "never sent to or billed by the frontier API",
-        f"[warning]■[/warning] Frontier ({frontier_model}): {stats.frontier_prompt_tokens} in + "
-        f"{stats.frontier_completion_tokens} out = {stats.frontier_total_tokens} tokens"
-        + _frontier_cost_note(stats),
+        *_work_split_lines(
+            stats.local_tokens_generated, stats.frontier_prompt_tokens, stats.frontier_completion_tokens, frontier_model
+        ),
+        f"  [dim]{stats.frontier_total_tokens} frontier tokens in all{_frontier_cost_note(stats)}[/dim]",
     ]
     if saved := _savings_line(stats.local_tokens_generated, frontier_model):
         usage_lines.append(saved)
     console.print(Panel("\n".join(usage_lines), title=title, border_style="panel.border"))
+
+
+def _work_split_lines(local: int, frontier_in: int, frontier_out: int, frontier_label: str) -> list[str]:
+    """Who did the work. The bar compares what each side *wrote*: local
+    output against the orchestrator's own output (plans, instructions,
+    answers). Comparing local output with everything the orchestrator
+    *read* made every task look frontier-heavy, since each step re-reads
+    the whole conversation. What it read is shown on its own line: that's
+    where most frontier cost goes."""
+    return [
+        _usage_bar(local, frontier_out),
+        "",
+        f"[success]■[/success] Written by local models: {local} tokens — never sent to or billed by the frontier API",
+        f"[warning]■[/warning] Written by the orchestrator ({frontier_label}): {frontier_out} tokens",
+        f"  Orchestrator read: {frontier_in} tokens (its instructions, the conversation, file reads)",
+    ]
 
 
 def _ollama_installed_via_brew() -> bool:

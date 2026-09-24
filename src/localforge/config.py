@@ -96,10 +96,17 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
     "anthropic": {
         "command": "claude",
         "headless_args": ["-p"],
-        # Verified live (claude 2.1.x): with these the model reports no
-        # built-in or MCP tools. `--tools` is variadic, so it must be followed
-        # by another option, never directly by the prompt.
-        "isolation_args": ["--tools", "", "--strict-mcp-config"],
+        # Verified live: with these the model reports no tools at all and
+        # each step is one Haiku turn (~$0.005). Without them `claude -p`
+        # loaded the user's own ~/.claude settings -- there, `advisorModel:
+        # opus` -- so ordinary steps were sent on to Opus (75% of a step's
+        # cost, invisible in `usage`). `--setting-sources project` in the
+        # empty temp cwd loads no settings at all; the user's Claude Code
+        # setup is untouched. `--tools`/`--disallowed-tools` are variadic,
+        # so each must be followed by another option, never the prompt.
+        "isolation_args": [
+            "--tools", "", "--disallowed-tools", "advisor", "--setting-sources", "project", "--strict-mcp-config",
+        ],
         "prompt_via_stdin": True,
         # Which Claude model to run. Without it `claude -p` uses Claude Code's
         # own default, silently ignoring the model picked in setup (a real bug).
@@ -109,6 +116,9 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # output, so the default is medium (LOCALFORGE_ORCHESTRATOR_EFFORT
         # overrides: low, medium, high, xhigh, max).
         "effort_flag": "--effort",
+        # localforge's own instructions replace Claude Code's default system
+        # prompt (~8,100 tokens per step, measured live; ~1,960 with ours).
+        "system_prompt_flag": "--system-prompt",
         "json_args": ["--output-format", "json"],
         # Live streaming (verified live): text arrives as stream_event /
         # content_block_delta / text_delta; the last `result` event carries
