@@ -826,7 +826,12 @@ def _orchestrator_label(frontier_model: str, cli_provider: str | None) -> str:
     return f"{frontier_model} (API key)"
 
 
-_LIMIT_MARKERS = ("limit", "quota", "rate limit", "rate-limit", "credit balance", "billing", "exceeded", "spend")
+# A superset of cli_transport.LIMIT_MARKERS (never a separate list again --
+# that drift was a real bug: this list already recognized a real limit
+# message via its bare "limit", printing this friendly advice, while
+# cli_transport's own separate copy didn't, silently skipping the
+# wait-and-resume path entirely).
+_LIMIT_MARKERS = cli_transport.LIMIT_MARKERS + ("rate-limit", "billing", "exceeded")
 
 
 def _cli_failure_advice(cli_provider: str, error: str) -> str:
