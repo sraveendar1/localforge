@@ -8,7 +8,7 @@ task, /stop and Ctrl+C cancel it, and approvals are answered on the prompt.
 
 import threading
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -287,6 +287,30 @@ def test_the_repl_routes_tasks_to_the_runner_and_blocks_risky_commands(monkeypat
     assert "/clear has to wait until the current task is done" in printed
     app.assert_called_once_with(["usage"], standalone_mode=False)  # read-only commands still run
     runner.shutdown.assert_called_once()  # /exit while busy stops the task
+
+
+def test_the_repl_blocks_scratch_and_memory_mutations_while_busy_but_not_reads(monkeypatch):
+    """/memory clear and /scratch clear mutate state a running task holds a
+    live reference to (conversation.facts/.memory, the scratch directory
+    backing its Workspace) -- reported: a slash command sometimes made the
+    running task silently stop. Plain /memory and /scratch only read, so
+    they still run while busy, like /usage does."""
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    console = MagicMock()
+    reader = MagicMock()
+    reader.read.side_effect = ["/scratch clear", "/memory clear", "/memory forget foo", "/scratch", "/memory", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, console, reader, runner)
+    printed = " ".join(str(c.args[0]) for c in console.print.call_args_list if c.args)
+    assert printed.count("has to wait until the current task is done") == 3
+    app.assert_any_call(["scratch"], standalone_mode=False)
+    app.assert_any_call(["memory"], standalone_mode=False)
+    assert app.call_args_list.count(call(["scratch", "clear"], standalone_mode=False)) == 0
+    assert app.call_args_list.count(call(["memory", "clear"], standalone_mode=False)) == 0
 
 
 def test_the_repl_answers_approvals_from_the_prompt():
