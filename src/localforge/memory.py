@@ -246,6 +246,130 @@ def facts_for_prompt(root: Path) -> str:
     return text if len(text) <= MAX_FACTS_CHARS else text[:MAX_FACTS_CHARS] + "\n[... more memories not shown]"
 
 
+# What the code-writing (local) models are told from memory: preferences,
+# corrections and project decisions -- the facts that shape code. Before,
+# remembered facts reached only the orchestrator, so "never use print()"
+# never reached the model actually writing the code.
+LOCAL_FACT_TYPES = ("feedback", "user", "project")
+LOCAL_FACTS_CHARS = 1_200
+
+
+def facts_for_local(root: Path, limit: int = LOCAL_FACTS_CHARS) -> str:
+    lines = [f"- {f['content']}" for f in list_facts(root) if f.get("type", "project") in LOCAL_FACT_TYPES]
+    text = "\n".join(" ".join(line.split()) for line in lines)
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n[...]"
+
+
+# --- corrections given to local models --------------------------------------------
+#
+# Every time a local model's work is corrected (it didn't parse, a check
+# failed after it, the orchestrator re-delegated the same file), a line is
+# logged here. At /exit the memory keeper reads the log, and a correction
+# that keeps coming up becomes a lasting "feedback" rule -- which then goes
+# to every code-writing model (facts_for_local).
+
+CORRECTIONS = "corrections.jsonl"
+MAX_CORRECTIONS = 200
+
+
+def note_correction(root: Path, kind: str, path: str, detail: str) -> None:
+    import json
+
+    try:
+        folder = ensure_dir(root)
+        log = folder / CORRECTIONS
+        lines = log.read_text().splitlines() if log.is_file() else []
+        entry = {"when": time.strftime("%Y-%m-%d %H:%M"), "kind": kind, "path": path, "detail": " ".join(str(detail).split())[:400]}
+        lines.append(json.dumps(entry))
+        log.write_text("\n".join(lines[-MAX_CORRECTIONS:]) + "\n")
+    except OSError:
+        pass  # a nice-to-have; never a reason to fail the task
+
+
+def recent_corrections(root: Path, limit: int = 40) -> list[dict]:
+    import json
+
+    log = project_dir(root) / CORRECTIONS
+    try:
+        lines = log.read_text().splitlines() if log.is_file() else []
+    except OSError:
+        return []
+    out = []
+    for line in lines[-limit:]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+# --- unfinished work ---------------------------------------------------------------
+#
+# A task that ends before it's done -- stopped, paused past a usage limit,
+# out of steps, or finished with plan items open -- is saved here, not left
+# to a summary a small model might drop. The next session offers to continue
+# it, and the orchestrator sees it in its instructions meanwhile.
+
+OPEN_WORK = "open-work.json"
+MAX_OPEN_WORK = 5
+RESUME_PREFIX = "[Continuing unfinished work] "
+
+
+def open_work(root: Path) -> list[dict]:
+    import json
+
+    path = project_dir(root) / OPEN_WORK
+    try:
+        data = json.loads(path.read_text()) if path.is_file() else []
+    except (OSError, ValueError):
+        return []
+    return [d for d in data if isinstance(d, dict) and d.get("task")] if isinstance(data, list) else []
+
+
+def _save_open_work(root: Path, items: list[dict]) -> None:
+    import json
+
+    path = ensure_dir(root) / OPEN_WORK
+    if items:
+        path.write_text(json.dumps(items[-MAX_OPEN_WORK:], indent=1) + "\n")
+    else:
+        path.unlink(missing_ok=True)
+
+
+def save_open_work(root: Path, task: str, why: str, open_items: list[str], unchecked: list[str]) -> None:
+    items = [w for w in open_work(root) if w.get("task") != task]
+    items.append(
+        {"task": task, "why": why, "open_items": open_items[:12], "unchecked": unchecked[:12], "when": time.strftime("%Y-%m-%d %H:%M")}
+    )
+    try:
+        _save_open_work(root, items)
+    except OSError:
+        pass
+
+
+def clear_open_work(root: Path, task: str) -> None:
+    items = open_work(root)
+    kept = [w for w in items if w.get("task") != task]
+    if len(kept) != len(items):
+        try:
+            _save_open_work(root, kept)
+        except OSError:
+            pass
+
+
+def describe_open_work(entry: dict) -> str:
+    lines = [f"Task: {entry['task']}", f"Stopped because: {entry.get('why') or 'unknown'} ({entry.get('when', '')})"]
+    if entry.get("open_items"):
+        lines.append("Plan items not done:\n" + "\n".join(f"- {i}" for i in entry["open_items"]))
+    if entry.get("unchecked"):
+        lines.append("Changed but not checked yet: " + ", ".join(entry["unchecked"]))
+    return "\n".join(lines)
+
+
+def open_work_for_prompt(root: Path) -> str:
+    return "\n\n".join(describe_open_work(w) for w in open_work(root))
+
+
 # --- compaction ----------------------------------------------------------------
 
 
@@ -386,6 +510,11 @@ Skip anything temporary, obvious from the code, or already in the existing memor
 Existing memories:
 {existing}
 
+Corrections given to the code-writing models (this and earlier sessions):
+{corrections}
+When the same kind of correction shows up more than once, save it as a "feedback" memory phrased as a rule for
+the code-writing models (e.g. "Use logging, never print()"), unless an existing memory already says it.
+
 Session:
 {transcript}
 
@@ -408,9 +537,14 @@ def extract_facts(conversation, dispatcher, root: Path, hooks=None) -> int:
     if hooks is not None and hooks.on_tool is not None:
         hooks.on_tool("compact", f"saving what's worth remembering with {entry.name}")
     try:
-        transcript = _render(turns, _room(dispatcher, entry, EXTRACT_PROMPT, existing))
+        corrections = "\n".join(
+            f"- {c.get('kind')} {c.get('path') or ''}: {c.get('detail', '')[:200]}" for c in recent_corrections(root, 30)
+        ) or "(none)"
+        transcript = _render(turns, _room(dispatcher, entry, EXTRACT_PROMPT, existing, corrections))
         result = BACKENDS[entry.runtime].generate(
-            entry.name, EXTRACT_PROMPT.format(existing=existing, transcript=transcript), context_limit=dispatcher.context_limit(entry)
+            entry.name,
+            EXTRACT_PROMPT.format(existing=existing, corrections=corrections, transcript=transcript),
+            context_limit=dispatcher.context_limit(entry),
         )
     except Exception:  # noqa: BLE001 - memory is best-effort
         return 0

@@ -51,6 +51,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /installed        models actually on disk
   /delete <names>   delete installed model(s), omit names to choose interactively
   /upgrade          swap installed models for better ones that fit, and remove the old ones
+  /tasks            show unfinished work left from earlier sessions
   /theme <name>     show/switch color theme (matrix, dark, light)
   /uninstall        remove localforge and everything it manages
   /help             show this list

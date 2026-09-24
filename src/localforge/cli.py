@@ -1647,7 +1647,37 @@ def _start_session() -> bool:
         return False
     _offer_upgrades_at_start()
     _offer_brief_update_at_start(Path.cwd().resolve())
+    _offer_open_work_at_start(Path.cwd().resolve())
     return True
+
+
+def _offer_open_work_at_start(folder: Path) -> None:
+    """A task that stopped before it was done (Ctrl+C, a usage ceiling, an
+    error the orchestrator couldn't work around) is saved rather than lost
+    to a summary; offer to pick it back up (reported: "some check/loop to
+    ensure the task is completed"). Kept until it's resumed and finishes, or
+    the user says to drop it -- not silently forgotten either way."""
+    if not sys.stdin.isatty():
+        return
+    items = memory.open_work(folder)
+    if not items:
+        return
+    entry = items[-1]
+    more = f" (and {len(items) - 1} older unfinished task(s); /memory to see them)" if len(items) > 1 else ""
+    console.print(f"\n[bold]Unfinished from last session:[/bold]{more}")
+    console.print(escape(memory.describe_open_work(entry)))
+    console.print("  1) Continue it now\n  2) Not now (you'll be asked again next time)\n  3) Discard it")
+    answer = _ask_number("Choose", 3)
+    if answer == 1:
+        resume = memory.RESUME_PREFIX + entry["task"] + "\n\n" + memory.describe_open_work(entry)
+        try:
+            app(["run", resume], standalone_mode=False)
+        except typer.Exit:
+            pass
+    elif answer == 3:
+        memory.clear_open_work(folder, entry["task"])
+        console.print("[dim]Discarded.[/dim]")
+    console.print()
 
 
 def _offer_brief_update_at_start(folder: Path) -> None:

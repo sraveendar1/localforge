@@ -256,6 +256,14 @@ MAX_EDIT_LINES = 12
 MAX_CODE_LINES_IN_INSTRUCTIONS = 15
 _FENCED = re.compile(r"```[^\n]*\n(.*?)```", re.S)
 
+# A command that checks work: tests, linters, type checkers, builds. Shared
+# with orchestrator.py's completion check, which imports it from here.
+CHECK_COMMAND = re.compile(
+    r"\b(test|tests|pytest|unittest|jest|vitest|mocha|spec|check|lint|ruff|flake8|pylint|mypy|pyright|tsc|eslint|"
+    r"build|compile|cargo|go (?:vet|build|test)|make|gradle|mvn|dotnet)\b",
+    re.I,
+)
+
 
 def _code_lines(text: str) -> int:
     return sum(len(block.strip("\n").splitlines()) for block in _FENCED.findall(text or ""))
@@ -359,6 +367,9 @@ def _cut_off_warning(modality: str) -> str:
     )
 
 
+# Modality -> most recent delegation's (path, instructions), so a
+# re-delegation of the same file can carry its previous attempt and the
+# failure forward, instead of the local model starting from nothing again.
 _PREFACES = {
     "coding": "You are a focused coding assistant working in an existing project. Produce working code for this task.",
     "docs": "You are a technical writer working in an existing project. Write clear documentation for this task.",
@@ -373,12 +384,14 @@ LOCAL_RULES = (
 )
 
 
-def _prompt_for(modality: str, instructions: str, grounding: str = "") -> str:
+def _prompt_for(modality: str, instructions: str, grounding: str = "", preferences: str = "") -> str:
     """What a local model is sent: who it is, the rules, what this project is
-    built with and how (from the brief), then the task."""
+    built with and how (from the brief and remembered preferences), then the task."""
     parts = [_PREFACES.get(modality, _PREFACES["general"]), LOCAL_RULES]
     if grounding:
         parts.append("Project notes (from the project's brief):\n" + grounding)
+    if preferences:
+        parts.append("Remembered preferences and corrections for this project -- follow these:\n" + preferences)
     return "\n\n".join(parts) + "\n\nTask:\n" + instructions
 
 
@@ -454,6 +467,13 @@ class Dispatcher:
         self.hooks = hooks or ActivityHooks()
         self._resolved_models: dict[str, ModelEntry] = {}
         self._grounding: str | None = None
+        self._preferences: str | None = None
+        # The last failing check (run_command matching a test/lint/build
+        # pattern) not yet passed on to a delegation, so a re-delegation
+        # after a test failure carries the exact error instead of the
+        # frontier model having to paste it in by hand.
+        self._last_check_failure: str | None = None
+        self._check_failure_shown = False
         self.local_tokens_generated = 0  # running total, for usage metrics
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
@@ -500,10 +520,19 @@ class Dispatcher:
             self._grounding = brief.grounding_for_local(self.workspace.root) if self.workspace is not None else ""
         return self._grounding
 
+    def preferences(self) -> str:
+        """Remembered facts, in the form the local models get (feedback/user/
+        project types only -- not raw pointers/references)."""
+        if self._preferences is None:
+            from localforge import memory
+
+            self._preferences = memory.facts_for_local(self.workspace.root) if self.workspace is not None else ""
+        return self._preferences
+
     def prompt_chars(self, modality: str, output_tokens: int = MAX_OUTPUT_TOKENS) -> int:
         """How much task text the model for `modality` can take beside its
         reply, after the fixed preamble (rules and project notes)."""
-        preamble = len(_prompt_for(modality, "", self.grounding()))
+        preamble = len(_prompt_for(modality, "", self.grounding(), self.preferences()))
         try:
             entry = self.resolve(modality)
         except Exception:  # noqa: BLE001 - no model: the call will fail with its own error
@@ -562,7 +591,7 @@ class Dispatcher:
         backend.ensure_available(entry.name, on_progress=on_pull)
         started = time.monotonic()
         window = {"context_limit": self.context_limit(entry)}
-        prompt = _prompt_for(modality, instructions, self.grounding())
+        prompt = _prompt_for(modality, instructions, self.grounding(), self.preferences())
         if hooks.on_token is not None:
             result = backend.generate(entry.name, prompt, on_token=hooks.on_token, **window)
         else:
@@ -608,6 +637,15 @@ class Dispatcher:
 
     def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:
         instructions = str(args.get("instructions") or "")
+        if args.get("path") and self._last_check_failure and not self._check_failure_shown:
+            # A check failed since the last write and hasn't been carried
+            # forward yet: hand the exact failure to the model writing the
+            # fix, rather than relying on the orchestrator to paste it in.
+            self._check_failure_shown = True
+            instructions = (
+                f"{instructions}\n\n(The project's checks failed after the last change -- fix this too:\n"
+                f"{self._last_check_failure}\n)"
+            )
         if (code := _code_lines(instructions)) > MAX_CODE_LINES_IN_INSTRUCTIONS:
             return (
                 f"{TASK_MODALITIES[modality]['tool_name']} failed: your instructions contain {code} lines of code, and "
@@ -780,6 +818,7 @@ class Dispatcher:
         # it if the local model can't fix it.
         language, error = verify.check(rel, written)
         if error:
+            self._log_correction("syntax", rel, error)
             if self.hooks.on_tool is not None:
                 self.hooks.on_tool("retry", f"{rel}: {error[:120]}; asking the local model to fix it")
             retry = f"{task}\n\nYour previous version of `{rel}` failed a syntax check: {error}\nFix it and write the complete file again."
@@ -791,6 +830,7 @@ class Dispatcher:
                     written = fixed
                     language, error = verify.check(rel, written)
             if error or warning:
+                self._log_correction("syntax (still failing)", rel, error or warning)
                 return _with_notes(
                     f"{tool} failed: the local model's {rel} doesn't parse, even after one retry with the error "
                     f"({error or warning}). Nothing was written. Try smaller or clearer instructions, or split the file.",
@@ -815,6 +855,12 @@ class Dispatcher:
         if model_notes:
             report.append(f"The local model's notes: {model_notes}")
         return _with_notes("\n".join(report) + f"\nFirst lines:\n{preview}{more}", notes)
+
+    def _log_correction(self, kind: str, path: str, detail: str) -> None:
+        if self.workspace is not None:
+            from localforge import memory
+
+            memory.note_correction(self.workspace.root, kind, path, detail)
 
     def _direct(self, tool_name: str, args: dict) -> str:
         """A tool the orchestrator runs itself. Failures come back as text so
@@ -885,7 +931,15 @@ class Dispatcher:
         if tool_name == "delete_path":
             return ws.delete_path(args["path"], bool(args.get("recursive")))
         if tool_name == "run_command":
-            return ws.run_command(args.get("command") or args.get("instructions") or "", args.get("timeout") or 300)
+            command = args.get("command") or args.get("instructions") or ""
+            result = ws.run_command(command, args.get("timeout") or 300)
+            if CHECK_COMMAND.search(command):
+                if result.startswith("exit code 0"):
+                    self._last_check_failure = None
+                elif not result.startswith("The user declined"):
+                    self._last_check_failure = result[:600]
+                    self._check_failure_shown = False
+            return result
         raise ValueError(f"unknown tool {tool_name}")
 
 

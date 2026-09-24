@@ -17,6 +17,7 @@ from litellm import completion
 from localforge import brief, cli_transport, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
+from localforge.tools import CHECK_COMMAND as _CHECK_COMMAND
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
 from localforge.workspace import Workspace
 
@@ -169,11 +170,6 @@ _PROMISE = re.compile(r"\b(I will|I'll|I am going to|I'm going to|Let me)\s+(now
 MAX_COMPLETION_CHECKS = 3
 _CHANGED = ("Created ", "Updated ", "Deleted ", "Moved ")
 # A command that checks work: tests, linters, type checkers, builds.
-_CHECK_COMMAND = re.compile(
-    r"\b(test|tests|pytest|unittest|jest|vitest|mocha|spec|check|lint|ruff|flake8|pylint|mypy|pyright|tsc|eslint|"
-    r"build|compile|cargo|go (?:vet|build|test)|make|gradle|mvn|dotnet)\b",
-    re.I,
-)
 _GAVE_UP = re.compile(
     r"\b(couldn'?t|could not|can'?t|cannot|unable to|wasn'?t able|weren'?t able|failed to|gave up|"
     r"blocked|not (?:yet )?(?:done|finished|complete|implemented|working))\b",
@@ -351,6 +347,7 @@ class Conversation:
     project_snapshot: str = ""
     facts: str = ""
     brief: str = ""  # the project brief (AGENTS.md), if the project has one
+    last_progress: _Progress | None = None  # what the most recent task did, for open-work tracking if it stops
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
@@ -425,7 +422,7 @@ def run(
 
     turn_start = len(messages) - 1  # index of this turn's user message
     try:
-        return _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate)
+        result = _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate)
     except KeyboardInterrupt:
         # Ctrl+C: stop this task only. Drop its half-finished steps (an
         # assistant tool call without its result would make the next request
@@ -434,7 +431,29 @@ def run(
         messages.append({"role": "assistant", "content": "(The user stopped this task before it finished.)"})
         conversation.reindex_tools()
         stats.local_tokens_generated = dispatcher.local_tokens_generated
+        _remember_if_unfinished(workspace, task, "the user stopped it", conversation.last_progress)
         raise TaskCancelled(stats) from None
+    except OrchestrationError:
+        _remember_if_unfinished(workspace, task, "it didn't finish in time", conversation.last_progress)
+        raise
+    else:
+        if workspace is not None:
+            memory.clear_open_work(workspace.root, task)  # done (or the user will see it in the answer, not silently)
+        return result
+
+
+def _remember_if_unfinished(workspace, task: str, why: str, progress: _Progress | None) -> None:
+    """A task that stops before it's done is saved, not left to a summary a
+    small model might drop (reported: "if there's an issue the process
+    stops, so I need some check/loop to ensure the task is completed").
+    The next session offers to continue it (see cli._offer_open_work_at_start)."""
+    if workspace is None:
+        return
+    open_items, unchecked = _open_items_and_unchecked(progress)
+    try:
+        memory.save_open_work(workspace.root, task, why, open_items, unchecked)
+    except Exception:  # noqa: BLE001, S110 - best-effort; never worth failing the stop/error path over
+        pass
 
 
 def _call_frontier(orchestrator: dict, hooks, messages, tools):
@@ -540,6 +559,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     used_tools = nudged = False
     progress = 0  # new, successful steps since the last checkpoint
     task = _Progress()
+    conversation.last_progress = task  # visible to run() if this task stops before finishing
 
     for round_number in range(1, MAX_ROUNDS + 1):
         if hooks.on_frontier is not None:
@@ -650,6 +670,17 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
             )
 
     return _stop(messages, stats, _finish, f"Stopped after {MAX_ROUNDS} steps without finishing.")
+
+
+def _open_items_and_unchecked(progress: _Progress | None) -> tuple[list[str], list[str]]:
+    """(plan items not done, files changed since the last check) -- the same
+    two things the completion check looks for, computed for a task that
+    stopped before it could finish rather than by giving a final answer."""
+    if progress is None:
+        return [], []
+    open_items = [t.get("content", "") for t in progress.todos or [] if t.get("status") != "completed"]
+    unchecked = sorted(p for p in progress.changed if p) if progress.changed_at > progress.checked_at else []
+    return open_items, unchecked
 
 
 def _stop(messages, stats, finish, why: str):
