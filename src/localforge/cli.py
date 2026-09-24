@@ -1646,7 +1646,28 @@ def _start_session() -> bool:
     if not _choose_orchestrator_at_start():
         return False
     _offer_upgrades_at_start()
+    _offer_brief_update_at_start(Path.cwd().resolve())
     return True
+
+
+def _offer_brief_update_at_start(folder: Path) -> None:
+    """A drafted AGENTS.md update from the end of the last session (it
+    changed files, so the project's scope may have moved). It used to wait,
+    with one dim line at exit, until the user happened to run /init, and the
+    brief drifted. Offer it now; approving still goes through the diff."""
+    if not brief.pending_path(folder).is_file() or not sys.stdin.isatty():
+        return
+    console.print(
+        f"\n[bold]{brief.BRIEF_FILE} may be out of date.[/bold] Last session changed files, and a local model drafted an "
+        "update: what's still true kept, what changed added."
+    )
+    console.print("  1) Review it now (you'll see the diff)\n  2) Later (/init when you're ready)")
+    if _ask_number("Choose", 2) == 1:
+        try:
+            app(["init"], standalone_mode=False)
+        except typer.Exit:
+            pass
+    console.print()
 
 
 # --- upgrading installed models --------------------------------------------------
@@ -2010,7 +2031,7 @@ def _draft_brief_update(root: Path, dispatcher, activity) -> None:
         return
     if text and text.strip() != current.strip():
         brief.save_pending(root, text)
-        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE} — run /init next time to review it.[/dim]")
+        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE}; you'll be offered it next session (or /init).[/dim]")
 
 
 @app.command(name="memory")
@@ -2477,6 +2498,10 @@ def uninstall(
         else:
             lines.append("  - ~/.ollama data directory (Ollama wasn't installed via Homebrew, so the app itself is left alone)")
     lines.append("  - The localforge CLI tool")
+    lines.append(
+        "\n[dim]Kept: each project's own .localforge/ folder (its memory and usage) and AGENTS.md. "
+        "Delete a project's .localforge/ yourself to remove its memory.[/dim]"
+    )
     lines.append("\n[bold]This cannot be undone.[/bold]")
     console.print(Panel("\n".join(lines), title="Uninstall localforge", border_style="error"))
 

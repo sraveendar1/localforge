@@ -1,11 +1,19 @@
-"""Memory, modeled on Claude Code's: kept per project, outside the project.
+"""Memory, modeled on Claude Code's: kept per project, in the project.
 
-    ~/.config/localforge/projects/<folder>-<hash>/
+    <project>/.localforge/
+        .gitignore          "*": git ignores the folder unless the user
+                              deletes this to share memory with the team
         session.md          what the last session left off with (condensed)
         memory/MEMORY.md    index: one line per memory, loaded every session
         memory/<name>.md    one fact per file, with frontmatter:
                               name, description, type (user | feedback |
                               project | reference)
+        usage.json          /usage history (usage_store.py)
+        brief-update.md     a drafted AGENTS.md update awaiting /init (brief.py)
+
+It used to live under ~/.config/localforge/projects/<folder>-<hash>/; the
+user asked for it in the (trusted) project folder instead, so it moves with
+the folder. An old folder there is moved in on first use.
 
 Two things keep it current:
 
@@ -70,12 +78,45 @@ INDEX = "MEMORY.md"
 MAX_FACTS_CHARS = 8_000  # fact contents given to the orchestrator each session
 
 
-def project_dir(root: Path) -> Path:
-    """localforge's own folder for one project: never inside the project."""
+LOCAL_DIR = ".localforge"
+_GITIGNORE = (
+    "# localforge's memory and usage for this project (see AGENTS.md for the shared brief).\n"
+    "# Kept out of git by default; delete this file to share it with your team.\n"
+    "*\n"
+)
+
+
+def _central_dir(root: Path) -> Path:
+    """Where an older localforge kept this project's memory."""
     root = Path(root).resolve()
     slug = re.sub(r"[^A-Za-z0-9]+", "-", root.name).strip("-") or "project"
     digest = hashlib.sha1(str(root).encode()).hexdigest()[:10]
     return config.CONFIG_DIR / "projects" / f"{slug}-{digest}"
+
+
+def project_dir(root: Path) -> Path:
+    """localforge's folder for one project: `.localforge/` inside it."""
+    folder = Path(root).resolve() / LOCAL_DIR
+    central = _central_dir(root)
+    if central.is_dir() and not folder.exists():
+        try:  # memory from before it lived in the project: move it in
+            import shutil
+
+            shutil.move(str(central), str(folder))
+            (folder / ".gitignore").write_text(_GITIGNORE)
+        except OSError:
+            pass
+    return folder
+
+
+def ensure_dir(root: Path) -> Path:
+    """project_dir(), created (with its .gitignore) before anything is written."""
+    folder = project_dir(root)
+    folder.mkdir(parents=True, exist_ok=True)
+    ignore = folder / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text(_GITIGNORE)
+    return folder
 
 
 def memory_file(root: Path) -> Path:
@@ -90,10 +131,9 @@ def memory_dir(root: Path) -> Path:
 def _migrate(root: Path) -> None:
     """Move a summary saved by an older localforge (memory/<folder>-<hash>.md)."""
     new = memory_file(root)
-    old = config.CONFIG_DIR / "memory" / new.parent.name
-    old = old.with_suffix(".md")
+    old = (config.CONFIG_DIR / "memory" / _central_dir(root).name).with_suffix(".md")
     if old.is_file() and not new.exists():
-        new.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(root)
         old.replace(new)
 
 
@@ -107,9 +147,8 @@ def load(root: Path) -> str:
 
 
 def save(root: Path, text: str) -> None:
-    path = memory_file(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.strip() + "\n")
+    ensure_dir(root)
+    memory_file(root).write_text(text.strip() + "\n")
 
 
 def forget(root: Path) -> None:
@@ -176,6 +215,7 @@ def remember(root: Path, name: str, content: str, description: str = "", type: s
         raise ValueError("a memory needs content")
     kind = type if type in MEMORY_TYPES else "project"
     description = " ".join(str(description or content).split())[:150]
+    ensure_dir(root)
     folder = memory_dir(root)
     folder.mkdir(parents=True, exist_ok=True)
     (folder / f"{slug}.md").write_text(
@@ -212,7 +252,13 @@ def facts_for_prompt(root: Path) -> str:
 def _turn_starts(messages: list[dict]) -> list[int]:
     """Indices (after the system message) where a user turn begins. Notes
     and nudges localforge added mid-task are user-role too, but not turns."""
-    from localforge.orchestrator import NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX
+    from localforge.orchestrator import (
+        CHECKPOINT_PREFIX,
+        COMPLETION_PREFIX,
+        NOTE_PREFIX,
+        NUDGE,
+        STEPS_LEFT_PREFIX,
+    )
 
     return [
         i

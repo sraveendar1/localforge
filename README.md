@@ -85,13 +85,18 @@ the code they write fits the project. A **local** model writes it, from
 the project itself plus what localforge remembers of your sessions, and you
 approve the diff like any other change. Every later session starts with it,
 so the frontier model doesn't pay to rediscover your project each time. After
-a session that changed files, the local model drafts an update and tells you;
-`/init` reviews it, `/init --refresh` rewrites from scratch. If your project
-already has a `CLAUDE.md` or `AGENTS.md`, that's used instead.
+a session that changed files, the local model drafts an update, and the next
+session offers it to you as a diff (or `/init` reviews it; `/init --refresh`
+rewrites from scratch). An existing `AGENTS.md` is updated in place; a
+`CLAUDE.md` is read when there's no `AGENTS.md`, and never written. It also
+has a "Definition of done": the exact commands that check a change, which
+localforge uses before a task is allowed to finish.
 
-**Memory:** like Claude Code, localforge keeps memory per project, outside
-the project: remembered facts (your preferences, decisions, pointers) and a
-summary of where the last session left off. Tell it "remember that…" and it
+**Memory:** localforge keeps memory per project, in the project's own
+`.localforge/` folder, so it moves with the folder. Git ignores that folder by
+default (it carries its own `.gitignore`; delete that to share memory with
+your team). It holds remembered facts (your preferences, decisions, pointers),
+a summary of where the last session left off, and your usage history. Tell it "remember that…" and it
 saves a fact. At `/exit`, a local model saves what's worth keeping, so the
 next session in that folder picks up from there. `/memory` shows it, and
 `/memory forget <name>` or `/memory clear` remove it.

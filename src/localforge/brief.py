@@ -141,9 +141,10 @@ def pending_path(root: Path) -> Path:
 
 
 def save_pending(root: Path, text: str) -> None:
-    path = pending_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text.strip() + "\n")
+    from localforge import memory
+
+    memory.ensure_dir(root)
+    pending_path(root).write_text(text.strip() + "\n")
 
 
 def take_pending(root: Path) -> str:

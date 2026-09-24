@@ -203,3 +203,31 @@ def test_approved_writes_count_as_changes(project):
         cli_module._session.auto_approve = False
         cli_module.console.pop_theme()
     assert cli_module._session.files_changed == 2
+
+
+# --- a drafted update is offered, not left to drift ------------------------------------------
+
+
+def test_a_drafted_update_is_offered_at_the_next_session_start(project, monkeypatch):
+    brief.save_pending(project, "# Project brief\n\nNow with two endpoints.\n")
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)
+    ran = []
+    monkeypatch.setattr(cli_module, "app", lambda argv, standalone_mode=True: ran.append(argv))
+    cli_module._offer_brief_update_at_start(project)
+    assert ran == [["init"]]  # reviewed through /init: the diff and approval as usual
+
+
+def test_later_leaves_the_draft_for_init(project, monkeypatch):
+    brief.save_pending(project, "# Project brief\n\nDraft.\n")
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 2)
+    monkeypatch.setattr(cli_module, "app", lambda *a, **kw: pytest.fail("ran /init"))
+    cli_module._offer_brief_update_at_start(project)
+    assert brief.pending_path(project).is_file()
+
+
+def test_no_draft_means_no_question(project, monkeypatch):
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("asked"))
+    cli_module._offer_brief_update_at_start(project)

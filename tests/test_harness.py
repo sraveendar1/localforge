@@ -319,12 +319,9 @@ def test_run_compacts_automatically_when_history_is_large(project, monkeypatch):
     compact.assert_called_once()
 
 
-def test_memory_file_lives_outside_the_project(project, monkeypatch, tmp_path_factory):
-    cfg = tmp_path_factory.mktemp("cfg")
-    monkeypatch.setattr(memory.config, "CONFIG_DIR", cfg)
+def test_memory_file_lives_in_the_project(project):
     path = memory.memory_file(project)
-    assert project not in path.parents
-    assert path.parent.parent == cfg / "projects" and path.name == "session.md"
+    assert path == project.resolve() / ".localforge" / "session.md"
     assert memory.memory_dir(project) == path.parent / "memory"
 
 

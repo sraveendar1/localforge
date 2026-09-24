@@ -70,10 +70,10 @@ def test_only_the_last_sessions_are_kept(project):
     assert data["all_time"]["tasks"] == usage_store.SESSIONS_KEPT + 5  # the total still counts them all
 
 
-def test_usage_lives_outside_the_project_beside_its_memory(project):
+def test_usage_lives_beside_its_memory_in_the_project(project):
     usage_store.record(project, "s", "gpt-5", _stats())
-    assert usage_store.usage_file(project).parent == memory.project_dir(project)
-    assert not list(project.glob("**/usage.json"))
+    assert usage_store.usage_file(project) == project.resolve() / ".localforge" / "usage.json"
+    assert (project.resolve() / ".localforge" / ".gitignore").is_file()
 
 
 def test_a_task_records_its_usage_even_when_stopped(project, monkeypatch):
