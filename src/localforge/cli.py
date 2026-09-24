@@ -921,6 +921,13 @@ def run(
         # The provider CLI failed mid-run. Say why in plain terms and what to
         # do -- a usage limit is not an expired login, and advising
         # `claude login` for one sent people in circles.
+        if exc.stats is not None:
+            # Real frontier/local work happened before the failure -- record
+            # it like any other non-clean stop, so /usage still accounts for
+            # it and the next session offers to resume (see
+            # orchestrator._remember_if_unfinished).
+            _session_usage.append((frontier_model, exc.stats))
+            _record_usage(frontier_model, exc.stats)
         console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         if cli_provider:
             console.print(f"[warning]{escape(_cli_failure_advice(cli_provider, str(exc)))}[/warning]")

@@ -164,6 +164,46 @@ def test_without_a_decision_the_limit_is_still_raised():
         _run_hitting_limit(orch.ActivityHooks())  # no hook at all (one-off run)
 
 
+def test_giving_up_on_a_limit_still_saves_open_work_and_usage(tmp_path):
+    """Reported: resuming a task after a usage limit doesn't work. Root
+    cause -- a UsageLimitError giving up used to skip both open-work saving
+    and usage accounting (unlike OrchestrationError/TaskCancelled), so the
+    next session never offered to resume and /usage silently lost that
+    task's tokens."""
+    from localforge import memory
+    from localforge.workspace import Workspace
+
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        raise UsageLimitError(SPEND_LIMIT, "anthropic", None)  # no reset time -> on_limit gives up
+
+    conv = orch.Conversation()
+    with (
+        patch.object(orch.cli_transport, "complete", side_effect=flaky),
+        patch.object(orch, "_installed_models", return_value=None),
+    ):
+        with pytest.raises(UsageLimitError) as excinfo:
+            orch.run(
+                "build it",
+                "claude-opus-5",
+                hardware=_hw(),
+                cli_provider="anthropic",
+                hooks=orch.ActivityHooks(on_limit=lambda exc: None),
+                conversation=conv,
+                workspace=Workspace(tmp_path),
+            )
+
+    # The exception carries the usage spent so far, like OrchestrationError/TaskCancelled do.
+    assert excinfo.value.stats is not None
+
+    # The task is offered again next session instead of silently vanishing.
+    entries = memory.open_work(tmp_path)
+    assert len(entries) == 1 and entries[0]["task"] == "build it"
+    assert "usage limit" in entries[0]["why"]
+
+
 def test_a_limit_is_never_treated_as_a_transient_failure():
     # transient failures retry twice by themselves; a limit must reach on_limit
     seen = []

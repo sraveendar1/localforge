@@ -436,6 +436,17 @@ def run(
     except OrchestrationError:
         _remember_if_unfinished(workspace, task, "it didn't finish in time", conversation.last_progress)
         raise
+    except cli_transport.CLINotAvailableError as exc:
+        # A CLI failure mid-task (a usage limit given up on, a dropped
+        # login, ...) used to skip both open-work saving and usage
+        # accounting entirely -- the raise happens before any tool_calls
+        # for the round in progress are appended, so messages are already
+        # in a consistent state and need no trimming, unlike Ctrl+C.
+        stats.local_tokens_generated = dispatcher.local_tokens_generated
+        exc.stats = stats
+        why = "it hit a usage limit" if isinstance(exc, cli_transport.UsageLimitError) else "the orchestrator's CLI failed"
+        _remember_if_unfinished(workspace, task, why, conversation.last_progress)
+        raise
     else:
         if workspace is not None:
             memory.clear_open_work(workspace.root, task)  # done (or the user will see it in the answer, not silently)

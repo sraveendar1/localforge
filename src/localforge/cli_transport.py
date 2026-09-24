@@ -32,7 +32,17 @@ from localforge.answer_stream import AnswerStreamer
 
 
 class CLINotAvailableError(RuntimeError):
-    """The provider's CLI isn't installed, or isn't logged in."""
+    """The provider's CLI isn't installed, or isn't logged in.
+
+    `stats`, if set, is the usage accumulated by the run this error ended --
+    mirroring `OrchestrationError`/`TaskCancelled`, so a mid-task CLI failure
+    (including a usage limit given up on) doesn't lose that accounting or
+    the task's open-work note. `orchestrator.run()` fills it in before
+    re-raising; it's None for a failure raised before any run started
+    (e.g. a login check).
+    """
+
+    stats: object = None
 
 
 class UsageLimitError(CLINotAvailableError):
