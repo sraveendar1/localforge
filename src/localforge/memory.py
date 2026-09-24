@@ -212,12 +212,12 @@ def facts_for_prompt(root: Path) -> str:
 def _turn_starts(messages: list[dict]) -> list[int]:
     """Indices (after the system message) where a user turn begins. Notes
     and nudges localforge added mid-task are user-role too, but not turns."""
-    from localforge.orchestrator import NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX
+    from localforge.orchestrator import NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX
 
     return [
         i
         for i, m in enumerate(messages)
-        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX))
+        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX))
     ]
 
 

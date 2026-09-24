@@ -1093,6 +1093,7 @@ class _LiveActivity:
         "compact": "Memory",
         "retry": "Retry",
         "checkpoint": "Checkpoint",
+        "check": "Check",
         "remember": "Remember",
         "forget": "Forget",
     }

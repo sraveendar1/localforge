@@ -48,6 +48,9 @@ Write it in markdown, under 500 words, with these sections and nothing else:
 (the folders that matter and what lives in them)
 ## Running and testing
 (the exact commands, taken from the manifest/Makefile/README below -- don't invent any)
+## Definition of done
+(how to tell a change is finished: the exact test, lint and build commands to run, from the files below --
+don't invent any; if the project has none, say "no automated checks")
 ## Conventions and decisions
 (how the code is written here, and choices someone should not undo by accident)
 
@@ -91,8 +94,24 @@ def brief_for_prompt(root: Path, limit: int = 6_000) -> str:
 
 # What a local model writing code needs from the brief: the stack, how the
 # project runs and is tested, and its conventions -- not the project's story.
-GROUNDING_SECTIONS = ("how it's built", "running and testing", "conventions and decisions")
+GROUNDING_SECTIONS = ("how it's built", "running and testing", "definition of done", "conventions and decisions")
 GROUNDING_CHARS = 2_000
+
+
+def section(text: str, names: tuple[str, ...]) -> str:
+    """The body of the first `## <name>` section found, in `names` order."""
+    bodies: dict[str, list[str]] = {}
+    current = None
+    for line in (text or "").splitlines():
+        if line.startswith("## "):
+            current = line[3:].strip().lower()
+            bodies.setdefault(current, [])
+        elif current is not None:
+            bodies[current].append(line)
+    for name in names:
+        if (body := "\n".join(bodies.get(name, [])).strip()):
+            return body
+    return ""
 
 
 def grounding_for_local(root: Path, limit: int = GROUNDING_CHARS) -> str:
