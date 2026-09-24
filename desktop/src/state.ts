@@ -18,6 +18,9 @@ export type SystemStats = {
   ramUsedGb: number;
   ramTotalGb: number;
 };
+export type MemoryFact = { name: string; description?: string; content?: string; type?: string };
+export type MemoryState = { facts: MemoryFact[]; narrative: string };
+export type ScratchFile = { path: string; size: number };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -29,6 +32,8 @@ export type ChatState = {
   autoApprove: boolean;
   usage: Usage;
   systemStats: SystemStats | null;
+  memory: MemoryState;
+  scratchFiles: ScratchFile[];
 };
 export const initialState: ChatState = {
   messages: [],
@@ -47,7 +52,9 @@ export const initialState: ChatState = {
     frontierViaSubscription: false,
     localModels: {}
   },
-  systemStats: null
+  systemStats: null,
+  memory: { facts: [], narrative: "" },
+  scratchFiles: []
 };
 
 // Apply fn to the last assistant message, returning a new array.
@@ -166,6 +173,12 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
       return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model };
     case "system_stats":
       return { ...state, systemStats: { hardware: ev.hardware ?? {}, cpuPercent: Number(ev.cpu_percent ?? 0), ramUsedGb: Number(ev.ram_used_gb ?? 0), ramTotalGb: Number(ev.ram_total_gb ?? 0) } };
+    case "memory":
+      return { ...state, memory: { facts: Array.isArray(ev.facts) ? ev.facts : [], narrative: String(ev.narrative ?? "") } };
+    case "scratch":
+      return { ...state, scratchFiles: Array.isArray(ev.files) ? ev.files : [] };
+    case "session_reset":
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove };
     default:
       return state;
   }
@@ -191,5 +204,3 @@ export type Usage = {
   frontierViaSubscription: boolean;
   localModels: { [key: string]: { runs: number; tokens: number; active: boolean } };
 };
-
-

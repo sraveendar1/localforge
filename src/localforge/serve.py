@@ -221,7 +221,15 @@ class StdioServer:
             ram_used_gb = round(vmem.used / (1024 ** 3), 2)
             ram_total_gb = round(vmem.total / (1024 ** 3), 2)
             gpus = [{'name': gpu.name, 'vram_gb': gpu.vram_gb, 'backend': gpu.backend} for gpu in self._hardware.gpus]
-            self.emit("hardware", os=self._hardware.os, arch=self._hardware.arch, cpu_cores=self._hardware.cpu_cores, ram_gb=ram_used_gb, free_disk_gb=self._hardware.free_disk_gb, gpus=gpus)
+            hardware = {
+                "os": self._hardware.os,
+                "arch": self._hardware.arch,
+                "cpu_cores": self._hardware.cpu_cores,
+                "ram_gb": self._hardware.ram_gb,
+                "free_disk_gb": self._hardware.free_disk_gb,
+                "gpus": gpus,
+            }
+            self.emit("system_stats", hardware=hardware, cpu_percent=cpu_percent, ram_used_gb=ram_used_gb, ram_total_gb=ram_total_gb)
         elif message_type == "doctor":
             if self._hardware is None:
                 self._hardware = detect_hardware()

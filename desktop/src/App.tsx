@@ -6,6 +6,7 @@ import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
 import { ModelPicker } from "./ModelPicker";
+import { MemoryPanel } from "./MemoryPanel";
 import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
 import { SystemPanel } from "./SystemPanel";
 import type { ChatState } from "./state";
@@ -109,6 +110,13 @@ function App() {
         <aside className="w-72 shrink-0 space-y-4 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
           <SystemPanel stats={chat.systemStats} />
           <UsagePanel usage={chat.usage} model={chat.model} />
+          <MemoryPanel
+            memory={chat.memory}
+            scratchFiles={chat.scratchFiles}
+            onForget={name => { send({ type: "memory_forget", name }); send({ type: "memory_list" }); }}
+            onClearMemory={() => { send({ type: "memory_clear" }); send({ type: "memory_list" }); }}
+            onClearScratch={() => { send({ type: "scratch_clear" }); send({ type: "scratch_list" }); }}
+          />
           <TodoList todos={chat.todos} />
         </aside>
       </div>
