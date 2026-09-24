@@ -169,6 +169,44 @@ class StdioServer:
                     self.frontier_model = model
                     self.cli_provider = message.get("cli_provider")
                     self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model)
+        elif message_type == "memory_list":
+            facts = memory.list_facts(self.root)
+            narrative = memory.load(self.root)
+            self.emit("memory", facts=facts, narrative=narrative)
+        elif message_type == "memory_forget":
+            name = message.get("name")
+            if not name or not name.strip():
+                self.emit("error", message="Missing name")
+            else:
+                memory.forget_fact(self.root, name)
+                facts = memory.list_facts(self.root)
+                narrative = memory.load(self.root)
+                self.emit("memory", facts=facts, narrative=narrative)
+        elif message_type == "memory_clear":
+            memory.forget(self.root)
+            facts = memory.list_facts(self.root)
+            narrative = memory.load(self.root)
+            self.emit("memory", facts=facts, narrative=narrative)
+        elif message_type == "scratch_list":
+            scratchpad = self._scratchpad or Scratchpad(self.root)
+            files = [{'path': str(f.relative_to(scratchpad.root)).replace("\\", "/"), 'size': f.stat().st_size} for f in scratchpad.files()]
+            self.emit("scratch", files=files)
+        elif message_type == "scratch_clear":
+            if self.busy:
+                self.emit("error", message="A run is already in progress.")
+            else:
+                scratchpad = self._scratchpad or Scratchpad(self.root)
+                scratchpad.clear()
+                files = []
+                self.emit("scratch", files=files)
+        elif message_type == "new_session":
+            if self.busy:
+                self.emit("error", message="A run is already in progress.")
+            else:
+                self.conversation = Conversation(memory=memory.load(self.root), facts=memory.facts_for_prompt(self.root))
+                self.emit("session_reset")
+        elif message_type == "get_state":
+            self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy)
         elif message_type == "shutdown":
             return False
         else:

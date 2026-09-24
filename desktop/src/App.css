@@ -1,10 +1,112 @@
 @import "tailwindcss";
 
+@theme {
+  --color-mx-bg: #000000;
+  --color-mx-panel: #050a05;
+  --color-mx-panel2: #0a140a;
+  --color-mx-dim: #0b3d1b;
+  --color-mx-mid: #1f8a4c;
+  --color-mx-green: #00ff41;
+  --color-mx-bright: #6bff9a;
+  --color-mx-amber: #ffb000;
+  --color-mx-red: #ff3b30;
+}
+
 html, body, #root {
   height: 100%;
   margin: 0;
 }
 
 body {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background-color: var(--color-mx-bg);
+  color: var(--color-mx-green);
+  font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.glow {
+  text-shadow: 0 0 5px var(--color-mx-bright), 0 0 10px var(--color-mx-bright), 0 0 15px var(--color-mx-bright);
+}
+
+body::-webkit-scrollbar {
+  width: 8px;
+}
+
+body::-webkit-scrollbar-track {
+  background: var(--color-mx-panel);
+}
+
+body::-webkit-scrollbar-thumb {
+  background: var(--color-mx-dim);
+  border-radius: 4px;
+}
+
+/* Text selection */
+::selection, ::-moz-selection {
+  background: var(--color-mx-dim);
+  color: var(--color-mx-bright);
+}
+
+/* Kill unwanted browser/webview highlighting */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+:focus:not(:focus-visible) {
+  outline: none;
+}
+:focus-visible {
+  outline: 1px solid var(--color-mx-mid);
+}
+
+/* Font rendering */
+html, body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+/* Native form controls */
+select, option {
+  background: var(--color-mx-panel);
+  color: var(--color-mx-mid);
+  padding-right: 1rem;
+}
+select::-webkit-scrollbar, option::-webkit-scrollbar {
+  width: 8px;
+}
+select::-webkit-scrollbar-track, option::-webkit-scrollbar-track {
+  background: var(--color-mx-panel);
+}
+select::-webkit-scrollbar-thumb, option::-webkit-scrollbar-thumb {
+  background: var(--color-mx-dim);
+  border-radius: 4px;
+}
+
+/* <details> markers */
+details summary::-webkit-details-marker {
+  display: none;
+}
+details summary {
+  list-style: none;
+}
+details summary::before {
+  content: '\25B8';
+  display: inline-block;
+  margin-right: 0.35rem;
+  transition: transform 0.15s ease;
+}
+details[open] summary::before {
+  transform: rotate(90deg);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-mx-panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-mx-dim);
+  border-radius: 4px;
 }

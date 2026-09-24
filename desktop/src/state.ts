@@ -14,8 +14,9 @@ export type ChatState = {
   running: boolean;
   model: string;
   autoApprove: boolean;
+  usage: Usage;
 };
-export const initialState: ChatState = { messages: [], approvals: [], todos: [], status: "", connected: false, running: false, model: "", autoApprove: false };
+export const initialState: ChatState = { messages: [], approvals: [], todos: [], status: "", connected: false, running: false, model: "", autoApprove: false, usage: { frontierPromptTokens: 0, frontierCompletionTokens: 0, frontierCostUsd: 0, localTokensGenerated: 0, frontierViaSubscription: false, localModels: {} } };
 
 // Apply fn to the last assistant message, returning a new array.
 function updateLastAssistant(messages: Message[], fn: (m: Message) => Message): Message[] {
@@ -47,6 +48,22 @@ function addItem(state: ChatState, item: Item): ChatState {
   return updateAssistant(state, m => ({ ...m, items: [...m.items, item] }));
 }
 
+// Accumulate per-run frontier stats from the Python RunStats dataclass (snake_case).
+// local_tokens_generated is ignored here: it is already counted on delegate_finished.
+function withStats(state: ChatState, stats: any): ChatState {
+  if (!stats || typeof stats !== "object") return state;
+  return {
+    ...state,
+    usage: {
+      ...state.usage,
+      frontierPromptTokens: state.usage.frontierPromptTokens + Number(stats.frontier_prompt_tokens ?? 0),
+      frontierCompletionTokens: state.usage.frontierCompletionTokens + Number(stats.frontier_completion_tokens ?? 0),
+      frontierCostUsd: state.usage.frontierCostUsd + Number(stats.frontier_cost_usd ?? 0),
+      frontierViaSubscription: Boolean(stats.frontier_via_subscription)
+    }
+  };
+}
+
 export function applyEvent(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
@@ -63,14 +80,42 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
       return updateLastItem(
         state,
         it => it.kind === "tool" && it.name === ev.name && it.result === undefined,
-        it => (it.kind === "tool" ? { ...it, result: String(ev.result ?? "") } : it),
+        it => (it.kind === "tool" ? { ...it, result: String(ev.result ?? "") } : it)
       );
-    case "delegate_started":
-      return addItem(state, { kind: "delegate", modality: String(ev.modality ?? ""), model: String(ev.model ?? ""), output: "", done: false });
+    case "delegate_started": {
+      const name = String(ev.model ?? "");
+      const started = addItem(state, { kind: "delegate", modality: String(ev.modality ?? ""), model: name, output: "", done: false });
+      const entry = started.usage.localModels[name] || { runs: 0, tokens: 0, active: false };
+      return {
+        ...started,
+        usage: {
+          ...started.usage,
+          localModels: {
+            ...started.usage.localModels,
+            [name]: { ...entry, active: true, runs: entry.runs + 1 }
+          }
+        }
+      };
+    }
     case "delegate_token":
       return updateLastItem(state, it => it.kind === "delegate", it => (it.kind === "delegate" ? { ...it, output: it.output + String(ev.text ?? "") } : it));
-    case "delegate_finished":
-      return updateLastItem(state, it => it.kind === "delegate", it => (it.kind === "delegate" ? { ...it, done: true, tokens: ev.tokens, seconds: ev.seconds } : it));
+    case "delegate_finished": {
+      const tokens = Number(ev.tokens ?? 0);
+      const finished = updateLastItem(
+        state,
+        it => it.kind === "delegate" && !it.done,
+        it => (it.kind === "delegate" ? { ...it, done: true, tokens, seconds: Number(ev.seconds ?? 0) } : it)
+      );
+      // This event carries no model name, so credit whichever local model is active.
+      const localModels: Usage["localModels"] = {};
+      for (const [name, entry] of Object.entries(finished.usage.localModels)) {
+        localModels[name] = entry.active ? { ...entry, active: false, tokens: entry.tokens + tokens } : entry;
+      }
+      return {
+        ...finished,
+        usage: { ...finished.usage, localModels, localTokensGenerated: finished.usage.localTokensGenerated + tokens }
+      };
+    }
     case "model_pull":
       return { ...state, status: `Pulling ${ev.model}…` };
     case "todos_updated":
@@ -80,11 +125,11 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
     case "approval_auto":
       return addItem(state, { kind: "note", text: `Auto-approved: ${ev.title}` });
     case "run_finished":
-      return updateAssistant({ ...state, running: false, status: "" }, m => (m.text === "" ? { ...m, text: String(ev.answer ?? "") } : m));
+      return withStats(updateAssistant({ ...state, running: false, status: "" }, m => (m.text === "" ? { ...m, text: String(ev.answer ?? "") } : m)), ev.stats);
     case "run_cancelled":
       return addItem({ ...state, running: false, status: "", approvals: [] }, { kind: "note", text: "Stopped." });
     case "error":
-      return addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error"));
+      return withStats(addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error")), ev.stats);
     case "settings":
       return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model };
     default:
@@ -103,3 +148,12 @@ export function addError(state: ChatState, text: string): ChatState {
 export function removeApproval(state: ChatState, id: string): ChatState {
   return { ...state, approvals: state.approvals.filter(a => a.id !== id) };
 }
+
+export type Usage = {
+  frontierPromptTokens: number;
+  frontierCompletionTokens: number;
+  frontierCostUsd: number;
+  localTokensGenerated: number;
+  frontierViaSubscription: boolean;
+  localModels: { [key: string]: { runs: number; tokens: number; active: boolean } };
+};
