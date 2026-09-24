@@ -127,7 +127,13 @@ def test_a_crashing_local_model_is_swapped_for_another_installed_one():
     with patch.dict("localforge.tools.BACKENDS", {"stub": backend}):
         out = d.dispatch("delegate_coding_task", {"instructions": "write x"})
     assert out.startswith("code from small")
-    assert [n for n, _ in backend.calls] == ["big", "small"]
+    # "big" is called twice: once as the crashing first attempt, and once
+    # more as the stand-in judge for "small"'s output (it excludes the
+    # actual writer, "small", so it falls back to the other installed
+    # model -- which happens to be the same one that crashed earlier; that
+    # crash is unrelated to judging and is swallowed the same way any judge
+    # failure is).
+    assert [n for n, _ in backend.calls] == ["big", "small", "big"]
 
 
 def test_with_one_model_the_retry_mentions_the_error():

@@ -117,6 +117,20 @@ models:
     kv_gb_per_8k: 0.94
     quality_tier: 0
 
+  # --- judge (checks another local model's output; never exposed as a
+  # delegate tool -- see tools.Dispatcher.judge(), resolved separately from
+  # TASK_MODALITIES so the frontier model can never delegate work to it by
+  # mistake). Deliberately a single dedicated model, not a tier list: the
+  # point is a model actually trained to evaluate, not a stand-in.
+  - name: atla/selene-mini
+    modality: judge
+    runtime: ollama
+    min_vram_gb: 0
+    min_ram_gb: 8
+    disk_gb: 4.9
+    kv_gb_per_8k: 1.07  # same architecture as llama3.1:8b above
+    quality_tier: 1
+
   # --- general (summaries, memory, the project brief) ---
   - name: gemma3:27b
     modality: general

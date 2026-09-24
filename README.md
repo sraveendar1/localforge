@@ -151,7 +151,11 @@ the status bar, and then carries on exactly where it stopped: nothing you've
 already done is lost and you don't have to retype the task. While it's
 paused you can `/model` to switch to a local model and continue right away,
 or `/stop` to give up. If the provider doesn't say when the limit resets, or
-it's hours away, localforge says so instead of waiting.
+it's hours away, localforge says so instead of waiting. Either way, if the
+task ends before it's done — you gave up, or the limit couldn't be waited
+out — it's saved, not lost: the next session you open in that folder offers
+to pick it back up right where it stopped, and `/usage` still counts the
+tokens that task already spent.
 
 **Fully local, no account:** pick "local" in `localforge setup`, or type
 `/model` in a session and choose a model you already have in Ollama (e.g.
@@ -258,9 +262,10 @@ work there without extra auth setup.
 
 ### Catching bad local output
 
-Local models occasionally return something unusable: empty output, an
-outright refusal ("I'm sorry, but..."), or something absurdly short for
-what was asked. This is caught at two levels:
+Local models occasionally return something unusable — empty output, an
+outright refusal ("I'm sorry, but..."), something absurdly short for what
+was asked, or (less obviously) a well-formed result that just doesn't do
+what the task asked. This is caught at three levels:
 
 1. **A cheap heuristic tripwire in the dispatcher.** Every delegated result
    is checked for the obvious failure modes above before it's ever shown to
@@ -271,17 +276,37 @@ what was asked. This is caught at two levels:
    attempts printed live. If the retry is still bad, the result is passed
    through wrapped in an explicit `[WARNING: ...]` tag rather than silently
    accepted.
-2. **The frontier model is explicitly instructed not to trust delegated
+2. **A dedicated judge model checks the result against what was actually
+   asked for.** This is a real semantic check, not a string heuristic — it
+   catches a result that's well-formed but doesn't do what the task asked,
+   which the heuristic above can't. localforge prefers a small model
+   purpose-built for evaluation (`atla/selene-mini`) if you have it
+   installed; if not, it falls back to another already-installed model
+   (never the one that wrote the output being judged — a model grading its
+   own homework defeats the point), and skips the check entirely rather
+   than have a model grade itself if nothing else is installed. **Never
+   downloaded automatically, and never offered by `setup` or
+   `localforge models`** — it's deliberately left out of the ordinary
+   recommend/install flow (there's exactly one candidate anyway, so there's
+   nothing to "recommend"); `ollama pull atla/selene-mini` yourself if you
+   want the dedicated one, otherwise localforge reuses what you already
+   have, or goes without. For a file write, the judge call runs *in
+   parallel* with the syntax check below, so it doesn't add its own wait
+   on top. A failing verdict gets the same `[WARNING: ...]` treatment,
+   with the judge's specific reason attached, and never blocks the write —
+   you still see the diff and decide.
+3. **The frontier model is explicitly instructed not to trust delegated
    results at face value** — to check them against what it asked for,
    treat `[WARNING: ...]`-tagged results with extra scrutiny, and delegate
    a subtask again with clearer instructions rather than passing a bad
    result through to its final answer.
 
-This is a heuristic floor, not a correctness checker — it can't tell if
-generated code actually *works*, only that it isn't obviously empty,
-refused, or truncated. Every retry attempt still costs local compute, so
-the Usage panel's local-token count reflects retries too, not just
-whichever attempt ultimately got used.
+The heuristic in (1) is a floor, not a correctness checker — it can't tell
+if generated code actually *works*, only that it isn't obviously empty,
+refused, or truncated; the judge in (2) is what catches "ran fine, but
+doesn't do the thing." Every retry attempt still costs local compute, so
+the Usage panel's local-token count reflects retries (and judge calls)
+too, not just whichever attempt ultimately got used.
 
 ### Memory management
 
@@ -538,10 +563,12 @@ and applies immediately to the running command as well as every future one.
 - `hardware.py` — hardware detection (RAM, CPU, GPU/VRAM via nvidia-smi or
   Apple Silicon unified memory, and free disk space).
 - `catalog.py` / `catalog_data.yaml` — static catalog of open-weight models
-  tagged by modality (`coding`, `docs`, `general`, and reserved `image` /
-  `video` entries), hardware requirements, and approximate download size;
-  `candidates()` filters to models that fit RAM/VRAM/disk, `best_match()`
-  picks the highest-quality one deterministically.
+  tagged by modality (`coding`, `docs`, `general`; `judge`, used internally
+  to grade other models' output, see "Catching bad local output" below; and
+  reserved `image` / `video` entries), hardware requirements, and
+  approximate download size; `candidates()` filters to models that fit
+  RAM/VRAM/disk, `best_match()` picks the highest-quality one
+  deterministically.
 - `advisor.py` — lets the frontier model pick among `candidates()` for each
   modality (via a tool call constrained with a JSON-schema `enum`, so it
   can't hallucinate a model outside the catalog), falling back to
@@ -552,7 +579,9 @@ and applies immediately to the running command as well as every future one.
   reserved for image/video generation, since those are job-based (submit →
   poll → fetch file) rather than a single request/response like text.
 - `tools.py` — turns catalog + backends into tool schemas the frontier model
-  can call, and dispatches each call to the right local model.
+  can call, and dispatches each call to the right local model. Also resolves
+  the judge model (`Dispatcher.judge()`) and runs it against delegated
+  output, in parallel with the syntax check for file writes.
 - `orchestrator.py` — the plan → delegate → collect loop, built directly on
   LiteLLM rather than a multi-agent framework, so the delegation logic stays
   simple, provider-agnostic, and easy to step through.

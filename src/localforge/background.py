@@ -187,8 +187,14 @@ class TaskRunner:
         while True:
             try:
                 self.run_task(task)
-            except BaseException:  # noqa: BLE001 - one task's failure must not kill the queue
-                pass
+            except BaseException as exc:  # noqa: BLE001 - one task's failure must not kill the queue
+                # `run_task` (cli._run_in_background) already reports an
+                # ordinary Exception and turns it into typer.Exit before it
+                # gets here, so anything still arriving is unexpected --
+                # surface it rather than let the task vanish with no trace
+                # (reported: a task sometimes "completely stops" with nothing
+                # shown, which this silence would produce for exactly such a case).
+                print(f"[localforge] background task failed unexpectedly: {exc!r}", file=sys.stderr)
             finally:
                 self.approval = None
             with self._lock:

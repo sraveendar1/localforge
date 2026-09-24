@@ -171,6 +171,15 @@ def status_style(theme_name: str) -> Style:
     )
 
 BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init", "upgrade"}
+# /memory and /scratch are otherwise safe to run while busy (they only read),
+# but these specific actions mutate state the running task holds a live
+# reference to: /memory clear|forget touches conversation.facts/.memory
+# mid-task (see cli.memory_command), and /scratch clear wipes the directory
+# backing the running task's Workspace scratch root out from under it
+# (reported: a slash command sometimes made the running task "completely
+# stop" -- these two ran unblocked and could corrupt the task's own state
+# with no error surfaced, since the worker thread's failure path is silent).
+MUTATING_SUBCOMMANDS = {"memory": {"clear", "forget"}, "scratch": {"clear"}}
 HELP_COMMANDS = {"/help", "/?"}
 
 
@@ -296,7 +305,11 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
                 if position:
                     console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
                 continue
-            if runner.busy and cmd in BUSY_BLOCKED and not (cmd == "model" and runner.waiting):
+            blocked = cmd in BUSY_BLOCKED and not (cmd == "model" and runner.waiting)
+            if not blocked:
+                action = remainder.split(" ", 1)[0] if remainder else ""
+                blocked = action in MUTATING_SUBCOMMANDS.get(cmd, ())
+            if runner.busy and blocked:
                 console.print(f"[warning]/{cmd} has to wait until the current task is done[/warning] (/summary to check on it, /stop to end it).")
                 continue
 
