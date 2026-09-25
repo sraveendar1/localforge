@@ -58,6 +58,7 @@ def _main(ctx: typer.Context) -> None:
         if sys.stdin.isatty() and sys.stdout.isatty():
             runner = TaskRunner(lambda task: _run_in_background(task))
             runner.question_handler = explain_to_user
+            runner.side_question_handler = _answer_side_question
             _session.runner = runner
             try:
                 repl.run_repl(
@@ -825,7 +826,12 @@ def _orchestrator_label(frontier_model: str, cli_provider: str | None) -> str:
     return f"{frontier_model} (API key)"
 
 
-_LIMIT_MARKERS = ("limit", "quota", "rate limit", "rate-limit", "credit balance", "billing", "exceeded", "spend")
+# A superset of cli_transport.LIMIT_MARKERS (never a separate list again --
+# that drift was a real bug: this list already recognized a real limit
+# message via its bare "limit", printing this friendly advice, while
+# cli_transport's own separate copy didn't, silently skipping the
+# wait-and-resume path entirely).
+_LIMIT_MARKERS = cli_transport.LIMIT_MARKERS + ("rate-limit", "billing", "exceeded")
 
 
 def _cli_failure_advice(cli_provider: str, error: str) -> str:
@@ -2291,6 +2297,59 @@ def _answer_with_local_model(question: str, approval) -> tuple[str, str] | None:
         return None
     text = str(result.get("content") or "").strip()
     return (text, entry.name) if text else None
+
+
+def _answer_side_question(question: str) -> None:
+    """A question typed while a task runs, with no approval pending --
+    answered from what's already cached (the project's brief, remembered
+    facts, and the last session's memory note), never a fresh file read,
+    so it's instant and never competes with the running task for local
+    compute beyond the one generation call itself. Delegated to a local
+    model, never the paid orchestrator. Runs on its own thread (see
+    background.ask_side_question); prints nothing and returns quietly if
+    there's no local model installed or it produced nothing usable -- a
+    missed side question is never worth erroring over, and the user can
+    always just wait for the queue instead.
+    """
+    dispatcher = _memory_dispatcher()
+    entry = memory.keeper(dispatcher)
+    if entry is None:
+        return
+    conversation = _session.conversation
+    state = _session.runner.state if _session.runner is not None else None
+    cached = []
+    if conversation is not None:
+        if conversation.brief:
+            cached.append(f"Project brief:\n{conversation.brief[:3000]}")
+        if conversation.facts:
+            cached.append(f"Remembered for this project:\n{conversation.facts[:2000]}")
+        if conversation.memory:
+            cached.append(f"Last session's summary:\n{conversation.memory[:2000]}")
+    context = "\n\n".join(cached) or "(nothing cached yet for this project)"
+    prompt = (
+        "Answer this question about the project plainly, in a few sentences, using only what's given below. "
+        "Don't invent anything; say so if it doesn't answer the question.\n\n"
+        f"{context}\n\n"
+        f"A task is currently running in the background: {getattr(state, 'task', 'unknown')}\n\n"
+        f"Question: {question}"
+    )
+    try:
+        from localforge.backends import BACKENDS
+
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=dispatcher.context_limit(entry))
+    except Exception:  # noqa: BLE001 - see docstring
+        return
+    text = str(result.get("content") or "").strip()
+    if not text:
+        return
+    console.print(
+        Panel(
+            Markdown(text),
+            title=f"Answer — from {escape(entry.name)} (local, while the task keeps running)",
+            border_style="panel.border",
+        )
+    )
+    console.print()
 
 
 def explain_to_user(question: str, approval) -> None:

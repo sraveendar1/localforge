@@ -25,6 +25,14 @@ SPEND_LIMIT = (
     "You've hit your monthly spend limit · raise it at claude.ai/settings/usage "
     "· your session limit resets 11:10pm (Europe/Lisbon)"
 )
+# The real message Anthropic's CLI sends for a plan session limit (reported
+# live: localforge fell back to a generic error and handed control back
+# instead of waiting and resuming). Deliberately has no "spend limit"/"usage
+# limit" phrase anywhere in it, unlike SPEND_LIMIT above -- that fixture
+# already contained "spend limit" elsewhere in the string, so it matched
+# regardless of whether "session limit" itself was ever recognized, which is
+# exactly how this gap went unnoticed.
+SESSION_LIMIT = "claude exited 1: You've hit your session limit · resets 11:40am (America/Chicago)"
 
 
 def _hw():
@@ -43,6 +51,7 @@ def _fast_polling(monkeypatch):
     "text, expected",
     [
         (SPEND_LIMIT, True),
+        (SESSION_LIMIT, True),
         ("You've exceeded your usage limit", True),
         ("429 Too Many Requests", True),
         ("Your credit balance is too low", True),
@@ -52,6 +61,27 @@ def _fast_polling(monkeypatch):
 )
 def test_limit_messages_are_told_apart_from_other_failures(text, expected):
     assert looks_like_limit(text) is expected
+
+
+def test_the_real_session_limit_message_is_recognized_as_a_usage_limit():
+    """orchestrator._as_usage_limit() is what decides whether on_limit ever
+    gets called at all. The actual reported bug: this returned None for the
+    real message (since looks_like_limit() didn't recognize "session
+    limit"), so a plain CLINotAvailableError reached the caller instead --
+    no wait, no auto-resume, just control handed back to the user."""
+    exc = cli_transport.CLINotAvailableError(SESSION_LIMIT)  # what the CLI transport actually raises on exit 1
+    limit = orch._as_usage_limit(exc, {"provider": "anthropic", "model": "claude-opus-5"})
+    assert isinstance(limit, UsageLimitError)
+    assert limit.reset_at is not None and limit.reset_at.hour == 11 and limit.reset_at.minute == 40
+
+
+def test_the_real_session_limit_message_is_actually_waited_out(activity):
+    """Full on_limit path carrying the real message text (reset_at set to
+    shortly from now, like the other on_limit tests below do, so the test
+    doesn't depend on what time of day it happens to run)."""
+    at = datetime.now(timezone.utc) + timedelta(seconds=0.05)
+    exc = UsageLimitError(SESSION_LIMIT, provider="anthropic", reset_at=at)
+    assert activity.on_limit(exc) == "retry"
 
 
 def test_reset_time_is_read_from_the_message_and_converted_to_local_time():

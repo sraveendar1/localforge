@@ -57,6 +57,11 @@ tokens · 41 tok/s`, and each finished step prints one line instead of
 flooding the screen with code. While it works you can:
 - `/summary`: the task, which model is doing what, the plan, recent steps
   and the queue (instant, no model call)
+- ask a question ("what does the Dispatcher class do?", "why is main.py
+  structured this way") and it's answered on the side, from what's already
+  cached — the project brief, remembered facts, the last session's summary
+  — by a local model, without waiting behind the running task. Anything
+  that reads as an actual task (not a question) still queues as normal.
 - type another task: it's queued and runs next (`/queue` to see or clear)
 - `/tell <note>`: add something to the task that's running now
 - `/stop` or Ctrl+C: stop the current task (the session stays open)

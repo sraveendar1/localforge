@@ -92,6 +92,11 @@ class TaskRunner:
         # Answers "why is this needed?" while a prompt is waiting; set by the
         # CLI, which knows how to explain a request.
         self.question_handler = None
+        # Answers a plain question typed while a task runs but nothing is
+        # waiting on an approval -- set by the CLI. Unlike question_handler,
+        # this runs on its own thread (see ask_side_question) since there's
+        # no approval blocking the worker for it to piggyback on.
+        self.side_question_handler = None
         self._lock = threading.Lock()
         # Set and cleared under _lock, together with the queue check -- asking
         # thread.is_alive() instead would strand a task submitted in the
@@ -233,6 +238,20 @@ class TaskRunner:
         if self.question_handler is None:
             return False
         self.question_handler(question, self.approval)
+        return True
+
+    def ask_side_question(self, question: str) -> bool:
+        """A plain question typed while a task is busy, with no approval
+        pending: answered on its own daemon thread instead of queued behind
+        the running task -- it never touches the task's own state (the
+        handler reads only cached project context, not `self.state`), so it
+        can't interfere with it. Returns whether there was a handler to
+        answer it; the caller queues the input as an ordinary task
+        otherwise. Fire-and-forget: the handler prints its own answer
+        whenever it's ready."""
+        if self.side_question_handler is None or not self.busy:
+            return False
+        threading.Thread(target=self.side_question_handler, args=(question,), daemon=True).start()
         return True
 
     # --- what the user sees -------------------------------------------------------

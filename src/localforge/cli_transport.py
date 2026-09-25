@@ -56,6 +56,22 @@ class UsageLimitError(CLINotAvailableError):
 
 
 LIMIT_MARKERS = (
+    # Bare "limit" first and on purpose: Anthropic's actual CLI message is
+    # "You've hit your session limit ..." -- "session limit" isn't any of
+    # the specific phrases below, so this whole gate (and therefore
+    # UsageLimitError/on_limit/the wait-and-resume path) silently never
+    # fired for a real limit, falling back to a plain CLINotAvailableError
+    # that just hands control back with no wait, matching the reported "it
+    # doesn't resume, I have to say resume myself." Verified against the
+    # exact live message: "claude exited 1: You've hit your session limit
+    # · resets 11:40am (America/Chicago)" -- parse_reset_time() reads
+    # that reset time fine; only this check was the gap. Matches
+    # _is_transient()'s _PERMANENT list in orchestrator.py, which already
+    # treats bare "limit" as non-transient, and cli.py's separate (now
+    # redundant) _LIMIT_MARKERS, which already included it too -- three
+    # independent lists silently agreeing "limit" belongs here except this
+    # one, the one that actually gates detection.
+    "limit",
     "usage limit",
     "spend limit",
     "rate limit",

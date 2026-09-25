@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 from rich.console import Console
 
 from localforge import banner
-from localforge.repl import SLASH_HELP, _split, _to_argv, run_repl
+from localforge.repl import SLASH_HELP, _looks_like_a_question, _split, _to_argv, run_repl
 
 
 # --- argv construction: the part most likely to silently misroute a command ---
@@ -245,6 +245,19 @@ def test_without_a_terminal_input_falls_back_to_plain_reads():
     console.input.return_value = "hello"
     reader = LineReader(console)  # pytest's stdin isn't a tty
     assert reader.session is None and reader.read() == "hello"
+
+
+def test_looks_like_a_question():
+    assert _looks_like_a_question("what does the Dispatcher class do?")
+    assert _looks_like_a_question("is this ready yet")  # no "?" -- still opens with a question word
+    assert _looks_like_a_question("why is main.py structured this way")
+    assert _looks_like_a_question("this seems off, right?")  # ends with "?"
+
+
+def test_looks_like_a_question_is_false_for_ordinary_tasks():
+    assert not _looks_like_a_question("add a health endpoint")
+    assert not _looks_like_a_question("fix the failing test")
+    assert not _looks_like_a_question("")
 
 
 def test_ctrl_c_once_clears_twice_exits(monkeypatch):
