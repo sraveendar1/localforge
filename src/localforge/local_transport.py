@@ -23,6 +23,7 @@ from localforge import cli_transport
 from localforge.answer_stream import AnswerStreamer
 from localforge.backends.ollama import (
     CHARS_PER_TOKEN,
+    GENERATE_LOCK,
     MAX_NUM_CTX_ENV_VAR,  # noqa: F401 - re-exported: the documented setting lives with the orchestrator
     MIN_NUM_CTX,
     OLLAMA_BASE_URL,
@@ -213,7 +214,11 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
         "options": {"num_ctx": num_ctx},
     }
     try:
-        with httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
+        # Shared with backends.ollama.OllamaBackend.generate() (see
+        # GENERATE_LOCK's comment there): a local orchestrator's own turn is
+        # just as vulnerable to a concurrent delegate/side-question call
+        # evicting its model mid-stream as a delegated generate() call is.
+        with GENERATE_LOCK, httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
             if on_text is None:
                 resp = client.post("/api/chat", json=body)
                 if (error := error_from(resp, name)) is not None:
