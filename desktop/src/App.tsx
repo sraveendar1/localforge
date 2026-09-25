@@ -47,7 +47,7 @@ function App() {
 
   function submit() {
     const text = input.trim();
-    if (!text || !chat.connected || chat.running) return;
+    if (!text || !chat.connected) return;
     setChat(s => addUserMessage(s, text));
     setInput("");
     send({ type: "user_message", text });
@@ -65,6 +65,7 @@ function App() {
       send({ type: "get_state" });
       send({ type: "memory_list" });
       send({ type: "scratch_list" });
+      send({ type: "queue_list" });  // Request the queue list on connect
     }
   }, [chat.connected, send]);
 
@@ -101,10 +102,22 @@ function App() {
             ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} />)}
             <div ref={endRef} />
           </div>
+          {chat.queue.length > 0 && (
+            <div className="border-b border-mx-dim px-3 py-1 bg-mx-panel2 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold">Queued: {chat.queue.length}</span>
+                <button className="rounded-sm border border-mx-red bg-transparent px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_clear" })}>Clear</button>
+              </div>
+              {chat.queue.map((q, i) => (
+                <div key={i} className="truncate text-mx-mid">{q}</div>
+              ))}
+            </div>
+          )}
           <ApprovalPanel approvals={chat.approvals} onDecide={decide} />
           <div className="flex gap-2 border-t border-mx-dim p-3">
             <textarea rows={3} className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm" placeholder={chat.connected ? "Ask localforge…" : "Open a folder to start"} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} />
-            {chat.running ? <button className="self-end rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "cancel" })}>Stop</button> : <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !input.trim()} onClick={submit}>Send</button>}
+            {chat.running && <button className="self-end rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "cancel" })}>Stop</button>}
+            <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !input.trim()} onClick={submit}>Send</button>
           </div>
         </main>
         <aside className="w-72 shrink-0 space-y-4 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">

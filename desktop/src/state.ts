@@ -34,6 +34,7 @@ export type ChatState = {
   systemStats: SystemStats | null;
   memory: MemoryState;
   scratchFiles: ScratchFile[];
+  queue: string[];  // New queue field
 };
 export const initialState: ChatState = {
   messages: [],
@@ -54,7 +55,8 @@ export const initialState: ChatState = {
   },
   systemStats: null,
   memory: { facts: [], narrative: "" },
-  scratchFiles: []
+  scratchFiles: [],
+  queue: []  // Initialize queue to an empty array
 };
 
 // Apply fn to the last assistant message, returning a new array.
@@ -179,6 +181,8 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
       return { ...state, scratchFiles: Array.isArray(ev.files) ? ev.files : [] };
     case "session_reset":
       return { ...initialState, model: state.model, autoApprove: state.autoApprove };
+    case "queue":  // Handle the queue event
+      return { ...state, queue: ev.items ?? [] };
     default:
       return state;
   }

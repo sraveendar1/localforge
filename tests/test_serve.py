@@ -175,7 +175,7 @@ def test_cancel_stops_run_between_rounds(tmp_path):
     assert len(of_type(out, "frontier_round")) == 1
 
 
-def test_second_message_while_busy_is_rejected(tmp_path):
+def test_second_message_while_busy_is_queued(tmp_path):
     release = threading.Event()
 
     def run_fn(text, model, **kw):
@@ -185,8 +185,8 @@ def test_second_message_while_busy_is_rejected(tmp_path):
     server, out = make_server(tmp_path, run_fn)
     server.handle({"type": "user_message", "text": "one"})
     server.handle({"type": "user_message", "text": "two"})
-    err = wait_for(out, "error")
-    assert "already in progress" in err["message"]
+    queued = wait_for(out, "queue")
+    assert queued["items"] == ["two"]
     release.set()
     assert wait_for(out, "run_finished")["answer"] == "ok"
 
