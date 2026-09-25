@@ -145,10 +145,7 @@ def _print_getting_started() -> None:
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
 
-@app.command()
-def scan() -> None:
-    """Detect this machine's hardware."""
-    hw = detect_hardware()
+def _print_hardware(hw) -> None:
     console.print(f"OS: {hw.os} ({hw.arch})")
     console.print(f"CPU cores: {hw.cpu_cores}")
     console.print(f"RAM: {hw.ram_gb} GB")
@@ -158,6 +155,12 @@ def scan() -> None:
             console.print(f"GPU: {gpu.name} — {gpu.vram_gb} GB VRAM ({gpu.backend})")
     else:
         console.print("GPU: none detected (CPU-only)")
+
+
+@app.command()
+def scan() -> None:
+    """Detect this machine's hardware (also shown by /doctor)."""
+    _print_hardware(detect_hardware())
 
 
 @app.command()
@@ -776,6 +779,8 @@ def doctor() -> None:
         )
 
     hw = detect_hardware()
+    console.print()
+    _print_hardware(hw)
     recs = recommendations(hw)
     missing = [modality for modality, entry in recs.items() if entry is None]
     if not missing:
@@ -2156,9 +2161,9 @@ def summary() -> None:
 
 @app.command(name="queue")
 def queue_command(
-    action: str = typer.Argument(None, help="Omit to list queued tasks; `clear` to drop them."),
+    action: str = typer.Argument(None, help="`clear` to drop queued tasks. See /summary to list them."),
 ) -> None:
-    """Tasks waiting behind the current one."""
+    """Drop tasks waiting behind the current one (see /summary for the list)."""
     runner = _session.runner
     if runner is None or not runner.queue:
         console.print("The queue is empty. Type a task while one is running to queue it.")
@@ -2167,8 +2172,7 @@ def queue_command(
         runner.queue.clear()
         console.print("[success]✓[/success] Queue cleared.")
         return
-    for i, task in enumerate(runner.queue, 1):
-        console.print(f"  {i}. {escape(task)}", highlight=False)
+    console.print("The queue is shown in [bold]/summary[/bold]. Use [bold]/queue clear[/bold] to drop it.")
 
 
 @app.command()

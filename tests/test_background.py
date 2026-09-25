@@ -253,7 +253,8 @@ def test_summary_queue_stop_tell_commands(busy_runner):
     busy_runner.submit("next one")
     out = CliRunner().invoke(cli_module.app, ["summary"]).output
     assert "Task: building" in out and "next one" in out
-    assert "1. next one" in CliRunner().invoke(cli_module.app, ["queue"]).output
+    assert "1. next one" in CliRunner().invoke(cli_module.app, ["summary"]).output
+    assert "/summary" in CliRunner().invoke(cli_module.app, ["queue"]).output
     assert "next step" in CliRunner().invoke(cli_module.app, ["tell", "use", "sqlite"]).output
     assert busy_runner.take_notes() == ["use sqlite"]
     CliRunner().invoke(cli_module.app, ["queue", "clear"])

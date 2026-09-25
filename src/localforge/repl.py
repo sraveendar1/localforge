@@ -39,13 +39,12 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /why              explain what you're being asked to approve (or just ask in words)
   /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
   /summary          what's happening now: which model is doing what, the plan, the queue
-  /queue            tasks waiting behind the current one (/queue clear to drop them)
+  /queue            drop tasks waiting behind the current one (/queue clear)
   /stop             stop the running task
   /tell <note>      add a note to the running task
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
-  /doctor           check everything's configured correctly
-  /scan             show detected hardware
+  /doctor           check everything's configured correctly (includes detected hardware)
   /models           best-fit local model per modality
   /catalog          full model catalog
   /installed        models actually on disk

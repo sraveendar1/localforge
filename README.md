@@ -62,7 +62,7 @@ flooding the screen with code. While it works you can:
   cached — the project brief, remembered facts, the last session's summary
   — by a local model, without waiting behind the running task. Anything
   that reads as an actual task (not a question) still queues as normal.
-- type another task: it's queued and runs next (`/queue` to see or clear)
+- type another task: it's queued and runs next (see it in `/summary`, `/queue clear` to drop it)
 - `/tell <note>`: add something to the task that's running now
 - `/stop` or Ctrl+C: stop the current task (the session stays open)
 - `/usage`, `/memory`, `/scratch` and the other read-only commands
@@ -174,10 +174,13 @@ If a cloud account hits its usage limit mid-session, `/model` is the way out.
 While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.
 
 Type a task directly and it runs (shorthand for `/run <task>`), or use a
-slash command for anything else — `/usage`, `/setup`, `/doctor`, `/scan`,
-`/theme dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every
-slash command reuses the exact same code as its `localforge <command>`
-equivalent — there's no second implementation to drift out of sync.
+slash command for anything else — `/usage`, `/setup`, `/doctor` (also shows
+detected hardware), `/theme dark`, `/delete <names>`, `/help` for the full
+list, `/exit` to leave. Every slash command reuses the exact same code as
+its `localforge <command>` equivalent — there's no second implementation to
+drift out of sync. (`localforge scan` — hardware detection alone, no config
+checks — is still there as a plain CLI command, just left off the
+interactive `/help` menu since `/doctor` already covers it.)
 
 Piped/scripted invocations (`localforge | cat`, CI, no real terminal
 attached) skip the session and keep the old print-and-exit behavior, so
