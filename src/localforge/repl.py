@@ -31,7 +31,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /run <task>       work on a task in this folder (or just type it directly)
   /clear            start a fresh conversation (/clear --forget also drops saved memory)
   /compact          have a local model condense the conversation into session memory
-  /init             write AGENTS.md: what this project is, for future sessions
+  /goals            write AGENTS.md: this project's goals, for future sessions (/init still works)
   /memory           show this folder's memory (/memory forget <name>, /memory clear)
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
@@ -169,7 +169,7 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init", "upgrade"}
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "goals", "init", "upgrade"}
 # /memory and /scratch are otherwise safe to run while busy (they only read),
 # but these specific actions mutate state the running task holds a live
 # reference to: /memory clear|forget touches conversation.facts/.memory

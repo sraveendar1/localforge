@@ -83,20 +83,25 @@ and code before anything touches a real file. Moving a draft into the project
 shows you the diff first. It's deleted when the session ends (`/scratch` shows
 what's in it).
 
-**`localforge init`:** like Claude Code's `/init`, this writes a project
-brief — `AGENTS.md` (the file other coding agents read too): what the project
-is, how it's built, how to run and test it, and the decisions worth keeping.
-The local models get its stack, commands and conventions with every task, so
-the code they write fits the project. A **local** model writes it, from
-the project itself plus what localforge remembers of your sessions, and you
-approve the diff like any other change. Every later session starts with it,
-so the orchestrator doesn't have to rediscover your project each time. After
-a session that changed files, the local model drafts an update, and the next
-session offers it to you as a diff (or `/init` reviews it; `/init --refresh`
-rewrites from scratch). An existing `AGENTS.md` is updated in place; a
-`CLAUDE.md` is read when there's no `AGENTS.md`, and never written. It also
-has a "Definition of done": the exact commands that check a change, which
-localforge uses before a task is allowed to finish.
+**`localforge goals`** (`/init` still works, as an alias): like Claude Code's
+`/init`, this writes a project brief — `AGENTS.md` (the file other coding
+agents read too): what the project is, how it's built, how to run and test
+it, and the decisions worth keeping. The local models get its stack,
+commands and conventions with every task, so the code they write fits the
+project. A **local** model writes it, from the project itself plus what
+localforge remembers of your sessions, and you approve the diff like any
+other change. The first task in a project with no `AGENTS.md` yet offers to
+draft it right then, seeded with that task's own description, rather than
+waiting for you to remember `/goals` later. Every later session starts with
+it, so the orchestrator doesn't have to rediscover your project each time.
+After a session that changed files, the local model drafts an update, and
+the next session offers it to you as a diff (or `/goals` reviews it;
+`/goals --refresh` rewrites from scratch); mid-session, once enough files
+have changed, you're offered the same review without waiting for the next
+session. An existing `AGENTS.md` is updated in place; a `CLAUDE.md` is read
+when there's no `AGENTS.md`, and never written. It also has a "Definition of
+done": the exact commands that check a change, which localforge uses before
+a task is allowed to finish.
 
 **Memory:** localforge keeps memory per project, in the project's own
 `.localforge/` folder, so it moves with the folder. Git ignores that folder by

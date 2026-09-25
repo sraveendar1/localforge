@@ -555,7 +555,7 @@ class Dispatcher:
 
     def grounding(self) -> str:
         """The brief's stack/commands/conventions, for every delegated task
-        (read once per task: /init may have changed it since the last one)."""
+        (read once per task: /goals may have changed it since the last one)."""
         if self._grounding is None:
             self._grounding = brief.grounding_for_local(self.workspace.root) if self.workspace is not None else ""
         return self._grounding

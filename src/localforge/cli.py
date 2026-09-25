@@ -904,6 +904,12 @@ def run(
                 "interactively to trust it, or pass --yes to allow this run."
             )
             raise typer.Exit(code=1)
+    if sys.stdin.isatty():
+        if not _session.goals_offered and not brief.existing_brief(folder):
+            _session.goals_offered = True
+            _offer_initial_goals(folder, task)
+        else:
+            _maybe_offer_goals_refresh(folder)
     activity = _session.make_activity(frontier_model)
     scratch = _session.scratchpad_for(folder)
     workspace = Workspace(
@@ -1420,6 +1426,8 @@ class _SessionState:
         self.stream_output = False  # /stream on: print local output in full as well
         self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
         self.files_changed = 0  # approved writes/deletes, so the exit hook knows if the brief is stale
+        self.goals_offered = False  # asked (accepted or not) about drafting AGENTS.md on this project's first task
+        self.files_changed_at_last_goals_prompt = 0  # watermark for the mid-session goals-refresh offer
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
         self.runner = None  # background.TaskRunner when the session runs tasks in the background
@@ -1701,20 +1709,17 @@ def _offer_open_work_at_start(folder: Path) -> None:
 def _offer_brief_update_at_start(folder: Path) -> None:
     """A drafted AGENTS.md update from the end of the last session (it
     changed files, so the project's scope may have moved). It used to wait,
-    with one dim line at exit, until the user happened to run /init, and the
-    brief drifted. Offer it now; approving still goes through the diff."""
+    with one dim line at exit, until the user happened to run /goals, and
+    the brief drifted. Offer it now; approving still goes through the diff."""
     if not brief.pending_path(folder).is_file() or not sys.stdin.isatty():
         return
     console.print(
         f"\n[bold]{brief.BRIEF_FILE} may be out of date.[/bold] Last session changed files, and a local model drafted an "
         "update: what's still true kept, what changed added."
     )
-    console.print("  1) Review it now (you'll see the diff)\n  2) Later (/init when you're ready)")
+    console.print("  1) Review it now (you'll see the diff)\n  2) Later (/goals when you're ready)")
     if _ask_number("Choose", 2) == 1:
-        try:
-            app(["init"], standalone_mode=False)
-        except typer.Exit:
-            pass
+        _write_goals(folder)
     console.print()
 
 
@@ -2066,7 +2071,7 @@ def _save_memory_at_exit() -> None:
 def _draft_brief_update(root: Path, dispatcher, activity) -> None:
     """After a session that changed files, have the keeper draft an updated
     brief and leave it pending. Never written to the project here: the user
-    reviews it with /init, like any other change."""
+    reviews it with /goals, like any other change."""
     current = brief.existing_brief(root)
     keeper = memory.keeper(dispatcher)
     if not current or not _session.files_changed or keeper is None:
@@ -2079,7 +2084,7 @@ def _draft_brief_update(root: Path, dispatcher, activity) -> None:
         return
     if text and text.strip() != current.strip():
         brief.save_pending(root, text)
-        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE}; you'll be offered it next session (or /init).[/dim]")
+        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE}; you'll be offered it next session (or /goals).[/dim]")
 
 
 @app.command(name="memory")
@@ -2327,29 +2332,29 @@ def explain_to_user(question: str, approval) -> None:
             console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (open-weighted model)", border_style="panel.border"))
 
 
-@app.command()
-def init(
-    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the brief from scratch instead of updating it."),
-) -> None:
-    """Write (or update) AGENTS.md: what this project is, for every future session.
-
-    A local model reads the project and what localforge remembers, and drafts
-    it; you see the diff and approve it like any other change.
+def _write_goals(folder: Path, refresh: bool = False, seed_task: str = "") -> bool:
+    """Draft (or update) AGENTS.md and write it through the normal diff
+    approval. Returns whether it was actually written, so a caller using
+    this as a side step -- the auto-offer on a project's first task, or the
+    mid-session refresh -- can just move on instead of aborting the task
+    over it. `seed_task` is the task the user just typed, when this runs
+    because that's the first task in a project with no AGENTS.md yet: the
+    goals should reflect what they actually asked for, not just a cold read
+    of the file tree.
     """
-    folder = Path.cwd().resolve()
     if not trust.is_trusted(folder) and not _ask_trust(folder):
         console.print("Not trusted — nothing written.")
-        raise typer.Exit(code=1)
+        return False
 
     activity = _session.make_activity("local model")
     dispatcher = _memory_dispatcher(activity.hooks())
     keeper = memory.keeper(dispatcher)
     if keeper is None:
         console.print(
-            "[error]No local model is available to write the brief.[/error] "
-            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /init again."
+            "[error]No local model is available to write the goals.[/error] "
+            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /goals again."
         )
-        raise typer.Exit(code=1)
+        return False
 
     workspace = Workspace(folder, approver=activity.approve, scratch=_session.scratchpad_for(folder).root)
     current = "" if refresh else brief.existing_brief(folder)
@@ -2359,29 +2364,94 @@ def init(
         text = pending
     else:
         console.print(f"[dim]Reading the project with {escape(keeper.name)} (open-weighted model)…[/dim]")
-        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder))
+        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder), goal_hint=seed_task)
         try:
             text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
         except Exception as exc:  # noqa: BLE001 - reported plainly, nothing written
-            console.print(f"[error]Couldn't write the brief:[/error] {escape(str(exc))}")
-            raise typer.Exit(code=1) from None
+            console.print(f"[error]Couldn't write the goals:[/error] {escape(str(exc))}")
+            return False
         finally:
             activity.close()
     if not text:
-        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /init --refresh.[/warning]")
-        raise typer.Exit(code=1)
+        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /goals --refresh.[/warning]")
+        return False
 
     result = workspace.write_file(brief.BRIEF_FILE, text)
     console.print(result.splitlines()[0])
     if result.startswith(("Created ", "Updated ")):
         if _session.conversation is not None:
             _session.conversation.brief = brief.brief_for_prompt(folder)
-        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /init again to refresh it.[/dim]")
+        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /goals again to refresh it.[/dim]")
         if (folder / brief.LEGACY_BRIEF).is_file():
             # The brief's old name: its content is in AGENTS.md now. Removing it
             # goes through the normal delete approval, like any other change.
             console.print(f"[dim]{brief.LEGACY_BRIEF} is the old name for this file, and AGENTS.md replaces it.[/dim]")
             console.print(workspace.delete_path(brief.LEGACY_BRIEF).splitlines()[0])
+        return True
+    return False
+
+
+@app.command()
+def goals(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
+) -> None:
+    """Write (or update) AGENTS.md: this project's goals, for every future session.
+
+    A local model reads the project and what localforge remembers, and drafts
+    it; you see the diff and approve it like any other change.
+    """
+    if not _write_goals(Path.cwd().resolve(), refresh=refresh):
+        raise typer.Exit(code=1)
+
+
+@app.command(name="init", hidden=True)
+def init(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
+) -> None:
+    """Alias for /goals (the old name)."""
+    if not _write_goals(Path.cwd().resolve(), refresh=refresh):
+        raise typer.Exit(code=1)
+
+
+# Approved file changes since the goals file was last checked (offered or
+# drafted) before the mid-session refresh is offered again. Keeps the prompt
+# tied to how much has actually changed, not a fixed number of tasks.
+GOALS_REFRESH_THRESHOLD = 5
+
+
+def _offer_initial_goals(folder: Path, task: str) -> None:
+    """The first task in a project with no AGENTS.md yet is the moment the
+    user is actually telling localforge what this project is for -- so
+    offer to capture it right then, seeded with that task, instead of
+    waiting for someone to remember a separate /goals later."""
+    console.print(
+        f"\n[bold]No {brief.BRIEF_FILE} yet for this project.[/bold] Set its goals up now, using what you just "
+        "asked for? (a local model drafts it from the project plus your task; you'll see the diff)"
+    )
+    console.print("  1) Yes\n  2) Not now (/goals whenever you're ready)")
+    if _ask_number("Choose", 2) == 1:
+        _write_goals(folder, seed_task=task)
+    console.print()
+
+
+def _maybe_offer_goals_refresh(folder: Path) -> None:
+    """Ask whether the goals file should be refreshed once enough has
+    changed since it was last checked -- a real prompt during the session,
+    not only the pending-draft offer at the next session's start."""
+    if not brief.existing_brief(folder):
+        return
+    changed = _session.files_changed - _session.files_changed_at_last_goals_prompt
+    if changed < GOALS_REFRESH_THRESHOLD:
+        return
+    _session.files_changed_at_last_goals_prompt = _session.files_changed
+    console.print(
+        f"\n[bold]{brief.BRIEF_FILE} may be out of date[/bold] ({changed} file change(s) since it was last "
+        "checked). Update it now?"
+    )
+    console.print("  1) Review it now (you'll see the diff)\n  2) Not now")
+    if _ask_number("Choose", 2) == 1:
+        _write_goals(folder)
+    console.print()
 
 
 @app.command()
