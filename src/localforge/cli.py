@@ -1680,12 +1680,28 @@ def _start_session() -> bool:
     if not _ask_trust(Path.cwd().resolve()):
         console.print("Not trusted — exiting. cd into a folder you trust and run localforge there.")
         return False
+    _print_project_summary(Path.cwd().resolve())
     if not _choose_orchestrator_at_start():
         return False
     _offer_upgrades_at_start()
     _offer_brief_update_at_start(Path.cwd().resolve())
     _offer_open_work_at_start(Path.cwd().resolve())
     return True
+
+
+def _print_project_summary(folder: Path) -> None:
+    """AGENTS.md's "What this project is" section, in plain English, right
+    when a session starts -- asked for: "why doesn't the goal have an
+    overall summary in user readable fashion similar to init or claude.md".
+    The section has always been drafted (it's `/goals`'s own opening
+    section), but until now it only ever reached the orchestrator's system
+    prompt (`Conversation.brief`) -- a human starting a session never saw it
+    unless they went looking at the raw file. No AGENTS.md yet, or one
+    without that section (another tool's brief, whose layout isn't known):
+    nothing printed, same as before."""
+    summary = brief.section(brief.existing_brief(folder), ("what this project is",))
+    if summary:
+        console.print(f"[bold]Project:[/bold] {summary}\n", highlight=False)
 
 
 def _offer_open_work_at_start(folder: Path) -> None:
@@ -2402,16 +2418,41 @@ def _write_goals(folder: Path, refresh: bool = False, seed_task: str = "") -> bo
     return False
 
 
+def _busy_elsewhere() -> bool:
+    """A background task is running on its own thread right now -- used to
+    decide whether /goals must wait (drafting a new file/update needs the
+    local model and the diff-approval flow a running task also uses) or can
+    just show what's already there."""
+    runner = _session.runner
+    return runner is not None and runner.busy
+
+
 @app.command()
 def goals(
     refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
 ) -> None:
-    """Write (or update) AGENTS.md: this project's goals, for every future session.
+    """Show, or write/update, AGENTS.md: this project's goals, for every future session.
 
     A local model reads the project and what localforge remembers, and drafts
     it; you see the diff and approve it like any other change.
     """
-    if not _write_goals(Path.cwd().resolve(), refresh=refresh):
+    folder = Path.cwd().resolve()
+    if _busy_elsewhere():
+        # Reported: /goals refused outright while a task ran, with no way to
+        # even see the project's stated objective in the meantime -- unlike
+        # /memory and /scratch, which stay readable and only block their
+        # mutating subactions. Drafting an update genuinely needs the local
+        # model a running task may be using, and --refresh means exactly
+        # that; but just showing the current file touches nothing a running
+        # task depends on, so there's no reason to make that wait too.
+        current = brief.existing_brief(folder)
+        if refresh or not current:
+            console.print("[warning]/goals has to wait until the current task is done[/warning] (/summary to check on it, /stop to end it).")
+            raise typer.Exit(code=1)
+        console.print(Panel(Markdown(current), title=f"{brief.BRIEF_FILE} (current)", border_style="panel.border"))
+        console.print("[dim]A task is running -- this is the file as it stands. /goals again once it's done to draft an update.[/dim]")
+        return
+    if not _write_goals(folder, refresh=refresh):
         raise typer.Exit(code=1)
 
 
@@ -2420,8 +2461,7 @@ def init(
     refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
 ) -> None:
     """Alias for /goals (the old name)."""
-    if not _write_goals(Path.cwd().resolve(), refresh=refresh):
-        raise typer.Exit(code=1)
+    goals(refresh=refresh)
 
 
 # Approved file changes since the goals file was last checked (offered or

@@ -169,7 +169,11 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "goals", "init", "upgrade"}
+BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "upgrade"}
+# /goals (and its /init alias) are deliberately not here: they decide for
+# themselves whether to wait (drafting a new file/update needs the local
+# model and diff-approval a running task may be using) or just show the
+# current AGENTS.md, which touches nothing a running task depends on.
 # /memory and /scratch are otherwise safe to run while busy (they only read),
 # but these specific actions mutate state the running task holds a live
 # reference to: /memory clear|forget touches conversation.facts/.memory

@@ -402,3 +402,120 @@ def test_the_deferred_goals_offer_still_fires_once_off_the_worker_thread(project
     out = capsys.readouterr().out
     assert (project / "AGENTS.md").read_text() == DRAFT
     assert "No AGENTS.md yet for this project" in out
+
+
+# --- /goals stays readable while a task is running -------------------------------------
+
+
+def _busy(monkeypatch):
+    """A stand-in runner that looks busy, without a real background task."""
+    from unittest.mock import MagicMock
+
+    runner = MagicMock()
+    runner.busy = True
+    monkeypatch.setattr(cli_module._session, "runner", runner)
+    return runner
+
+
+def test_goals_shows_the_current_file_instead_of_refusing_while_busy(project, monkeypatch, capsys):
+    """Reported: "/goals has to wait until the current task is done" refused
+    even a look at the file, unlike /memory and /scratch, which stay
+    readable while busy and only block their mutating subactions."""
+    (project / "AGENTS.md").write_text("# Project brief\n\n## What this project is\nA todo API.\n")
+    _busy(monkeypatch)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("no draft should be attempted"))
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        cli_module.goals(refresh=False)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "A todo API." in out
+    assert "has to wait" not in out
+
+
+def test_goals_refresh_still_waits_while_busy(project, monkeypatch, capsys):
+    """--refresh genuinely needs the local model and the diff-approval flow
+    a running task may itself be using, so it still has to wait."""
+    (project / "AGENTS.md").write_text("# Project brief\n\nOld.\n")
+    _busy(monkeypatch)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with pytest.raises(cli_module.typer.Exit):
+            cli_module.goals(refresh=True)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "has to wait until the current task is done" in out
+
+
+def test_goals_with_no_file_yet_still_waits_while_busy(project, monkeypatch, capsys):
+    """Nothing to just show, and drafting one from scratch needs the local
+    model -- so this still has to wait, same as before."""
+    _busy(monkeypatch)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with pytest.raises(cli_module.typer.Exit):
+            cli_module.goals(refresh=False)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "has to wait until the current task is done" in out
+    assert not (project / "AGENTS.md").exists()
+
+
+def test_the_repl_lets_goals_through_while_busy_so_it_can_decide_for_itself():
+    """repl.BUSY_BLOCKED no longer includes goals/init: the command itself
+    now tells a mutating refresh apart from a harmless read."""
+    from unittest.mock import MagicMock
+
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    console = MagicMock()
+    reader = MagicMock()
+    reader.read.side_effect = ["/goals", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, console, reader, runner)
+    app.assert_called_once_with(["goals"], standalone_mode=False)
+    runner.shutdown.assert_called_once()
+
+
+# --- a session starting in a project with goals says what the project is for ------------
+
+
+def test_the_project_summary_prints_at_session_start(project, capsys):
+    """Asked for: "why doesn't the goal have an overall summary in user
+    readable fashion similar to init or claude.md". AGENTS.md already has
+    exactly that section -- it just never reached the human, only the
+    orchestrator's system prompt (Conversation.brief)."""
+    (project / "AGENTS.md").write_text(
+        "# Project brief\n\n## What this project is\nA todo API for the team, built with FastAPI.\n\n## How it's built\nPython.\n"
+    )
+    cli_module._print_project_summary(project)
+    out = capsys.readouterr().out
+    assert "Project:" in out
+    assert "A todo API for the team, built with FastAPI." in out
+    assert "Python." not in out  # only the "what this project is" section, not the whole file
+
+
+def test_no_summary_line_without_a_goals_file(project, capsys):
+    cli_module._print_project_summary(project)
+    assert capsys.readouterr().out == ""
+
+
+def test_start_session_prints_the_summary_after_trust_before_choosing_a_model(project, monkeypatch, capsys):
+    (project / "AGENTS.md").write_text("# Project brief\n\n## What this project is\nA todo API.\n")
+    monkeypatch.setattr(cli_module, "_ask_trust", lambda folder: True)
+    order = []
+    monkeypatch.setattr(cli_module, "_print_project_summary", lambda folder: order.append("summary"))
+
+    def picker():
+        order.append("choose")
+        return False  # stop right there, before anything else at session start
+
+    monkeypatch.setattr(cli_module, "_choose_orchestrator_at_start", picker)
+    assert cli_module._start_session() is False
+    assert order == ["summary", "choose"]
