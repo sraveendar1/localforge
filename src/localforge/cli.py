@@ -1704,6 +1704,25 @@ def _print_project_summary(folder: Path) -> None:
         console.print(f"[bold]Project:[/bold] {summary}\n", highlight=False)
 
 
+def _resume_open_work(entry: dict) -> None:
+    """Continue a saved open-work entry. If a background task is already
+    running, this queues behind it (like any other typed task) instead of
+    running synchronously on the caller's thread -- calling app(["run", ...])
+    directly here would run a second task on top of whatever the worker
+    thread is doing, unguarded by the queue."""
+    resume = memory.RESUME_PREFIX + entry["task"] + "\n\n" + memory.describe_open_work(entry)
+    runner = _session.runner
+    if runner is not None and runner.busy:
+        position = runner.submit(resume)
+        if position:
+            console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
+        return
+    try:
+        app(["run", resume], standalone_mode=False)
+    except typer.Exit:
+        pass
+
+
 def _offer_open_work_at_start(folder: Path) -> None:
     """A task that stopped before it was done (Ctrl+C, a usage ceiling, an
     error the orchestrator couldn't work around) is saved rather than lost
@@ -1716,21 +1735,69 @@ def _offer_open_work_at_start(folder: Path) -> None:
     if not items:
         return
     entry = items[-1]
-    more = f" (and {len(items) - 1} older unfinished task(s); /memory to see them)" if len(items) > 1 else ""
+    more = f" (and {len(items) - 1} older unfinished task(s); /tasks to see them)" if len(items) > 1 else ""
     console.print(f"\n[bold]Unfinished from last session:[/bold]{more}")
     console.print(escape(memory.describe_open_work(entry)))
     console.print("  1) Continue it now\n  2) Not now (you'll be asked again next time)\n  3) Discard it")
     answer = _ask_number("Choose", 3)
     if answer == 1:
-        resume = memory.RESUME_PREFIX + entry["task"] + "\n\n" + memory.describe_open_work(entry)
-        try:
-            app(["run", resume], standalone_mode=False)
-        except typer.Exit:
-            pass
+        _resume_open_work(entry)
     elif answer == 3:
         memory.clear_open_work(folder, entry["task"])
         console.print("[dim]Discarded.[/dim]")
     console.print()
+
+
+@app.command(name="tasks")
+def tasks_command(
+    action: str = typer.Argument(None, help="`clear` to discard all of it. Omit to list it."),
+) -> None:
+    """Show unfinished work left from earlier tasks that stopped before
+    finishing (Ctrl+C, a usage limit, the round ceiling, an error).
+
+    Different from /queue, which is tasks waiting behind the one running
+    right now, in *this* session -- /tasks is about *earlier*, already-ended
+    ones. Only the most recent is offered automatically at the start of a
+    session; this shows all of them (up to memory.MAX_OPEN_WORK), any time.
+    """
+    root = _session.root or Path.cwd().resolve()
+    items = memory.open_work(root)
+    if action == "clear":
+        if not items:
+            console.print("Nothing to clear.")
+            return
+        for entry in items:
+            memory.clear_open_work(root, entry["task"])
+        console.print(f"[success]✓[/success] Discarded {len(items)} unfinished task(s).")
+        return
+    if action:
+        console.print(f"[error]Unknown action {escape(action)!r}.[/error] Use /tasks, or /tasks clear.")
+        raise typer.Exit(code=1)
+    if not items:
+        console.print("No unfinished work from earlier tasks.")
+        return
+    for i, entry in enumerate(items, 1):
+        console.print(f"[bold]{i}.[/bold] {escape(memory.describe_open_work(entry))}\n")
+    if not sys.stdin.isatty():
+        return
+    try:
+        choice = console.input(f"Continue one of these now? Number 1-{len(items)}, or Enter to leave them: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return
+    if not choice:
+        return
+    if not choice.isdigit() or not (1 <= int(choice) <= len(items)):
+        console.print("[warning]Not a number from the list — nothing changed.[/warning]")
+        return
+    entry = items[int(choice) - 1]
+    console.print("  1) Continue it now\n  2) Discard it\n  3) Leave it")
+    answer = _ask_number("Choose", 3)
+    if answer == 1:
+        _resume_open_work(entry)
+    elif answer == 2:
+        memory.clear_open_work(root, entry["task"])
+        console.print("[dim]Discarded.[/dim]")
 
 
 def _offer_brief_update_at_start(folder: Path) -> None:
