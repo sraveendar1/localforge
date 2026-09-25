@@ -60,7 +60,7 @@ def test_run_with_a_saved_local_model_skips_claude_entirely(stale_claude_login, 
     assert run.call_args.kwargs["cli_provider"] is None
     available.assert_not_called()
     assert "claude" not in out
-    assert "gemma3:4b (local, via Ollama" in out
+    assert "gemma3:4b (open-weighted model, via Ollama" in out
 
 
 def test_orchestrator_sends_local_models_to_ollama_even_if_a_cli_is_passed():
@@ -180,8 +180,8 @@ def test_model_lists_installed_local_models_and_switches(monkeypatch):
         listing = CliRunner().invoke(cli_module.app, ["model"]).output
         switched = CliRunner().invoke(cli_module.app, ["model", "ollama/gemma3:4b"]).output
 
-    assert "ollama/gemma3:4b  (local — no account, no billing)" in listing
-    assert "Orchestrator is now gemma3:4b (local" in switched
+    assert "ollama/gemma3:4b  (open-weighted model — no account, no billing)" in listing
+    assert "Orchestrator is now gemma3:4b (open-weighted model" in switched
     saved = config.CONFIG_FILE.read_text()
     assert "LOCALFORGE_FRONTIER_MODEL=ollama/gemma3:4b" in saved and "LOCALFORGE_AUTH_METHOD=local" in saved
 

@@ -94,7 +94,7 @@ def test_a_local_model_answers_the_specific_question(capsys):
     ):
         runner.ask_question("what exactly does this change?")
     out = " ".join(capsys.readouterr().out.replace("│", " ").split())
-    assert "adds one print line" in out and "from keeper (local)" in out
+    assert "adds one print line" in out and "from keeper (open-weighted model)" in out
     assert "Update src/app.py" in seen["prompt"] and "+print(1)" in seen["prompt"]
     assert "add a health endpoint" in seen["prompt"]  # the task is context for the answer
 
@@ -150,7 +150,7 @@ def test_a_side_question_is_answered_from_cache_not_a_fresh_read(capsys):
     ):
         cli_module._answer_side_question("what is this project built with?")
     out = " ".join(capsys.readouterr().out.replace("│", " ").split())
-    assert "built with FastAPI" in out and "keeper (local" in out
+    assert "built with FastAPI" in out and "keeper (open-weighted model" in out
     assert "Built with FastAPI." in seen["prompt"]  # the cached brief, not a fresh read
     assert "never use print()" in seen["prompt"]
     assert "Last time we added auth." in seen["prompt"]

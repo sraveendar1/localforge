@@ -12,22 +12,22 @@ def test_usage_bar_splits_blocks_proportionally():
     green, yellow = _block_counts(rendered)
     assert green + yellow == 40
     assert green == round(40 * 777 / (777 + 350))
-    assert "69% local" in rendered
-    assert "31% frontier" in rendered
+    assert "69% open-weighted" in rendered
+    assert "31% paid" in rendered
 
 
 def test_usage_bar_all_local():
     rendered = _usage_bar(local_tokens=1000, frontier_tokens=0, width=40)
     green, yellow = _block_counts(rendered)
     assert (green, yellow) == (40, 0)
-    assert "100% local / 0% frontier" in rendered
+    assert "100% open-weighted / 0% paid" in rendered
 
 
 def test_usage_bar_all_frontier():
     rendered = _usage_bar(local_tokens=0, frontier_tokens=1000, width=40)
     green, yellow = _block_counts(rendered)
     assert (green, yellow) == (0, 40)
-    assert "0% local / 100% frontier" in rendered
+    assert "0% open-weighted / 100% paid" in rendered
 
 
 def test_usage_bar_zero_tokens_does_not_divide_by_zero():

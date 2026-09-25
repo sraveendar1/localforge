@@ -146,8 +146,8 @@ def test_summary_and_toolbar_describe_who_is_doing_what():
     s.local_model, s.local_what, s.local_tokens, s.local_started = "qwen2.5-coder:7b", "working on coding", 120, time.monotonic() - 4
     s.todos = [{"content": "write api", "status": "completed"}, {"content": "write tests", "status": "in_progress"}]
     text = "\n".join(runner.summary())
-    assert "Task: build it" in text and "Orchestrator: claude-opus-5 — reviewing results (step 3)" in text
-    assert "Local model: qwen2.5-coder:7b working on coding — 120 tokens so far" in text
+    assert "Task: build it" in text and "Orchestrator (Paid model): claude-opus-5 — reviewing results (step 3)" in text
+    assert "Open-weighted model: qwen2.5-coder:7b working on coding — 120 tokens so far" in text
     assert "[x] write api" in text and "[~] write tests" in text
     assert "Queued (1):" in text and "1. then docs" in text
     bar = runner.toolbar()

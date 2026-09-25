@@ -216,7 +216,7 @@ def test_run_command_streams_local_output_indented_then_a_done_line(monkeypatch,
         out = CliRunner().invoke(cli_module.app, ["run", "task", "-m", "gpt-5"]).output
 
     lines = out.splitlines()
-    assert "→ delegating coding to coder:7b (local, via stub)" in out
+    assert "→ delegating coding to coder:7b (open-weighted model, via stub)" in out
     assert "    def f():" in lines
     assert "        return 1" in lines
     # rate is measured from the first token, so only its presence is stable here

@@ -514,7 +514,7 @@ def test_memory_command_shows_the_note_and_its_keeper(fresh_session, project, mo
     monkeypatch.setattr(cli_module, "_memory_dispatcher", lambda hooks=None: Dispatcher(_hw(), catalog=CATALOG, installed={"talker"}))
     monkeypatch.setitem(memory.BACKENDS, "stub", Local())
     out = " ".join(CliRunner().invoke(cli_module.app, ["memory"]).output.split())
-    assert "ship it" in out and "kept by talker (local)" in out
+    assert "ship it" in out and "kept by talker (open-weighted model)" in out
     CliRunner().invoke(cli_module.app, ["memory", "clear"])
     assert memory.load(project) == ""
 

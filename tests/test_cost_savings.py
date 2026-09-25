@@ -144,7 +144,7 @@ def test_effort_is_configurable(monkeypatch):
 
 def test_usage_shows_an_estimate_of_what_local_work_saved():
     line = cli_module._savings_line(4000, "claude-opus-5")
-    assert "saved" in line and "4000 tokens of local output" in line
+    assert "saved" in line and "4000 tokens of open-weighted output" in line
     price = __import__("litellm").model_cost["claude-opus-5"]["output_cost_per_token"]
     assert f"${4000 * price:.4f}" in line
 
@@ -160,4 +160,4 @@ def test_usage_command_includes_the_savings(monkeypatch):
 
     cli_module._session_usage.append(("claude-opus-5", RunStats(frontier_prompt_tokens=100, frontier_completion_tokens=50, local_tokens_generated=2000)))
     out = " ".join(CliRunner().invoke(cli_module.app, ["usage"]).output.replace("│", " ").split())
-    assert "saved" in out and "2000 tokens of local output would have cost from claude-opus-5" in out
+    assert "saved" in out and "2000 tokens of open-weighted output would have cost from claude-opus-5" in out
