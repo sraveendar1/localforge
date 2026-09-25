@@ -349,3 +349,56 @@ def test_goals_refresh_is_not_offered_below_the_threshold(project, local_keeper,
         cli_module.console.pop_theme()
     out = capsys.readouterr().out
     assert "may be out of date" not in out
+
+
+def test_goals_offers_never_read_stdin_from_the_background_worker_thread(project, local_keeper, monkeypatch):
+    """Reported: "not seeing the ability to queue... single threaded." Both
+    goals offers call _ask_number, a blocking console.input() -- fine on the
+    main thread, but on the background worker thread (background.py's
+    TaskRunner) it would read stdin out from under prompt_toolkit's own
+    PromptSession, which owns the terminal for the whole session. That
+    silently broke background tasks (and therefore queueing behind one) for
+    any project with no AGENTS.md yet, or one with 5+ changed files. The
+    offer must be skipped -- not just answered a particular way -- whenever
+    `run()` executes on the worker thread; _ask_number must never even be
+    called there."""
+    from localforge.background import TaskRunner
+
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("_ask_number was called from the worker thread"))
+
+    def run_task(task: str) -> None:
+        cli_module.run(task=task, frontier_model="claude-opus-5", show_usage=False, yes=False)
+
+    runner = TaskRunner(run_task)
+    cli_module._session.runner = runner
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            runner.submit("build a todo API")
+            runner.thread.join(timeout=5)
+    finally:
+        cli_module.console.pop_theme()
+        cli_module._session.runner = None
+    assert not runner.busy
+    # Deferred, not lost: skipped on the worker thread rather than consumed,
+    # so a later foreground opportunity can still offer it.
+    assert not (project / "AGENTS.md").exists()
+    assert cli_module._session.goals_offered is False
+
+
+def test_the_deferred_goals_offer_still_fires_once_off_the_worker_thread(project, local_keeper, monkeypatch, capsys):
+    """The flip side of the test above: run() on the main thread (no
+    background runner in play) must still make the offer as before -- the
+    fix is thread-aware, not a blanket disable."""
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)  # yes, set them up
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("build a todo API")
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert (project / "AGENTS.md").read_text() == DRAFT
+    assert "No AGENTS.md yet for this project" in out

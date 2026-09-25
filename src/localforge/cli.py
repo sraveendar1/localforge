@@ -904,7 +904,18 @@ def run(
                 "interactively to trust it, or pass --yes to allow this run."
             )
             raise typer.Exit(code=1)
-    if sys.stdin.isatty():
+    on_worker = _session.runner is not None and threading.current_thread() is _session.runner.thread
+    if sys.stdin.isatty() and not on_worker:
+        # Both offers call _ask_number, a blocking console.input() -- fine on
+        # the main thread (a foreground run, or the first task of a fresh
+        # session before the worker exists), but on the background worker
+        # thread it would read stdin out from under prompt_toolkit's own
+        # PromptSession, which owns the terminal for the whole session (see
+        # background.py's module docstring). That silently broke the
+        # "prompt stays usable, tasks queue behind the running one" behavior
+        # entirely -- reported as "not seeing the ability to queue... single
+        # threaded" -- for any project with no AGENTS.md yet, or one where 5+
+        # files had changed since it was last checked.
         if not _session.goals_offered and not brief.existing_brief(folder):
             _session.goals_offered = True
             _offer_initial_goals(folder, task)
