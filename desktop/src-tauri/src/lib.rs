@@ -26,12 +26,30 @@ fn get_initial_folder(state: State<'_, InitialFolder>) -> Option<String> {
     state.0.clone()
 }
 
+/// How long a killed session's backend gets to run its own graceful
+/// shutdown (StdioServer.close(): cancel the in-flight task, then save
+/// session memory/facts -- see serve.py) before being force-killed as a
+/// safety net. Writing "shutdown" and calling kill() right after it (the
+/// previous code) raced the write against the kill: write() only queues
+/// bytes on the pipe and returns immediately, so the kill essentially
+/// always won, meaning the memory-save-on-close fix never actually got to
+/// run when switching folders or quitting -- the exact case it exists for.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 fn kill_session(state: &AppState) {
     if let Ok(mut guard) = state.session.lock() {
         if let Some(session) = guard.take() {
             let mut child = session.child;
             let _ = child.write(b"{\"type\":\"shutdown\"}\n");
-            let _ = child.kill();
+            // Give it the grace period to exit on its own; only force-kill
+            // if it hasn't (a hang, e.g. memory extraction stuck on a
+            // stalled local model). Detached so callers (start_session,
+            // stop_session) don't block on the *old* session while this
+            // plays out -- starting a new one doesn't depend on it.
+            std::thread::spawn(move || {
+                std::thread::sleep(SHUTDOWN_GRACE);
+                let _ = child.kill();
+            });
         }
     }
 }
