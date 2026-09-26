@@ -622,7 +622,10 @@ localforge uninstall                             # remove models, config, and th
 localforge uninstall --purge-ollama              # also uninstall Ollama itself and wipe ~/.ollama
 localforge theme                                 # show current theme + available options
 localforge theme dark                            # switch theme (matrix / dark / light)
+localforge desktop                               # hand this session off to the desktop app (see below)
 ```
+
+**`localforge desktop`** (also `/desktop` in a session): launches the desktop app open to the current folder and ends this terminal session, so you can keep going in the GUI right where you left off — session memory is saved through the same path `/exit` already uses, and the GUI reads it back on start. Needs the desktop app installed already (`cd desktop && npm run tauri build`); `LOCALFORGE_DESKTOP_BIN` points it at a specific binary otherwise. Blocked while a task is running, same as `/clear`/`/uninstall`.
 
 ### Themes
 

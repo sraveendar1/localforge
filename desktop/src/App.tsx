@@ -65,6 +65,18 @@ function App() {
     try { await invoke("start_session", { folder: dir, model: modelDraft.trim() || null }); } catch (err) { setChat(s => addError(s, String(err))); }
   }
 
+  // Set when the app is launched with a folder to open directly (e.g.
+  // `localforge desktop`'s hand-off from a terminal session -- see cli.py's
+  // desktop_command and lib.rs's get_initial_folder). Runs once on mount,
+  // after startSessionForFolder exists (function declarations hoist within
+  // the component body, so this is safe regardless of source order).
+  useEffect(() => {
+    invoke<string | null>("get_initial_folder").then(initial => {
+      if (initial) startSessionForFolder(initial);
+    }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   async function openFolder() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return;

@@ -2662,6 +2662,82 @@ def _record_usage(frontier_model: str, stats) -> None:
 _session_usage: list[tuple[str, RunStats]] = []
 
 
+class DesktopAppNotFound(Exception):
+    """No installed desktop app binary was found for this OS."""
+
+
+def _find_desktop_app_binary() -> Path | None:
+    """Locate the built desktop app, the same way `lib.rs`'s sidecar
+    fallback chain works: an explicit override first, then the platform's
+    normal install location, then whatever's on PATH. There's no single
+    place a `npm run tauri build` output always lands (it varies by OS and
+    by how the resulting installer was actually installed), so this is
+    best-effort -- callers report clearly when nothing is found rather than
+    guessing.
+    """
+    override = os.environ.get("LOCALFORGE_DESKTOP_BIN", "").strip()
+    if override:
+        path = Path(override).expanduser()
+        return path if path.exists() else None
+
+    system = platform.system()
+    if system == "Darwin":
+        app_bundle = Path("/Applications/LocalForge Desktop.app")
+        if app_bundle.exists():
+            return app_bundle
+        user_app_bundle = Path.home() / "Applications" / "LocalForge Desktop.app"
+        if user_app_bundle.exists():
+            return user_app_bundle
+    elif system == "Windows":
+        local_appdata = os.environ.get("LOCALAPPDATA", "")
+        if local_appdata:
+            candidate = Path(local_appdata) / "LocalForge Desktop" / "LocalForge Desktop.exe"
+            if candidate.exists():
+                return candidate
+    else:  # Linux and anything else: rely on PATH, like any other installed CLI tool
+        found = shutil.which("localforge-desktop")
+        if found:
+            return Path(found)
+    return None
+
+
+def _launch_desktop_app(root: Path) -> None:
+    """Start the desktop app pointed at `root`, so it opens straight into
+    this project instead of showing "No folder" -- the app reads its first
+    CLI argument as the folder to open automatically (see lib.rs's
+    get_initial_folder / App.tsx's startup effect)."""
+    binary = _find_desktop_app_binary()
+    if binary is None:
+        raise DesktopAppNotFound(
+            "Couldn't find an installed desktop app. Build it with `cd desktop && npm run tauri build` "
+            "(or `npm run tauri dev` for a dev build) and install the result, or set "
+            "LOCALFORGE_DESKTOP_BIN to its executable path."
+        )
+    if platform.system() == "Darwin" and binary.suffix == ".app":
+        subprocess.Popen(["open", "-a", str(binary), "--args", str(root)])
+    else:
+        subprocess.Popen([str(binary), str(root)])
+
+
+@app.command(name="desktop")
+def desktop_command() -> None:
+    """Hand this session off to the desktop app: launch it open to this
+    folder and leave this terminal session -- session memory is saved by
+    the same on_exit path /exit already uses, so the GUI (which loads
+    memory.load(root) on start) picks up right where this session left
+    off. Exits with code 0 on success so repl.py's dispatch loop knows to
+    end the session; any other exit code means the launch failed and this
+    session keeps going."""
+    root = _session.root or Path.cwd().resolve()
+    try:
+        _launch_desktop_app(root)
+    except DesktopAppNotFound as exc:
+        console.print(f"[error]{exc}[/error]")
+        raise typer.Exit(code=1) from None
+    console.print(f"[success]Launched the desktop app for {escape(str(root))}.[/success] Leaving this session.")
+    raise typer.Exit(code=0)
+
+
 @app.command()
 def usage() -> None:
     """Token usage: the last task, this session, the previous session, and this project's total."""

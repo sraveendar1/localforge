@@ -53,6 +53,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /tasks            show unfinished work left from earlier sessions
   /theme <name>     show/switch color theme (matrix, dark, light)
   /uninstall        remove localforge and everything it manages
+  /desktop          save session memory, open the desktop app here, and leave this session
   /help             show this list
   /exit, /quit, /q  leave this session"""
 
@@ -169,7 +170,7 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "setup", "uninstall", "delete", "run", "upgrade"}
+BUSY_BLOCKED = {"clear", "compact", "setup", "uninstall", "delete", "run", "upgrade", "desktop"}
 # /goals (and its /init alias) are deliberately not here: they decide for
 # themselves whether to wait (drafting a new file/update needs the local
 # model and diff-approval a running task may be using) or just show the
@@ -353,8 +354,14 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
         argv = _to_argv(cmd, remainder)
         try:
             app(argv, standalone_mode=False)
-        except typer.Exit:
-            pass  # the command already reported its own success/failure
+        except typer.Exit as exc:
+            # /desktop signals "launched successfully, leave this session"
+            # with exit code 0, same as EXIT_COMMANDS below -- any other
+            # code means the launch failed, so this session keeps going
+            # (the command already printed why).
+            if cmd == "desktop" and exc.exit_code == 0:
+                console.print()
+                break
         except KeyboardInterrupt:
             console.print("\n[warning]Stopped.[/warning]")  # Ctrl+C stops the command, not the session
         except Exception as exc:  # noqa: BLE001 - keep the session alive on any command failure

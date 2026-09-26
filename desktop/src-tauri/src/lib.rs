@@ -12,6 +12,20 @@ struct AppState {
     session: Mutex<Option<Session>>,
 }
 
+/// Set from argv[1] when the app is launched with a folder to open
+/// directly -- e.g. `localforge desktop`'s hand-off (see cli.py), which
+/// runs `open -a "LocalForge Desktop" --args <folder>` on macOS or
+/// `localforge-desktop <folder>` elsewhere. Filtered to existing
+/// directories so an unrelated OS-injected argument can't be mistaken for
+/// one; a normal double-click launch has no such argument and this stays
+/// None, same as before.
+struct InitialFolder(Option<String>);
+
+#[tauri::command]
+fn get_initial_folder(state: State<'_, InitialFolder>) -> Option<String> {
+    state.0.clone()
+}
+
 fn kill_session(state: &AppState) {
     if let Ok(mut guard) = state.session.lock() {
         if let Some(session) = guard.take() {
@@ -141,12 +155,22 @@ fn stop_session(state: State<'_, AppState>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let initial_folder = std::env::args()
+        .nth(1)
+        .filter(|a| std::path::Path::new(a).is_dir());
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
-        .invoke_handler(tauri::generate_handler![start_session, send_message, stop_session])
+        .manage(InitialFolder(initial_folder))
+        .invoke_handler(tauri::generate_handler![
+            start_session,
+            send_message,
+            stop_session,
+            get_initial_folder
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {

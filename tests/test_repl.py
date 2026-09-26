@@ -142,6 +142,39 @@ def test_repl_swallows_typer_exit_silently():
     run_repl(app, console)  # must not print "Error: ..."
 
 
+def test_desktop_command_success_ends_the_session_without_needing_exit():
+    """cli.py's desktop_command() raises typer.Exit(code=0) on a
+    successful hand-off to the desktop app -- the REPL must treat that the
+    same as /exit, not just swallow it and keep looping."""
+    import typer
+
+    app = MagicMock(side_effect=typer.Exit(code=0))
+    console = _fake_console()
+    lines = iter(["/desktop"])  # no /exit needed -- must not hang waiting for another line
+    console.input = lambda prompt="": next(lines)
+
+    run_repl(app, console)
+
+    app.assert_called_once_with(["desktop"], standalone_mode=False)
+
+
+def test_desktop_command_failure_keeps_the_session_open():
+    """A failed hand-off (e.g. no desktop app installed) raises
+    typer.Exit(code=1) -- the session must keep going, not silently end."""
+    import typer
+
+    app = MagicMock(side_effect=[typer.Exit(code=1), None])
+    console = _fake_console()
+    lines = iter(["/desktop", "/scan", "/exit"])
+    console.input = lambda prompt="": next(lines)
+
+    run_repl(app, console)
+
+    assert app.call_count == 2
+    app.assert_any_call(["desktop"], standalone_mode=False)
+    app.assert_any_call(["scan"], standalone_mode=False)
+
+
 def test_repl_ignores_blank_lines():
     app = MagicMock()
     console = _fake_console()
