@@ -269,38 +269,83 @@ as the interactive CLI — it launches `localforge serve --stdio` as a child
 process and speaks a JSON-lines protocol over its stdin/stdout — so nothing
 about the orchestrator, delegation, or approvals is reimplemented for it.
 
-**Running it:**
+### Installing the desktop app
+
+There's no downloadable installer yet (see "Packaging a standalone app"
+below for where that's headed) — for now, building it yourself is
+straightforward:
 
 ```bash
+# 1. Install the localforge CLI first -- the app spawns it as a backend.
+git clone https://github.com/sraveendar1/localforge.git
+cd localforge
+./install.sh                    # or: uv tool install .
+
+# 2. Build and run the desktop app.
 cd desktop
 npm install
-npm run tauri dev      # dev mode, hot-reloads the UI
-npm run tauri build    # a real installable app (dmg/AppImage/msi/...)
+npm run tauri dev               # opens the app, hot-reloads on UI changes
 ```
 
-You need the `localforge` CLI installed first (`./install.sh` from the repo
-root, or `uv tool install .`) — the app just spawns it. Building or running
-`npm run tauri *` also needs Node.js + npm and Rust + Cargo, plus Tauri's
-own OS-level prerequisites (WebKitGTK + friends on Linux, Xcode command line
-tools on macOS, the WebView2 runtime on Windows) — see [Tauri's
-prerequisites guide](https://v2.tauri.app/start/prerequisites/) if
-`npm run tauri dev` fails to build. `LOCALFORGE_BIN=/path/to/localforge npm
-run tauri dev` points the app at a dev checkout instead of whatever
-`localforge` resolves to on your `PATH`.
+For a real double-clickable app instead of dev mode:
 
-**What it does:** open a project folder (the same one-time trust prompt as
-the CLI applies), pick or switch the orchestrator model at any time —
-including mid-task, matching `/model`'s behavior in a session — and type a
-task. You get the same live picture the terminal session shows: which local
-model is delegated to for each step, its output streaming in token by
-token, the running plan (todos) in a side panel, and a diff/command prompt
-for every write or command with the same **Approve / Always allow /
+```bash
+npm run tauri build             # produces an installer under desktop/src-tauri/target/release/bundle/
+```
+
+That gives you a `.dmg`/`.app` on macOS, an `.AppImage`/`.deb` on Linux, or
+an `.msi`/`.exe` on Windows, depending on what you built on — install it
+like any other app for your OS from there.
+
+**Prerequisites for building** (not needed just to use a already-built
+app): Node.js + npm, Rust + Cargo, and Tauri's own OS-level dependencies —
+WebKitGTK and related packages on Linux, Xcode command line tools on macOS,
+the WebView2 runtime on Windows (usually already present). See [Tauri's
+prerequisites guide](https://v2.tauri.app/start/prerequisites/) if
+`npm run tauri dev` fails partway through with a missing system library.
+
+`LOCALFORGE_BIN=/path/to/localforge npm run tauri dev` points the app at a
+specific checkout/binary instead of whatever `localforge` resolves to on
+your `PATH` — useful when developing the Python and desktop sides together.
+
+**Packaging a standalone app (in progress):** `scripts/build_sidecar.sh`
+packages the entire `localforge` CLI (Python interpreter and all) into one
+standalone binary via [PyInstaller](https://pyinstaller.org), which Tauri
+then embeds directly into the built app as a "sidecar" — the end goal being
+a single downloaded app that needs no separate CLI install at all. Run it
+once per OS you're building for (PyInstaller doesn't cross-compile) before
+`npm run tauri build`:
+
+```bash
+./scripts/build_sidecar.sh      # from the repo root; needs uv
+cd desktop && npm run tauri build
+```
+
+### Using it
+
+Open a project folder (the same one-time trust prompt as the CLI applies),
+pick or switch the orchestrator model at any time — including mid-task,
+matching `/model`'s behavior in a session — and type a task, optionally
+attaching an image (📎 next to the input; needs a vision-capable
+orchestrator — see "Attaching an image" below). You get the same live
+picture the terminal session shows: which local model is delegated to for
+each step, its output streaming in token by token, and a diff/command
+prompt for every write or command with the same **Approve / Always allow /
 Decline** choices as the CLI's (y)es/(n)o/(a)lways. A queue strip shows
-tasks typed while one is already running, a status bar mirrors the
-CLI's always-visible activity line, and side panels cover system hardware
-(CPU/RAM/GPU), session token usage and cost (frontier vs. open-weighted,
-kept apart), and this project's memory and scratchpad (view facts, forget
-one, clear either).
+tasks typed while one is already running, and a status bar mirrors the
+CLI's always-visible activity line.
+
+**Sidebar** (right side): five independently collapsible sections — click
+any title to expand/collapse it — in this order: **Overall goal** (this
+project's AGENTS.md summary, if it has one), **Plan** (the running task's
+todos), **Active LLMs** (which local model is configured/currently working
+for each modality), **Usage and cost** (frontier tokens/cost, plus this
+project's usage history), and **System** (CPU/RAM/GPU, collapsed by
+default).
+
+**Left nav** (collapsible via the chevron tab on the left edge): a list of
+recently-opened project folders — click one to switch straight to it,
+skipping the file dialog — and a full reference of every session command.
 
 The chat input doubles as a command line: typing `/` brings up every
 session command with a description (arrow keys / Tab to pick), and each one
@@ -310,6 +355,18 @@ reuses the exact server-side handler the CLI's own slash commands use —
 `/help`, `/compact`, `/summary`, `/tell`, `/why`, and `/stream` all work
 from the box exactly as they do in a terminal session, with the reply shown
 as its own message in the conversation.
+
+**Handing off from a terminal session:** run `localforge desktop` (or type
+`/desktop` inside a session) to save session memory and launch the desktop
+app open to the same folder, picking up right where the terminal left off.
+
+**Attaching an image:** click 📎 next to the chat input to attach a
+screenshot or photo to your next message. This needs a vision-capable
+orchestrator — an API-key model (Claude/GPT/Gemini) or Claude via CLI
+login work today; other CLI logins and local Ollama models need a
+vision-capable model (e.g. `llava`) picked as the orchestrator. Attaching
+an image with an orchestrator that can't use it fails with a clear message
+rather than silently ignoring it.
 
 **Not in the GUI yet:** first-time onboarding (`localforge setup`) and the
 `delete`/`uninstall` confirmation flows still need a terminal — run those
