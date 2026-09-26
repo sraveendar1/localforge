@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, local_transport, memory, repl, theme, trust, upgrades, usage_store
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, repl, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -2213,6 +2213,81 @@ def model_command(
         _set_orchestrator(model_id, auth)
     else:
         console.print("[warning]Not a number from the list — nothing changed.[/warning]")
+
+
+@app.command(name="local-model")
+def local_model_command(
+    modality: str = typer.Argument(None, help="coding, docs, or general. Omit to show all three."),
+    value: str = typer.Argument(
+        None,
+        help="'auto', a local catalog model name, or api:<provider>:<model> / cli:<provider>:<model> "
+        "for a paid cloud target. Omit to show the current one.",
+    ),
+) -> None:
+    """Show or override which model actually does coding/docs/general work.
+
+    Automatic by default: the best-fitting installed local model, same as
+    always. This lets you pin a specific local model, or send that task
+    type to a paid cloud model instead -- via an API key or a CLI
+    subscription login -- independently per task type.
+    """
+    if modality is None:
+        for m in delegate_target.MODALITIES:
+            console.print(f"{m}: [accent]{escape(delegate_target.describe(delegate_target.get(m)))}[/accent]")
+        if value is None:
+            console.print("Change one with: local-model <coding|docs|general> <value>")
+        return
+
+    modality = modality.lower()
+    if modality not in delegate_target.MODALITIES:
+        console.print(f"[error]Unknown task type {escape(modality)!r}.[/error] Use coding, docs, or general.")
+        raise typer.Exit(code=1)
+
+    if value is None:
+        console.print(f"{modality}: [accent]{escape(delegate_target.describe(delegate_target.get(modality)))}[/accent]")
+        return
+
+    if value.lower() == "auto":
+        delegate_target.clear(modality)
+        console.print(f"[success]✓[/success] {modality} is back to automatic (best-fitting installed local model).")
+        return
+
+    if value.startswith("api:") or value.startswith("cli:"):
+        target = delegate_target.parse(value)
+        if target is delegate_target.AUTO:
+            console.print(
+                f"[error]Couldn't parse {escape(value)!r}.[/error] "
+                "Expected api:<provider>:<model> or cli:<provider>:<model>, e.g. api:anthropic:claude-haiku-4-5."
+            )
+            raise typer.Exit(code=1)
+        if target.kind == "api":
+            env_var = config.FRONTIER_PROVIDERS.get(target.provider)
+            if not env_var or not os.environ.get(env_var):
+                console.print(
+                    f"[error]No API key set for {escape(target.provider)}.[/error] "
+                    "Run `localforge setup` to add one, or use a local model instead."
+                )
+                raise typer.Exit(code=1)
+        elif not cli_transport.available(target.provider):
+            console.print(f"[error]{escape(cli_transport.requirements_message(target.provider))}[/error]")
+            raise typer.Exit(code=1)
+        delegate_target.set_target(modality, target)
+        via = "your API key (billed per call)" if target.kind == "api" else "your CLI subscription"
+        console.print(
+            f"[success]✓[/success] {modality} now delegates to {escape(target.model)} ({escape(target.provider)}, via {via}). "
+            "Unlike a local model, this costs money per delegation -- see /usage."
+        )
+        return
+
+    match = next((m for m in load_catalog() if m.modality == modality and m.name == value), None)
+    if match is None:
+        console.print(
+            f"[error]{escape(value)!r} isn't a {modality} model in the catalog.[/error] "
+            "Run `localforge catalog` to see options, or pass 'auto'/an api:.../cli:... target."
+        )
+        raise typer.Exit(code=1)
+    delegate_target.set_target(modality, delegate_target.DelegateTarget(kind="ollama", model=value))
+    console.print(f"[success]✓[/success] {modality} now delegates to {escape(value)} (local, via Ollama).")
 
 
 def _memory_dispatcher(hooks=None) -> Dispatcher:

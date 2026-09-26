@@ -38,6 +38,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /stream <on|off>  print local models' output in full while they write
   /why              explain what you're being asked to approve (or just ask in words)
   /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
+  /local-model <args>  show or override coding/docs/general (auto, a local model, or a paid cloud one)
   /summary          what's happening now: which model is doing what, the plan, the queue
   /queue            drop tasks waiting behind the current one (/queue clear)
   /stop             stop the running task
