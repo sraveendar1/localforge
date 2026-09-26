@@ -357,7 +357,9 @@ CLI's always-visible activity line.
 any title to expand/collapse it — in this order: **Overall goal** (this
 project's AGENTS.md summary, if it has one), **Plan** (the running task's
 todos), **Active LLMs** (which local model is configured/currently working
-for each modality), **Usage and cost** (frontier tokens/cost, plus this
+for each modality — a "Change" action per row lets you pin a different
+local model or send that task type to a paid cloud model instead; see
+`localforge local-model` below), **Usage and cost** (frontier tokens/cost, plus this
 project's usage history), and **System** (CPU/RAM/GPU, collapsed by
 default).
 
@@ -687,6 +689,9 @@ localforge setup                                 # one-time interactive setup (p
 localforge doctor                                # is everything set up correctly?
 localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
+localforge local-model                           # show what's handling coding/docs/general (auto by default)
+localforge local-model coding qwen2.5-coder:14b  # pin a specific local model for one task type
+localforge local-model coding api:anthropic:claude-haiku-4-5  # or send it to a paid cloud model instead
 localforge run "Build a todo REST API with docs" # do the thing
 localforge run "..." --model gpt-5               # use a different orchestrator model
 localforge run "..." --usage                     # also print token usage (in a session: /usage)
@@ -701,6 +706,8 @@ localforge desktop                               # hand this session off to the 
 ```
 
 **`localforge desktop`** (also `/desktop` in a session): launches the desktop app open to the current folder and ends this terminal session, so you can keep going in the GUI right where you left off — session memory is saved through the same path `/exit` already uses, and the GUI reads it back on start. Needs the desktop app installed already (`cd desktop && npm run tauri build`); `LOCALFORGE_DESKTOP_BIN` points it at a specific binary otherwise. Blocked while a task is running, same as `/clear`/`/uninstall`.
+
+**`localforge local-model`** (also `/local-model` in a session, and a "Change" action on the desktop app's Active LLMs panel): coding/docs/general each independently default to *automatic* — the best-fitting installed local model, same as always, and free. This lets you override one: pin a specific local model from the catalog, or send that task type to a paid cloud model instead — either metered (an API key) or via a CLI subscription login you're already using for the orchestrator. A cloud choice needs a usable key/login already configured (`localforge setup`) and shows up as its own line in `/usage`, kept apart from local (free) and orchestrator spend since it's neither. `localforge local-model <type>` alone shows the current choice; `auto` clears a pin.
 
 ### Themes
 

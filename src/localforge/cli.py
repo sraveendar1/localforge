@@ -2247,47 +2247,22 @@ def local_model_command(
         console.print(f"{modality}: [accent]{escape(delegate_target.describe(delegate_target.get(modality)))}[/accent]")
         return
 
-    if value.lower() == "auto":
-        delegate_target.clear(modality)
-        console.print(f"[success]✓[/success] {modality} is back to automatic (best-fitting installed local model).")
-        return
+    try:
+        target = delegate_target.apply(modality, value)
+    except delegate_target.InvalidTarget as exc:
+        console.print(f"[error]{escape(str(exc))}[/error]")
+        raise typer.Exit(code=1) from None
 
-    if value.startswith("api:") or value.startswith("cli:"):
-        target = delegate_target.parse(value)
-        if target is delegate_target.AUTO:
-            console.print(
-                f"[error]Couldn't parse {escape(value)!r}.[/error] "
-                "Expected api:<provider>:<model> or cli:<provider>:<model>, e.g. api:anthropic:claude-haiku-4-5."
-            )
-            raise typer.Exit(code=1)
-        if target.kind == "api":
-            env_var = config.FRONTIER_PROVIDERS.get(target.provider)
-            if not env_var or not os.environ.get(env_var):
-                console.print(
-                    f"[error]No API key set for {escape(target.provider)}.[/error] "
-                    "Run `localforge setup` to add one, or use a local model instead."
-                )
-                raise typer.Exit(code=1)
-        elif not cli_transport.available(target.provider):
-            console.print(f"[error]{escape(cli_transport.requirements_message(target.provider))}[/error]")
-            raise typer.Exit(code=1)
-        delegate_target.set_target(modality, target)
+    if target is delegate_target.AUTO:
+        console.print(f"[success]✓[/success] {modality} is back to automatic (best-fitting installed local model).")
+    elif target.kind == "ollama":
+        console.print(f"[success]✓[/success] {modality} now delegates to {escape(target.model)} (local, via Ollama).")
+    else:
         via = "your API key (billed per call)" if target.kind == "api" else "your CLI subscription"
         console.print(
             f"[success]✓[/success] {modality} now delegates to {escape(target.model)} ({escape(target.provider)}, via {via}). "
             "Unlike a local model, this costs money per delegation -- see /usage."
         )
-        return
-
-    match = next((m for m in load_catalog() if m.modality == modality and m.name == value), None)
-    if match is None:
-        console.print(
-            f"[error]{escape(value)!r} isn't a {modality} model in the catalog.[/error] "
-            "Run `localforge catalog` to see options, or pass 'auto'/an api:.../cli:... target."
-        )
-        raise typer.Exit(code=1)
-    delegate_target.set_target(modality, delegate_target.DelegateTarget(kind="ollama", model=value))
-    console.print(f"[success]✓[/success] {modality} now delegates to {escape(value)} (local, via Ollama).")
 
 
 def _memory_dispatcher(hooks=None) -> Dispatcher:

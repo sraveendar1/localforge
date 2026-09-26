@@ -35,6 +35,10 @@ export type UsageTotals = {
   models: string[];
 };
 export type ConfiguredModel = { modality: string; name: string; runtime: string; qualityTier: number };
+export type LocalModelTarget = { target: string; description: string };
+export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string };
+export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean };
+export type DelegateOptions = { local: DelegateLocalOption[]; cloud: DelegateCloudOption[]; current: string };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -47,6 +51,11 @@ export type ChatState = {
   usage: Usage;
   usageHistory: { previousSession: UsageTotals | null; allTime: UsageTotals | null };
   configuredModels: ConfiguredModel[];
+  // Per-modality delegate target (see /local-model): auto by default, or a
+  // pinned local/cloud override. delegateOptions is fetched lazily, per
+  // modality, only when the "Change" picker for that row is opened.
+  localModelTargets: { [modality: string]: LocalModelTarget };
+  delegateOptions: { [modality: string]: DelegateOptions };
   systemStats: SystemStats | null;
   memory: MemoryState;
   scratchFiles: ScratchFile[];
@@ -76,6 +85,8 @@ export const initialState: ChatState = {
   },
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
+  localModelTargets: {},
+  delegateOptions: {},
   systemStats: null,
   memory: { facts: [], narrative: "", goal: "" },
   scratchFiles: [],
@@ -294,6 +305,34 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
           runtime: String(m.model?.runtime ?? ""),
           qualityTier: Number(m.model?.quality_tier ?? 0),
         })),
+      };
+    }
+    case "local_model": {
+      const targets = ev.targets && typeof ev.targets === "object" ? ev.targets : {};
+      const localModelTargets: ChatState["localModelTargets"] = {};
+      for (const [modality, t] of Object.entries<any>(targets)) {
+        localModelTargets[modality] = { target: String(t?.target ?? "auto"), description: String(t?.description ?? "auto") };
+      }
+      return { ...state, localModelTargets };
+    }
+    case "delegate_options": {
+      const modality = String(ev.modality ?? "");
+      if (!modality) return state;
+      const local = Array.isArray(ev.local) ? ev.local : [];
+      const cloud = Array.isArray(ev.cloud) ? ev.cloud : [];
+      return {
+        ...state,
+        delegateOptions: {
+          ...state.delegateOptions,
+          [modality]: {
+            local: local.map((m: any) => ({
+              name: String(m.name ?? ""), quality_tier: Number(m.quality_tier ?? 0),
+              disk_gb: Number(m.disk_gb ?? 0), installed: Boolean(m.installed),
+            })),
+            cloud: cloud.map((c: any) => ({ kind: c.kind === "cli" ? "cli" : "api", provider: String(c.provider ?? ""), model: String(c.model ?? "") })),
+            current: String(ev.current ?? "auto"),
+          },
+        },
       };
     }
     default:

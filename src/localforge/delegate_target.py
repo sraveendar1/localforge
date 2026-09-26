@@ -88,6 +88,60 @@ def clear(modality: str) -> None:
     set_target(modality, AUTO)
 
 
+class InvalidTarget(ValueError):
+    """A target string that would fail on first actual use -- an unknown
+    modality, a local model not in the catalog, or a cloud provider with no
+    usable API key/CLI login. Carries a human-readable reason so both the
+    CLI (localforge local-model) and the desktop app (its "Change" picker
+    and its /local-model chat command) can show the same message without
+    duplicating this validation."""
+
+
+def apply(modality: str, value: str) -> DelegateTarget:
+    """Parse, validate, and persist a target from a raw string: 'auto', a
+    local catalog model name, or api:<provider>:<model> / cli:<provider>:
+    <model> for a cloud target. Raises InvalidTarget rather than silently
+    accepting something that would break the next delegation."""
+    if modality not in MODALITIES:
+        raise InvalidTarget(f"Unknown task type {modality!r}. Use coding, docs, or general.")
+    value = value.strip()
+    if value.lower() == "auto":
+        clear(modality)
+        return AUTO
+    if value.startswith("api:") or value.startswith("cli:"):
+        target = parse(value)
+        if target is AUTO:
+            raise InvalidTarget(
+                f"Couldn't parse {value!r}. Expected api:<provider>:<model> or cli:<provider>:<model>, "
+                "e.g. api:anthropic:claude-haiku-4-5."
+            )
+        if target.kind == "api":
+            env_var = config.FRONTIER_PROVIDERS.get(target.provider)
+            if not env_var or not os.environ.get(env_var):
+                raise InvalidTarget(
+                    f"No API key set for {target.provider}. Run `localforge setup` to add one, "
+                    "or use a local model instead."
+                )
+        else:
+            from localforge import cli_transport  # local: avoids a module-load-order dependency
+
+            if not cli_transport.available(target.provider):
+                raise InvalidTarget(cli_transport.requirements_message(target.provider))
+        set_target(modality, target)
+        return target
+    from localforge.catalog import load_catalog  # local: avoids a module-load-order dependency
+
+    match = next((m for m in load_catalog() if m.modality == modality and m.name == value), None)
+    if match is None:
+        raise InvalidTarget(
+            f"{value!r} isn't a {modality} model in the catalog. "
+            "Run `localforge catalog` to see options, or pass 'auto'/an api:.../cli:... target."
+        )
+    target = DelegateTarget(kind="ollama", model=value)
+    set_target(modality, target)
+    return target
+
+
 def describe(target: DelegateTarget) -> str:
     """One line for a human, e.g. in `localforge local-model` or the GUI."""
     if target.kind == "auto":

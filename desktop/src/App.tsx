@@ -133,6 +133,7 @@ function App() {
       send({ type: "system_stats" });  // don't wait for the first 5s interval tick
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
+      send({ type: "local_model_request" });  // per-modality delegate target (auto, or a pinned override)
     }
   }, [chat.connected, chat.trustRequired, send]);
 
@@ -275,7 +276,15 @@ function App() {
         <aside className="w-72 shrink-0 space-y-3 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
           <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
           <Curtain title="Plan"><TodoList todos={chat.todos} /></Curtain>
-          <Curtain title="Active LLMs"><ActiveModelsPanel usage={chat.usage} configuredModels={chat.configuredModels} /></Curtain>
+          <Curtain title="Active LLMs">
+            <ActiveModelsPanel
+              usage={chat.usage}
+              configuredModels={chat.configuredModels}
+              localModelTargets={chat.localModelTargets}
+              delegateOptions={chat.delegateOptions}
+              send={send}
+            />
+          </Curtain>
           <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} model={chat.model} usageHistory={chat.usageHistory} /></Curtain>
           <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
         </aside>

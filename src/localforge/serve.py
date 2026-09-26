@@ -6,10 +6,10 @@ JSON; everything else goes to stderr.
 """
 from __future__ import annotations
 
-import dataclasses, json, shutil, sys, threading, uuid
+import dataclasses, json, os, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, memory, trust
+from localforge import brief, cli_transport, config, delegate_target, memory, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -69,6 +69,51 @@ def _installed_model_names(ollama: OllamaBackend) -> set[str]:
         return {m["name"] for m in ollama.list_installed()}
     except Exception:
         return set()
+
+def _local_model_snapshot() -> dict:
+    """Current delegate target for every modality, for the Active LLMs
+    panel and the /local-model chat command alike."""
+    return {
+        m: {
+            "target": delegate_target.render(delegate_target.get(m)),
+            "description": delegate_target.describe(delegate_target.get(m)),
+        }
+        for m in delegate_target.MODALITIES
+    }
+
+def _delegate_options(modality: str) -> dict:
+    """Everything the GUI's "Change" picker offers for one modality: every
+    local catalog model (with its fit-relevant fields and install status,
+    same shape `localforge catalog` already shows) plus a cloud entry for
+    each provider that's actually usable right now -- has an API key set,
+    or its CLI is on PATH and logged in. A cloud entry's model is that
+    provider's own default choice (config.FRONTIER_MODEL_CHOICES); the
+    chat/CLI `/local-model` command is still how you'd pick something more
+    specific than the default.
+    """
+    installed = _installed_model_names(OllamaBackend())
+    local = [
+        {"name": m.name, "quality_tier": m.quality_tier, "disk_gb": m.disk_gb, "installed": m.name in installed}
+        for m in load_catalog() if m.modality == modality
+    ]
+    cloud = []
+    for provider, env_var in config.FRONTIER_PROVIDERS.items():
+        if provider == "local" or not env_var or not os.environ.get(env_var):
+            continue
+        default_model = next(iter(config.FRONTIER_MODEL_CHOICES.get(provider, [])), None)
+        if default_model:
+            cloud.append({"kind": "api", "provider": provider, "model": default_model})
+    for provider in config.FRONTIER_CLI_AUTH:
+        if not cli_transport.available(provider):
+            continue
+        default_model = next(iter(config.FRONTIER_MODEL_CHOICES.get(provider, [])), None)
+        if default_model:
+            cloud.append({"kind": "cli", "provider": provider, "model": default_model})
+    return {
+        "local": local,
+        "cloud": cloud,
+        "current": delegate_target.render(delegate_target.get(modality)),
+    }
 
 def _project_goal(root: Path) -> str:
     """AGENTS.md's own "What this project is" section (see cli.py's
@@ -322,6 +367,8 @@ class StdioServer:
                     self.handle_catalog_command(cmd)
                 elif cmd == "/model":
                     self.handle_model_command(arg)
+                elif cmd == "/local-model":
+                    self.handle_local_model_command(arg)
                 elif cmd == "/auto":
                     self.handle_auto_command(arg)
                 elif cmd == "/run":
@@ -382,6 +429,26 @@ class StdioServer:
             if model:
                 self.frontier_model = model
                 self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        elif message_type == "local_model_request":
+            self.emit("local_model", targets=_local_model_snapshot())
+        elif message_type == "delegate_options_request":
+            modality = str(message.get('modality', '')).strip().lower()
+            if modality not in delegate_target.MODALITIES:
+                self.emit("error", message=f"Unknown task type: {modality}")
+            else:
+                self.emit("delegate_options", modality=modality, **_delegate_options(modality))
+        elif message_type == "set_delegate_target":
+            modality = str(message.get('modality', '')).strip().lower()
+            target = str(message.get('target', '')).strip()
+            if modality not in delegate_target.MODALITIES:
+                self.emit("error", message=f"Unknown task type: {modality}")
+            else:
+                try:
+                    delegate_target.apply(modality, target)
+                except delegate_target.InvalidTarget as exc:
+                    self.emit("error", message=str(exc))
+                else:
+                    self.emit("local_model", targets=_local_model_snapshot())
         elif message_type == "set_auto":
             self.auto_approve = bool(message.get('enabled', False))
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
@@ -535,6 +602,25 @@ class StdioServer:
             else:
                 self.frontier_model = model
                 self.emit("model", model=self.frontier_model)
+
+    def handle_local_model_command(self, arg: str):
+        parts = arg.strip().split(None, 1)
+        if not parts:
+            self.emit("local_model", targets=_local_model_snapshot())
+            return
+        modality = parts[0].lower()
+        if len(parts) == 1:
+            if modality not in delegate_target.MODALITIES:
+                self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, or general.")
+                return
+            self.emit("local_model", targets=_local_model_snapshot())
+            return
+        try:
+            delegate_target.apply(modality, parts[1])
+        except delegate_target.InvalidTarget as exc:
+            self.emit("error", message=str(exc))
+            return
+        self.emit("local_model", targets=_local_model_snapshot())
 
     def handle_auto_command(self, arg: str):
         arg = arg.strip().lower()

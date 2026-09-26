@@ -14,6 +14,7 @@ export const SLASH_COMMANDS: { name: string; description: string }[] = [
   { name: "/doctor", description: "Check everything's configured correctly" },
   { name: "/scan", description: "Show detected hardware" },
   { name: "/model", description: "Show or switch the orchestrator model" },
+  { name: "/local-model", description: "Show or override coding/docs/general (auto, a local model, or a paid cloud one)" },
   { name: "/auto", description: "Approve file changes and commands without asking (on|off)" },
   { name: "/run", description: "Work on a task in this folder" },
   { name: "/help", description: "Show this list of commands" },
