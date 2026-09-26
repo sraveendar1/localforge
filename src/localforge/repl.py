@@ -169,11 +169,23 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "upgrade"}
+BUSY_BLOCKED = {"clear", "compact", "setup", "uninstall", "delete", "run", "upgrade"}
 # /goals (and its /init alias) are deliberately not here: they decide for
 # themselves whether to wait (drafting a new file/update needs the local
 # model and diff-approval a running task may be using) or just show the
 # current AGENTS.md, which touches nothing a running task depends on.
+# /model is deliberately not here either (reported: "/model is not able to
+# switch immediately" -- it used to be fully blocked while busy, with a
+# carve-out only for the paused-on-a-usage-limit case via runner.waiting).
+# Switching model is always just an env var write (config.save) plus a
+# printed confirmation -- it never touches the Conversation, Workspace or
+# any state a running task holds a live reference to, and it's only ever
+# dispatched from the main REPL thread (never the worker), so there's no
+# race to guard against. A running task keeps using the frontier_model it
+# was called with either way -- the switch takes effect for whatever's
+# typed next, or immediately if the running task is paused on a usage limit
+# (see cli._LiveActivity._sleep_until, which polls the env var for exactly
+# this).
 # /memory and /scratch are otherwise safe to run while busy (they only read),
 # but these specific actions mutate state the running task holds a live
 # reference to: /memory clear|forget touches conversation.facts/.memory
@@ -330,7 +342,7 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
                 if position:
                     console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
                 continue
-            blocked = cmd in BUSY_BLOCKED and not (cmd == "model" and runner.waiting)
+            blocked = cmd in BUSY_BLOCKED
             if not blocked:
                 action = remainder.split(" ", 1)[0] if remainder else ""
                 blocked = action in MUTATING_SUBCOMMANDS.get(cmd, ())
