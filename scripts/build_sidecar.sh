@@ -30,7 +30,7 @@ esac
 
 echo "Building the localforge sidecar for $TARGET_TRIPLE ..."
 
-uv run pyinstaller --onefile --noconfirm --name localforge \
+uv run --with pyinstaller pyinstaller --onefile --noconfirm --name localforge \
   --add-data "src/localforge/catalog_data.yaml:localforge" \
   --collect-data litellm \
   --collect-data certifi \
