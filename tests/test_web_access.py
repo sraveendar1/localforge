@@ -214,12 +214,17 @@ def test_every_cli_provider_declares_isolation_args():
         assert "isolation_args" in spec, provider
 
 
-def test_render_prompt_lists_web_tools_and_says_they_are_the_only_ones():
+def test_render_prompt_lists_web_tools_and_answers_plain_chat_directly():
     tools = build_tool_schemas(_hw(), catalog=[])
     prompt = cli_transport._render_prompt([{"role": "user", "content": "x"}], tools)
     assert "- web_search(query):" in prompt and "- fetch_url(url):" in prompt
     assert "- read_file(path, offset?, limit?):" in prompt
-    assert "the only ones you have" in prompt
+    # Regression: "the only ones you have" (a prior wording) primed the CLI
+    # orchestrator to describe itself as a delegation-only tool router even
+    # for plain chat -- the prompt now says explicitly it's still a normal
+    # assistant for that.
+    assert "just answer it" in prompt
+    assert "not only a router to these tools" in prompt
 
 
 def test_web_activity_line_renders_markup_and_keeps_brackets_in_urls(monkeypatch, tmp_path):

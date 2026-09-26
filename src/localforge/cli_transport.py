@@ -269,7 +269,11 @@ def _render_parts(messages: list[dict], tools: list[dict]) -> tuple[str, str]:
 
     instructions = (
         (str(system[0].get("content")) + "\n\n" if system else "")
-        + "Decide the next step. The tools below are the only ones you have.\n\n"
+        + "Decide the next step. For a plain conversational message, just answer it "
+        "yourself in final_answer -- you're still a normal, capable assistant for that, "
+        "not only a router to these tools. The list below is only what's available for "
+        "building, changing, or investigating the project; it's not everything you know "
+        "or can discuss.\n\n"
         "Available tools (arguments marked ? are optional):\n"
         + ("\n".join(tool_lines) if tool_lines else "(none)")
     )
