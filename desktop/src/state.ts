@@ -28,6 +28,9 @@ export type UsageTotals = {
   frontierCostUsd: number;
   localTokensGenerated: number;
   subscriptionCostUsd: number;
+  delegateTokensGenerated: number;
+  delegateCostUsd: number;
+  delegateNotionalCostUsd: number;
   tasks: number;
   models: string[];
 };
@@ -66,7 +69,10 @@ export const initialState: ChatState = {
     frontierCostUsd: 0,
     localTokensGenerated: 0,
     frontierViaSubscription: false,
-    localModels: {}
+    localModels: {},
+    delegateTokensGenerated: 0,
+    delegateCostUsd: 0,
+    delegateNotionalCostUsd: 0
   },
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
@@ -86,6 +92,9 @@ function toUsageTotals(raw: any): UsageTotals | null {
     frontierCostUsd: Number(raw.frontier_cost_usd ?? 0),
     localTokensGenerated: Number(raw.local_tokens_generated ?? 0),
     subscriptionCostUsd: Number(raw.subscription_cost_usd ?? 0),
+    delegateTokensGenerated: Number(raw.delegate_tokens_generated ?? 0),
+    delegateCostUsd: Number(raw.delegate_cost_usd ?? 0),
+    delegateNotionalCostUsd: Number(raw.delegate_notional_cost_usd ?? 0),
     tasks: Number(raw.tasks ?? 0),
     models: Array.isArray(raw.models) ? raw.models.map(String) : [],
   };
@@ -132,7 +141,10 @@ function withStats(state: ChatState, stats: any): ChatState {
       frontierPromptTokens: state.usage.frontierPromptTokens + Number(stats.frontier_prompt_tokens ?? 0),
       frontierCompletionTokens: state.usage.frontierCompletionTokens + Number(stats.frontier_completion_tokens ?? 0),
       frontierCostUsd: state.usage.frontierCostUsd + Number(stats.frontier_cost_usd ?? 0),
-      frontierViaSubscription: Boolean(stats.frontier_via_subscription)
+      frontierViaSubscription: Boolean(stats.frontier_via_subscription),
+      delegateTokensGenerated: state.usage.delegateTokensGenerated + Number(stats.delegate_tokens_generated ?? 0),
+      delegateCostUsd: state.usage.delegateCostUsd + Number(stats.delegate_cost_usd ?? 0),
+      delegateNotionalCostUsd: state.usage.delegateNotionalCostUsd + Number(stats.delegate_notional_cost_usd ?? 0),
     }
   };
 }
@@ -318,4 +330,10 @@ export type Usage = {
   localTokensGenerated: number;
   frontierViaSubscription: boolean;
   localModels: { [key: string]: { runs: number; tokens: number; active: boolean } };
+  // An "advanced" per-modality delegate target (see /local-model) can send
+  // coding/docs/general to a paid cloud model -- neither free local compute
+  // nor orchestrator spend, so it's tracked apart from both.
+  delegateTokensGenerated: number;
+  delegateCostUsd: number;
+  delegateNotionalCostUsd: number;
 };

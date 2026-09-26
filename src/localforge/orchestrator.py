@@ -47,6 +47,13 @@ class RunStats:
     # frontier_cost_usd is what pay-per-token billing *would* have cost, not
     # money charged separately -- it came out of the account's subscription.
     frontier_via_subscription: bool = False
+    # An "advanced" per-modality delegate target (delegate_target.py) can
+    # route coding/docs/general to a paid cloud model instead of a free
+    # local one -- tracked apart from local_tokens_generated/frontier_*
+    # since it's neither: not local (free) and not the orchestrator.
+    delegate_tokens_generated: int = 0
+    delegate_cost_usd: float = 0.0
+    delegate_notional_cost_usd: float = 0.0
 
     @property
     def frontier_total_tokens(self) -> int:
@@ -493,7 +500,7 @@ def run(
         del messages[turn_start + 1 :]
         messages.append({"role": "assistant", "content": "(The user stopped this task before it finished.)"})
         conversation.reindex_tools()
-        stats.local_tokens_generated = dispatcher.local_tokens_generated
+        _copy_dispatch_stats(stats, dispatcher)
         _remember_if_unfinished(workspace, task, "the user stopped it", conversation.last_progress)
         raise TaskCancelled(stats) from None
     except OrchestrationError:
@@ -505,7 +512,7 @@ def run(
         # accounting entirely -- the raise happens before any tool_calls
         # for the round in progress are appended, so messages are already
         # in a consistent state and need no trimming, unlike Ctrl+C.
-        stats.local_tokens_generated = dispatcher.local_tokens_generated
+        _copy_dispatch_stats(stats, dispatcher)
         exc.stats = stats
         why = "it hit a usage limit" if isinstance(exc, cli_transport.UsageLimitError) else "the orchestrator's CLI failed"
         _remember_if_unfinished(workspace, task, why, conversation.last_progress)
@@ -610,6 +617,18 @@ def _is_transient(exc: Exception) -> bool:
     return type(exc).__name__ in _TRANSIENT_TYPES
 
 
+def _copy_dispatch_stats(stats: RunStats, dispatcher) -> None:
+    """Pulls every usage counter the dispatcher accumulated onto `stats`,
+    win or lose -- a task that used real local compute or paid-delegate
+    calls before failing/being cancelled still spent them. getattr-guarded:
+    plenty of tests stand in a hand-rolled Dispatcher-like stub that only
+    ever had local_tokens_generated, from before delegate targets existed."""
+    stats.local_tokens_generated = dispatcher.local_tokens_generated
+    stats.delegate_tokens_generated = getattr(dispatcher, "delegate_tokens_generated", 0)
+    stats.delegate_cost_usd = getattr(dispatcher, "delegate_cost_usd", 0.0)
+    stats.delegate_notional_cost_usd = getattr(dispatcher, "delegate_notional_cost_usd", 0.0)
+
+
 class TaskCancelled(Exception):
     """The user pressed Ctrl+C during a task. Carries the usage spent so far."""
 
@@ -620,7 +639,7 @@ class TaskCancelled(Exception):
 
 def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, dispatcher, stats, on_delegate) -> RunResult:
     def _finish() -> None:
-        stats.local_tokens_generated = dispatcher.local_tokens_generated
+        _copy_dispatch_stats(stats, dispatcher)
 
     # Identical tool calls already made in this task -> their result. Small
     # local orchestrators loop, re-issuing the same call after it succeeded

@@ -2921,9 +2921,29 @@ def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
     ]
     if len(models) == 1 and (saved := _savings_line(local, models[0])):
         lines.append(saved)
+    delegate_tokens = sum(getattr(s, "delegate_tokens_generated", 0) for _, s in entries)
+    delegate_cost = sum(getattr(s, "delegate_cost_usd", 0.0) for _, s in entries)
+    delegate_notional = sum(getattr(s, "delegate_notional_cost_usd", 0.0) for _, s in entries)
+    if delegate_line := _delegate_cost_line(delegate_tokens, delegate_cost, delegate_notional):
+        lines.append(delegate_line)
     console.print(
         Panel("\n".join(lines), title=f"Usage — session ({len(entries)} tasks)", border_style="panel.border")
     )
+
+
+def _delegate_cost_line(tokens: int, cost_usd: float, notional_cost_usd: float) -> str | None:
+    """A paid cloud delegate target (delegate_target.py) is neither "written
+    by open-weighted models" (free) nor the orchestrator's own output --
+    its own line, shown only when one was actually used."""
+    if not tokens:
+        return None
+    if cost_usd:
+        money = f"${cost_usd:.4f} billed"
+    elif notional_cost_usd:
+        money = f"~${notional_cost_usd:.4f} of subscription usage, not billed separately"
+    else:
+        money = "cost unknown"
+    return f"[accent]■[/accent] Written by a paid cloud delegate: {tokens} tokens — {money}"
 
 
 def _frontier_cost_note(stats) -> str:
@@ -2962,6 +2982,12 @@ def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None
     ]
     if saved := _savings_line(stats.local_tokens_generated, frontier_model):
         usage_lines.append(saved)
+    if delegate_line := _delegate_cost_line(
+        getattr(stats, "delegate_tokens_generated", 0),
+        getattr(stats, "delegate_cost_usd", 0.0),
+        getattr(stats, "delegate_notional_cost_usd", 0.0),
+    ):
+        usage_lines.append(delegate_line)
     console.print(Panel("\n".join(usage_lines), title=title, border_style="panel.border"))
 
 

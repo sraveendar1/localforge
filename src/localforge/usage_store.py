@@ -32,6 +32,12 @@ class Totals:
     local_tokens_generated: int = 0
     tasks: int = 0
     subscription_cost_usd: float = 0.0  # notional: drawn from a subscription, not billed
+    # An "advanced" per-modality delegate target (delegate_target.py) can
+    # route coding/docs/general to a paid cloud model -- neither free local
+    # compute nor orchestrator spend, kept apart from both.
+    delegate_tokens_generated: int = 0
+    delegate_cost_usd: float = 0.0
+    delegate_notional_cost_usd: float = 0.0
     models: list[str] = field(default_factory=list)
     started: float = 0.0
     updated: float = 0.0
@@ -48,6 +54,9 @@ class Totals:
             self.subscription_cost_usd += stats.frontier_cost_usd or 0.0
         else:
             self.frontier_cost_usd += stats.frontier_cost_usd or 0.0
+        self.delegate_tokens_generated += getattr(stats, "delegate_tokens_generated", 0)
+        self.delegate_cost_usd += getattr(stats, "delegate_cost_usd", 0.0) or 0.0
+        self.delegate_notional_cost_usd += getattr(stats, "delegate_notional_cost_usd", 0.0) or 0.0
         self.tasks += 1
         self.updated = time.time()
         if model and model not in self.models:
@@ -60,6 +69,9 @@ class Totals:
             "frontier_cost_usd": round(self.frontier_cost_usd, 6),
             "subscription_cost_usd": round(self.subscription_cost_usd, 6),
             "local_tokens_generated": self.local_tokens_generated,
+            "delegate_tokens_generated": self.delegate_tokens_generated,
+            "delegate_cost_usd": round(self.delegate_cost_usd, 6),
+            "delegate_notional_cost_usd": round(self.delegate_notional_cost_usd, 6),
             "tasks": self.tasks,
             "models": self.models,
             "started": self.started,

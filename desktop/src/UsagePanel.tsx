@@ -42,6 +42,26 @@ export function UsagePanel({ usage, model, usageHistory }: { usage: Usage; model
           </span>
         </div>
       </section>
+      {usage.delegateTokensGenerated > 0 && (
+        <section>
+          <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Paid delegate</h3>
+          <p className="mb-1 text-xs text-mx-dim">A task type set to a cloud model via /local-model -- unlike a local model, this costs money per delegation.</p>
+          <div className="flex justify-between gap-2">
+            <span className="text-mx-mid">Tokens</span>
+            <span className="text-mx-amber tabular-nums">{usage.delegateTokensGenerated.toLocaleString()}</span>
+          </div>
+          <div className="flex justify-between gap-2">
+            <span className="text-mx-mid">Cost</span>
+            <span className="text-mx-amber tabular-nums">
+              {usage.delegateCostUsd
+                ? `$${usage.delegateCostUsd.toFixed(4)}`
+                : usage.delegateNotionalCostUsd
+                ? `~$${usage.delegateNotionalCostUsd.toFixed(4)} subscription`
+                : "-"}
+            </span>
+          </div>
+        </section>
+      )}
       {(usageHistory.previousSession || usageHistory.allTime) && (
         <section>
           <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">History for this project</h3>
