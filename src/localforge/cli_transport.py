@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-from localforge import config
+from localforge import config, content_blocks
 from localforge.answer_stream import AnswerStreamer
 
 
@@ -264,7 +264,7 @@ def _render_parts(messages: list[dict], tools: list[dict]) -> tuple[str, str]:
         role = m.get("role", "user")
         if role == "system":
             continue
-        content = m.get("content") or ""
+        content = content_blocks.text_of(m.get("content"))
         transcript.append(f"[{'tool result' if role == 'tool' else role}]\n{content}")
 
     instructions = (
@@ -537,6 +537,46 @@ def complete(
     else:
         cmd.append(prompt)
         stdin_text = ""
+    image = content_blocks.extract_image(messages) if provider == "anthropic" else None
+    if image:
+        # claude -p's plain prompt (argv or stdin) is text-only; an attached
+        # image needs its own structured message, which only the CLI's
+        # `--input-format stream-json` accepts (confirmed via `claude
+        # --help`: "text" (default) or "stream-json" (realtime streaming
+        # input)). NOT verified live end to end -- unlike the rest of this
+        # spec's isolation/system-prompt/model flags, there was no
+        # authenticated `claude` session available to confirm the exact
+        # envelope Claude Code's own SDK expects for an inline image, so
+        # this mirrors its documented message-content-block shape (the same
+        # one the Messages API uses) as closely as this module can without
+        # a live call to check against. A wrong envelope surfaces as an
+        # ordinary non-zero-exit CLINotAvailableError below, not a silently
+        # wrong answer -- see orchestrator.ImageNotSupportedError's
+        # docstring for why this is the fallback we chose over guessing
+        # silently or refusing outright.
+        cmd += ["--input-format", "stream-json"]
+        stdin_text = (
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": image["mime_type"],
+                                    "data": image["data"],
+                                },
+                            },
+                        ],
+                    },
+                }
+            )
+            + "\n"
+        )
     try:
         # An empty scratch cwd: even a CLI whose tools can't be switched off
         # sees nothing of the folder localforge was started from.

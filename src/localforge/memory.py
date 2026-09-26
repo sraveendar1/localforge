@@ -40,7 +40,7 @@ import re
 import time
 from pathlib import Path
 
-from localforge import config
+from localforge import config, content_blocks
 from localforge.backends import BACKENDS
 from localforge.catalog import NoFittingModelError
 
@@ -387,7 +387,7 @@ def _turn_starts(messages: list[dict]) -> list[int]:
     return [
         i
         for i, m in enumerate(messages)
-        if i > 0 and m.get("role") == "user" and not str(m.get("content") or "").startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX))
+        if i > 0 and m.get("role") == "user" and not content_blocks.text_of(m.get("content")).startswith((NOTE_PREFIX, NUDGE, STEPS_LEFT_PREFIX, CHECKPOINT_PREFIX, COMPLETION_PREFIX))
     ]
 
 
@@ -408,7 +408,7 @@ def _calls(message: dict) -> str:
 def _render(messages: list[dict], limit: int = MAX_TRANSCRIPT_CHARS) -> str:
     lines = []
     for m in messages:
-        content = str(m.get("content") or "").strip()
+        content = content_blocks.text_of(m.get("content")).strip()
         if content.startswith("[superseded:"):
             content = content.partition(" It began: ")[2]  # only how the step went
         if m.get("role") == "assistant" and m.get("tool_calls"):

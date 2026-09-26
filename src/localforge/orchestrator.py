@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import brief, cli_transport, local_transport, memory
+from localforge import brief, cli_transport, content_blocks, local_transport, memory
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import CHECK_COMMAND as _CHECK_COMMAND
@@ -70,6 +70,22 @@ class OrchestrationError(RuntimeError):
     def __init__(self, message: str, stats: RunStats):
         super().__init__(message)
         self.stats = stats
+
+
+class ImageNotSupportedError(ValueError):
+    """Raised by run() before any call is made when an image is attached
+    but the current orchestrator can't actually receive it -- an API-key
+    call natively supports multimodal content (litellm translates it per
+    provider), but the CLI-login and local-orchestrator transports build
+    their own flattened-to-text protocol and only understand an image when
+    that transport explicitly supports one (see cli_transport.py for
+    Claude specifically, and local_transport.py for a vision-capable
+    Ollama model). Raising here, rather than silently dropping the image or
+    sending a garbled prompt, is the same philosophy as the rest of this
+    file: never guess at what an unsupported call would do. Unlike
+    OrchestrationError, this is raised before any call is made, so there
+    are no usage stats to carry.
+    """
 
 
 # A long task isn't cut off at a fixed step count (reported with a
@@ -383,6 +399,26 @@ class Conversation:
         self.tool_indices = [i for i, m in enumerate(self.messages) if m.get("role") == "tool"]
 
 
+def _check_image_support(frontier_model: str, cli_provider: str | None) -> None:
+    """Raises ImageNotSupportedError up front, before any call is made, if
+    this orchestrator can't actually take an image -- see run()'s
+    docstring and ImageNotSupportedError for why this isn't just silently
+    ignored."""
+    if frontier_model.startswith(local_transport.PREFIXES):
+        if not local_transport.supports_vision(frontier_model):
+            raise ImageNotSupportedError(
+                f"{frontier_model} isn't a vision-capable local model, so it can't see an attached image. "
+                "Switch to a vision-capable local model (e.g. llava), or use an API-key/CLI-login orchestrator."
+            )
+        return
+    if cli_provider and cli_provider != "anthropic":
+        raise ImageNotSupportedError(
+            f"Image attachments aren't supported yet with the {cli_provider} CLI login. "
+            "Use an API key, switch to Claude's CLI login, or remove the attachment."
+        )
+    # cli_provider == "anthropic", or a plain API-key call: both supported.
+
+
 def run(
     task: str,
     frontier_model: str,
@@ -392,6 +428,7 @@ def run(
     hooks: ActivityHooks | None = None,
     conversation: Conversation | None = None,
     workspace: Workspace | None = None,
+    image: dict | None = None,
 ) -> RunResult:
     """Run one user message to completion: the frontier model investigates,
     delegates writing to local models, and answers.
@@ -408,10 +445,21 @@ def run(
     `workspace` is the project folder the file/command tools act on.
     `hooks` lets the caller show activity live.
 
+    `image`, if given (`{"mime_type": ..., "data": <base64>}`), is attached
+    to this turn's user message for a vision-capable orchestrator. An
+    API-key call supports this natively (LiteLLM translates the same
+    content-block shape per provider); CLI-login only for Claude
+    specifically (cli_transport.py); local only for a vision-capable
+    Ollama model (local_transport.py). Anything else raises
+    ImageNotSupportedError before any call is made, rather than silently
+    dropping the image or sending a transport a shape it can't handle.
+
     Returns a `RunResult` with the final answer and usage metrics (frontier
     tokens/cost actually spent, and tokens local models generated instead --
     the latter never touched the frontier API at all).
     """
+    if image is not None:
+        _check_image_support(frontier_model, cli_provider)
     hardware = hardware if hardware is not None else detect_hardware()
     hooks = hooks or ActivityHooks()
     conversation = conversation if conversation is not None else Conversation()
@@ -432,7 +480,7 @@ def run(
         conversation.messages.append(conversation.system_message())
     else:
         conversation.messages[0] = conversation.system_message()
-    conversation.messages.append({"role": "user", "content": task})
+    conversation.messages.append({"role": "user", "content": content_blocks.user_content(task, image)})
     messages = conversation.messages
 
     turn_start = len(messages) - 1  # index of this turn's user message

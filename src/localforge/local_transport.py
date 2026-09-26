@@ -19,7 +19,7 @@ import re
 
 import httpx
 
-from localforge import cli_transport
+from localforge import cli_transport, content_blocks
 from localforge.answer_stream import AnswerStreamer
 from localforge.backends.ollama import (
     CHARS_PER_TOKEN,
@@ -54,6 +54,28 @@ def parameter_billions(frontier_model: str) -> float | None:
     tag doesn't say (e.g. `llama3:latest`)."""
     match = re.search(r"[:\-](\d+(?:\.\d+)?)b\b", model_name(frontier_model).lower())
     return float(match.group(1)) if match else None
+
+
+# Vision-capable Ollama model families -- checked against Ollama's own
+# published model cards (ollama.com/library/<name>) at the time this was
+# written, but NOT re-verified live against the registry the way
+# catalog.py's own entries are (see catalog.py's "Sizes were checked
+# against Ollama's registry on 2026-09-23" note): this sandbox's network
+# policy blocks ollama.com outright, so there was no way to confirm current
+# tags/sizes here. These aren't in catalog_data.yaml at all -- they're
+# orchestrator-only (picked via /model, never a delegate/worker choice for
+# the coding/docs/general modalities), matched by base family name so any
+# installed tag (llava:7b, llava:13b, llava:34b, ...) counts.
+VISION_CAPABLE_FAMILIES = {"llava", "bakllava", "llava-llama3", "llava-phi3", "moondream", "llama3.2-vision"}
+
+
+def supports_vision(frontier_model: str) -> bool:
+    """Whether this local orchestrator model can actually see an attached
+    image, so orchestrator.run() can refuse up front rather than silently
+    dropping it or sending Ollama an `images` field a text-only model
+    ignores."""
+    family = model_name(frontier_model).split(":")[0].lower()
+    return family in VISION_CAPABLE_FAMILIES
 
 
 def orchestrator_choices(hardware, installed: set[str]) -> list[str]:
@@ -206,9 +228,17 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
     # Ask for exactly as much context as this prompt needs (capped): too
     # small silently corrupts it, too large wastes memory on the user's machine.
     num_ctx = min(window, max(MIN_NUM_CTX, _estimate_tokens(prompt) + RESERVED_TOKENS))
+    user_message = {"role": "user", "content": prompt}
+    image = content_blocks.extract_image(messages)
+    if image:
+        # Ollama's chat API takes bare base64 in its own `images` field,
+        # separate from the flattened text prompt built above (orchestrator.
+        # _check_image_support() already refused up front if `name` isn't
+        # vision-capable, so reaching here means it is).
+        user_message["images"] = [image["data"]]
     body = {
         "model": name,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [user_message],
         "stream": on_text is not None,
         "format": "json",
         "options": {"num_ctx": num_ctx},
