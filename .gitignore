@@ -12,6 +12,10 @@ venv/
 config.env
 dist/
 build/
+*.spec
+# The sidecar binary scripts/build_sidecar.sh produces: large (~75MB),
+# platform-specific, and fully regenerable -- never committed.
+desktop/src-tauri/binaries/
 .pytest_cache/
 .mypy_cache/
 .DS_Store

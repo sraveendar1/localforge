@@ -6,10 +6,12 @@ import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
 import { ModelPicker } from "./ModelPicker";
-import { MemoryPanel } from "./MemoryPanel";
+import { GoalPanel } from "./GoalPanel";
+import { ActiveModelsPanel } from "./ActiveModelsPanel";
 import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
 import { SystemPanel } from "./SystemPanel";
 import { SlashMenu, matchSlashCommands } from "./SlashMenu";
+import { Curtain } from "./Curtain";
 import type { ChatState } from "./state";
 import "./App.css";
 
@@ -78,9 +80,11 @@ function App() {
   useEffect(() => {
     if (chat.connected) {
       send({ type: "get_state" });
-      send({ type: "memory_list" });
-      send({ type: "scratch_list" });
+      send({ type: "memory_list" });  // still needed: feeds GoalPanel's goal/narrative
       send({ type: "queue_list" });  // Request the queue list on connect
+      send({ type: "system_stats" });  // don't wait for the first 5s interval tick
+      send({ type: "usage_request" });  // historical usage (previous session, all-time)
+      send({ type: "configured_models_request" });  // best-fit local model per modality
     }
   }, [chat.connected, send]);
 
@@ -164,17 +168,13 @@ function App() {
             <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !input.trim()} onClick={submit}>Send</button>
           </div>
         </main>
-        <aside className="w-72 shrink-0 space-y-4 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
-          <SystemPanel stats={chat.systemStats} />
-          <UsagePanel usage={chat.usage} model={chat.model} />
-          <MemoryPanel
-            memory={chat.memory}
-            scratchFiles={chat.scratchFiles}
-            onForget={name => { send({ type: "memory_forget", name }); send({ type: "memory_list" }); }}
-            onClearMemory={() => { send({ type: "memory_clear" }); send({ type: "memory_list" }); }}
-            onClearScratch={() => { send({ type: "scratch_clear" }); send({ type: "scratch_list" }); }}
-          />
-          <TodoList todos={chat.todos} />
+        {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
+        <aside className="w-72 shrink-0 space-y-3 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
+          <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
+          <Curtain title="Plan"><TodoList todos={chat.todos} /></Curtain>
+          <Curtain title="Active LLMs"><ActiveModelsPanel usage={chat.usage} configuredModels={chat.configuredModels} /></Curtain>
+          <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} model={chat.model} usageHistory={chat.usageHistory} /></Curtain>
+          <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
         </aside>
       </div>
       <StatusBar folder={folder} connected={chat.connected} running={chat.running} model={chat.model} autoApprove={chat.autoApprove} todoCount={chat.todos.length} doneCount={chat.todos.filter(t => t.status === "completed").length} onCancel={() => send({ type: "cancel" })} />

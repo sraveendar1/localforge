@@ -88,22 +88,18 @@ export function ApprovalPanel({ approvals, onDecide }: { approvals: Approval[]; 
 }
 
 export function TodoList({ todos }: { todos: Todo[] }) {
+  if (todos.length === 0) {
+    return <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>;
+  }
   return (
-    <div>
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-mx-mid glow">Plan</h2>
-      {todos.length === 0 ? (
-        <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>
-      ) : (
-        <ul className="space-y-1 text-sm">
-          {todos.map((todo, i) => (
-            <li key={i} className="flex gap-2">
-              <span className={todo.status === "pending" ? "text-mx-dim" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
-              <span className={todo.status === "completed" ? "line-through text-mx-dim" : ""}>{todo.content}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
+    <ul className="space-y-1 text-sm">
+      {todos.map((todo, i) => (
+        <li key={i} className="flex gap-2">
+          <span className={todo.status === "pending" ? "text-mx-dim" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
+          <span className={todo.status === "completed" ? "line-through text-mx-dim" : ""}>{todo.content}</span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

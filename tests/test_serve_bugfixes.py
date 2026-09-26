@@ -20,6 +20,18 @@ for GUI/CLI parity:
   itself -- confirmed live by piping JSON messages into the real
   `localforge serve --stdio` subprocess and watching it crash before the
   fix and answer normally after.
+- Bare `/usage` (no argument) always raised `AttributeError`:
+  `usage_store.get_all_time_totals()`/`get_previous_session_totals()` don't
+  exist -- the real functions are `usage_store.all_time(root)` and
+  `usage_store.previous_session(root, session_id)`. Worse than the other
+  bugs here: `handle()` has no try/except around dispatch, so this
+  exception propagated out of `serve_forever()`'s read loop entirely,
+  killing the whole backend process (and therefore the whole desktop
+  session) rather than just failing that one command.
+- Related: the desktop backend never called `usage_store.record()` at all,
+  so even once `/usage` stopped crashing, a GUI session's tasks never
+  showed up in a project's previous-session/all-time totals -- only tasks
+  run through the CLI's `run` command did (via `cli.py`'s `_record_usage`).
 """
 
 import io
@@ -28,8 +40,9 @@ import sys
 import threading
 import time
 
-from localforge.orchestrator import Conversation
+from localforge.orchestrator import Conversation, RunStats
 from localforge.serve import StdioServer, serve_stdio
+from localforge import usage_store
 
 
 def make_server(tmp_path, **kwargs):
@@ -37,7 +50,8 @@ def make_server(tmp_path, **kwargs):
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     kwargs.setdefault("conversation", Conversation())
-    server = StdioServer(tmp_path, "test-model", out=out, run_fn=lambda *a, **k: None, scratch_root=scratch, **kwargs)
+    kwargs.setdefault("run_fn", lambda *a, **k: None)
+    server = StdioServer(tmp_path, "test-model", out=out, scratch_root=scratch, **kwargs)
     return server, out
 
 
@@ -158,3 +172,48 @@ def test_serve_stdio_the_real_entry_point_does_not_crash_on_startup(tmp_path, mo
     lines = [json.loads(l) for l in fake_stdout.getvalue().splitlines() if l.strip()]
     assert lines[0]["type"] == "ready"
     assert lines[0]["stream_output"] is True
+
+
+def test_bare_usage_command_does_not_crash_and_reports_history(tmp_path):
+    server, out = make_server(tmp_path)
+
+    # Nothing recorded yet: no crash, previous_session is None (no earlier
+    # session exists), all_time is a zeroed Totals (it always exists).
+    server.handle_usage_command("")
+    usage_events = of_type(out, "usage")
+    assert len(usage_events) == 1
+    assert usage_events[0]["previous_session"] is None
+    assert usage_events[0]["all_time"]["tasks"] == 0
+
+    # Record a task's usage the way _run_turn does, then check it shows up.
+    stats = RunStats(frontier_prompt_tokens=100, frontier_completion_tokens=50, frontier_cost_usd=0.01, local_tokens_generated=40)
+    server._record_usage(stats)
+
+    out.truncate(0)
+    out.seek(0)
+    server.handle_usage_command("")
+    usage_events = of_type(out, "usage")
+    assert usage_events[0]["all_time"]["tasks"] == 1
+    assert usage_events[0]["all_time"]["frontier_prompt_tokens"] == 100
+    assert usage_events[0]["all_time"]["local_tokens_generated"] == 40
+
+
+def test_run_turn_records_usage_to_usage_store(tmp_path):
+    """The desktop backend previously never called usage_store.record() at
+    all, so a GUI session's completed tasks never contributed to a
+    project's usage history."""
+    stats = RunStats(frontier_prompt_tokens=7, frontier_completion_tokens=3, frontier_cost_usd=0.001, local_tokens_generated=2)
+
+    class FakeResult:
+        answer = "done"
+
+        def __init__(self):
+            self.stats = stats
+
+    server, out = make_server(tmp_path, run_fn=lambda *a, **k: FakeResult())
+    server._run_turn("do something")
+
+    total = usage_store.all_time(tmp_path)
+    assert total.tasks == 1
+    assert total.frontier_prompt_tokens == 7
+    assert total.local_tokens_generated == 2

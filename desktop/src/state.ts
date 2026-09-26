@@ -20,8 +20,18 @@ export type SystemStats = {
   ramTotalGb: number;
 };
 export type MemoryFact = { name: string; description?: string; content?: string; type?: string };
-export type MemoryState = { facts: MemoryFact[]; narrative: string };
+export type MemoryState = { facts: MemoryFact[]; narrative: string; goal: string };
 export type ScratchFile = { path: string; size: number };
+export type UsageTotals = {
+  frontierPromptTokens: number;
+  frontierCompletionTokens: number;
+  frontierCostUsd: number;
+  localTokensGenerated: number;
+  subscriptionCostUsd: number;
+  tasks: number;
+  models: string[];
+};
+export type ConfiguredModel = { modality: string; name: string; runtime: string; qualityTier: number };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -32,6 +42,8 @@ export type ChatState = {
   model: string;
   autoApprove: boolean;
   usage: Usage;
+  usageHistory: { previousSession: UsageTotals | null; allTime: UsageTotals | null };
+  configuredModels: ConfiguredModel[];
   systemStats: SystemStats | null;
   memory: MemoryState;
   scratchFiles: ScratchFile[];
@@ -55,12 +67,27 @@ export const initialState: ChatState = {
     frontierViaSubscription: false,
     localModels: {}
   },
+  usageHistory: { previousSession: null, allTime: null },
+  configuredModels: [],
   systemStats: null,
-  memory: { facts: [], narrative: "" },
+  memory: { facts: [], narrative: "", goal: "" },
   scratchFiles: [],
   queue: [],  // Initialize queue to an empty array
   streamOutput: false  // Initialize streamOutput to false
 };
+
+function toUsageTotals(raw: any): UsageTotals | null {
+  if (!raw || typeof raw !== "object") return null;
+  return {
+    frontierPromptTokens: Number(raw.frontier_prompt_tokens ?? 0),
+    frontierCompletionTokens: Number(raw.frontier_completion_tokens ?? 0),
+    frontierCostUsd: Number(raw.frontier_cost_usd ?? 0),
+    localTokensGenerated: Number(raw.local_tokens_generated ?? 0),
+    subscriptionCostUsd: Number(raw.subscription_cost_usd ?? 0),
+    tasks: Number(raw.tasks ?? 0),
+    models: Array.isArray(raw.models) ? raw.models.map(String) : [],
+  };
+}
 
 // Apply fn to the last assistant message, returning a new array.
 function updateLastAssistant(messages: Message[], fn: (m: Message) => Message): Message[] {
@@ -179,11 +206,13 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
     case "system_stats":
       return { ...state, systemStats: { hardware: ev.hardware ?? {}, cpuPercent: Number(ev.cpu_percent ?? 0), ramUsedGb: Number(ev.ram_used_gb ?? 0), ramTotalGb: Number(ev.ram_total_gb ?? 0) } };
     case "memory":
-      return { ...state, memory: { facts: Array.isArray(ev.facts) ? ev.facts : [], narrative: String(ev.narrative ?? "") } };
+      return { ...state, memory: { facts: Array.isArray(ev.facts) ? ev.facts : [], narrative: String(ev.narrative ?? ""), goal: String(ev.goal ?? "") } };
     case "scratch":
       return { ...state, scratchFiles: Array.isArray(ev.files) ? ev.files : [] };
     case "session_reset":
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput };
+      // usageHistory and configuredModels are project-level, not session-level
+      // (they don't reset when the conversation does -- the folder is unchanged).
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -228,6 +257,23 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
       const checks = Array.isArray(ev.checks) ? ev.checks : [];
       const text = checks.map((c: any) => `${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`).join("\n");
       return addSystemMessage(state, `Doctor:\n${text || "(nothing checked)"}`);
+    }
+    // Requested silently on connect (usage_request/configured_models_request) to
+    // populate the sidebar panels, as opposed to the /usage, /models, etc. text
+    // commands above, which post their reply into the chat as a system message.
+    case "usage":
+      return { ...state, usageHistory: { previousSession: toUsageTotals(ev.previous_session), allTime: toUsageTotals(ev.all_time) } };
+    case "configured_models": {
+      const models = Array.isArray(ev.models) ? ev.models : [];
+      return {
+        ...state,
+        configuredModels: models.map((m: any) => ({
+          modality: String(m.modality ?? ""),
+          name: String(m.model?.name ?? ""),
+          runtime: String(m.model?.runtime ?? ""),
+          qualityTier: Number(m.model?.quality_tier ?? 0),
+        })),
+      };
     }
     default:
       return state;

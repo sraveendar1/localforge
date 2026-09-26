@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import memory
+from localforge import brief, memory
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -55,6 +55,16 @@ def _installed_model_names(ollama: OllamaBackend) -> set[str]:
     except Exception:
         return set()
 
+def _project_goal(root: Path) -> str:
+    """AGENTS.md's own "What this project is" section (see cli.py's
+    `_print_project_summary`, which surfaces the same text at the start of
+    a terminal session) -- empty if there's no AGENTS.md yet, or one
+    without that section."""
+    try:
+        return brief.section(brief.existing_brief(root), ("what this project is",))
+    except Exception:
+        return ""
+
 def _catalog():
     catalog = load_catalog()
     return [{'name': entry.name, 'modality': entry.modality, 'runtime': entry.runtime, 'min_vram_gb': entry.min_vram_gb, 'min_ram_gb': entry.min_ram_gb, 'disk_gb': entry.disk_gb, 'quality_tier': entry.quality_tier} for entry in catalog]
@@ -87,6 +97,7 @@ class StdioServer:
         self.out = out or sys.stdout
         self.inp = inp or sys.stdin
         self.run_fn = run_fn
+        self.session_id = uuid.uuid4().hex[:12]  # for usage_store, mirrors cli.py's _SessionState.id
         self.auto_approve = auto_approve
         self.always_allow: set[str] = set()
         self.stream_output = stream_output
@@ -202,14 +213,37 @@ class StdioServer:
         try:
             result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace)
             self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats))
+            self._record_usage(result.stats)
         except Cancelled:
             self.emit("run_cancelled")
         except OrchestrationError as exc:
             self.emit("error", message=str(exc), stats=_jsonable_stats(getattr(exc, "stats", None)))
+            self._record_usage(getattr(exc, "stats", None))
         except Exception as exc:
             self.emit("error", message=f"{type(exc).__name__}: {exc}")
+            self._record_usage(getattr(exc, "stats", None))
         finally:
             self._start_next_queued()
+
+    def _record_usage(self, stats) -> None:
+        """Mirrors cli.py's _record_usage: keep this task in the project's
+        usage history so /usage still shows it after the session ends. This
+        was missing entirely from the desktop backend -- the GUI never
+        wrote to usage.json at all, so its tasks never contributed to a
+        project's previous-session/all-time totals.
+
+        Catches broadly, not just OSError: this is a nice-to-have (the
+        task itself already succeeded or already failed by the time this
+        runs), and it must never turn an otherwise-successful run into a
+        surfaced "error" event just because usage bookkeeping hit an edge
+        case -- e.g. a stats object missing a field `Totals.add()` reads.
+        """
+        if stats is None:
+            return
+        try:
+            usage_store.record(self.root, self.session_id, self.frontier_model, stats)
+        except Exception:
+            pass
 
     def _on_todos(self, todos: list[dict]) -> None:
         self._todos = list(todos)
@@ -298,6 +332,10 @@ class StdioServer:
             self.handle_queue_command('clear')
         elif message_type == "new_session":
             self.handle_clear_command()
+        elif message_type == "usage_request":
+            self.handle_usage_command("")
+        elif message_type == "configured_models_request":
+            self.emit("configured_models", models=_models())
         elif message_type == "get_state":
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
             self.emit('todos_updated', todos=self._todos)
@@ -336,20 +374,16 @@ class StdioServer:
 
     def handle_memory_command(self, arg: str):
         if not arg:
-            facts = memory.list_facts(self.root)
-            narrative = memory.load(self.root)
-            self.emit("memory", facts=facts, narrative=narrative)
+            pass
         elif arg.startswith("clear"):
             memory.forget(self.root)
-            facts = memory.list_facts(self.root)
-            narrative = memory.load(self.root)
-            self.emit("memory", facts=facts, narrative=narrative)
         elif arg.startswith("forget"):
             name = arg.split(" ")[1].strip()
             memory.forget_fact(self.root, name)
-            facts = memory.list_facts(self.root)
-            narrative = memory.load(self.root)
-            self.emit("memory", facts=facts, narrative=narrative)
+        facts = memory.list_facts(self.root)
+        narrative = memory.load(self.root)
+        goal = _project_goal(self.root)
+        self.emit("memory", facts=facts, narrative=narrative, goal=goal)
 
     def handle_scratch_command(self, arg: str):
         if not arg:
@@ -428,9 +462,21 @@ class StdioServer:
             else:
                 self.emit("usage", command=command, message=f"Usage for {command} not found.")
         else:
-            all_time_totals = usage_store.get_all_time_totals()
-            previous_session_totals = usage_store.get_previous_session_totals()
-            self.emit("usage", all_time_totals=all_time_totals, previous_session_totals=previous_session_totals)
+            # Bare /usage crashed the whole backend process before this fix:
+            # usage_store has no get_all_time_totals()/get_previous_session_totals()
+            # -- the real functions are all_time(root)/previous_session(root, id) --
+            # and handle() has no try/except around dispatch, so the AttributeError
+            # propagated out of serve_forever()'s loop and killed the session.
+            try:
+                previous = usage_store.previous_session(self.root, self.session_id)
+                total = usage_store.all_time(self.root)
+            except OSError:
+                previous, total = None, None
+            self.emit(
+                "usage",
+                previous_session=_jsonable_stats(previous) if previous else None,
+                all_time=_jsonable_stats(total) if total else None,
+            )
 
     def handle_catalog_command(self, cmd: str):
         if cmd == "/models":

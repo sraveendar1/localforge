@@ -23,8 +23,13 @@ body {
   font-family: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
+/* A subtle neon glow -- kept tight on purpose. The original stacked three
+   shadows (5px/10px/15px blur), which reads fine on large hero text but
+   smears small UI labels (the header title, panel headings) into an
+   illegible blur, since the blur radius approaches the letter stroke width
+   at those sizes. One tight layer keeps the glow without losing legibility. */
 .glow {
-  text-shadow: 0 0 5px var(--color-mx-bright), 0 0 10px var(--color-mx-bright), 0 0 15px var(--color-mx-bright);
+  text-shadow: 0 0 2px var(--color-mx-bright);
 }
 
 body::-webkit-scrollbar {

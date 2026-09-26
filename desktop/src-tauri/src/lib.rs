@@ -1,12 +1,10 @@
-use std::process::{Command, Child, ChildStdin, Stdio};
-use std::io::{BufRead, BufReader, Write};
-use std::thread;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+use tauri_plugin_shell::ShellExt;
 
 struct Session {
-    child: Child,
-    stdin: ChildStdin,
+    child: CommandChild,
 }
 
 #[derive(Default)]
@@ -16,67 +14,108 @@ struct AppState {
 
 fn kill_session(state: &AppState) {
     if let Ok(mut guard) = state.session.lock() {
-        if let Some(mut session) = guard.take() {
-            let _ = session.stdin.write_all(b"{\"type\":\"shutdown\"}\n");
-            let _ = session.stdin.flush();
-            drop(session.stdin);
-            let _ = session.child.kill();
-            let _ = session.child.wait();
+        if let Some(session) = guard.take() {
+            let mut child = session.child;
+            let _ = child.write(b"{\"type\":\"shutdown\"}\n");
+            let _ = child.kill();
         }
     }
 }
 
+/// Resolves the backend the same way every launch: `LOCALFORGE_BIN` first
+/// (a dev convenience -- point at a checkout's own venv without rebuilding
+/// the sidecar), then the bundled sidecar (the standalone binary
+/// `scripts/build_sidecar.sh` produces, embedded in the packaged app so an
+/// end user never needs Python or a separate CLI install), and finally a
+/// plain `localforge` on PATH as a last resort for a dev running `npm run
+/// tauri dev` without having built a sidecar at all. Sidecar resolution
+/// only fails when none was bundled for this platform/build, which is
+/// exactly the case the PATH fallback exists for.
+fn spawn_backend(
+    app: &AppHandle,
+    args: &[String],
+    folder: &str,
+) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
+    let shell = app.shell();
+
+    if let Ok(bin) = std::env::var("LOCALFORGE_BIN") {
+        let bin = bin.trim();
+        if !bin.is_empty() {
+            return shell
+                .command(bin)
+                .args(args)
+                .current_dir(folder)
+                .spawn()
+                .map_err(|e| format!("could not start {bin}: {e}"));
+        }
+    }
+
+    match shell.sidecar("localforge") {
+        Ok(cmd) => cmd
+            .args(args)
+            .current_dir(folder)
+            .spawn()
+            .map_err(|e| format!("could not start the bundled localforge sidecar: {e}")),
+        Err(_) => shell
+            .command("localforge")
+            .args(args)
+            .current_dir(folder)
+            .spawn()
+            .map_err(|e| {
+                format!(
+                    "could not start localforge (no bundled sidecar for this build, and none found on PATH): {e}"
+                )
+            }),
+    }
+}
+
 #[tauri::command]
-fn start_session(app: AppHandle, state: State<'_, AppState>, folder: String, model: Option<String>) -> Result<(), String> {
+async fn start_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    folder: String,
+    model: Option<String>,
+) -> Result<(), String> {
     kill_session(&state);
-    // LOCALFORGE_BIN overrides the executable, e.g. for a dev checkout.
-    let program = std::env::var("LOCALFORGE_BIN")
-        .ok()
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| "localforge".to_string());
+
     let mut args = vec!["serve".to_string(), "--stdio".to_string()];
     if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
         args.push("--model".to_string());
         args.push(m);
     }
-    let mut child = Command::new(&program)
-        .args(&args)
-        .current_dir(&folder)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not start {program}: {e}"))?;
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    let stdin = child.stdin.take().unwrap();
 
-    let app_handle = app.clone();
-    thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                if !line.trim().is_empty() {
-                    let _ = app_handle.emit("localforge-event", line);
-                }
-            }
-        }
-        let _ = app_handle.emit("localforge-exit", ());
-    });
-
-    let app_handle = app.clone();
-    thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines() {
-            if let Ok(line) = line {
-                let _ = app_handle.emit("localforge-stderr", line);
-            }
-        }
-    });
+    let (mut rx, child) = spawn_backend(&app, &args, &folder)?;
 
     if let Ok(mut guard) = state.session.lock() {
-        *guard = Some(Session { child, stdin });
+        *guard = Some(Session { child });
     }
+
+    let app_handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) => {
+                    for line in String::from_utf8_lossy(&bytes).lines() {
+                        if !line.trim().is_empty() {
+                            let _ = app_handle.emit("localforge-event", line.to_string());
+                        }
+                    }
+                }
+                CommandEvent::Stderr(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    let _ = app_handle.emit("localforge-stderr", text);
+                }
+                CommandEvent::Error(err) => {
+                    let _ = app_handle.emit("localforge-stderr", err);
+                }
+                CommandEvent::Terminated(_) => {
+                    let _ = app_handle.emit("localforge-exit", ());
+                    break;
+                }
+                _ => {}
+            }
+        }
+    });
 
     Ok(())
 }
@@ -87,8 +126,10 @@ fn send_message(state: State<'_, AppState>, message: String) -> Result<(), Strin
     let session = guard.as_mut().ok_or_else(|| "no session running".to_string())?;
     // Keep each message on one JSON line.
     let line = format!("{}\n", message.replace('\n', " "));
-    session.stdin.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
-    session.stdin.flush().map_err(|e| e.to_string())?;
+    session
+        .child
+        .write(line.as_bytes())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -103,6 +144,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![start_session, send_message, stop_session])
         .build(tauri::generate_context!())

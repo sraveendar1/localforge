@@ -1,9 +1,23 @@
-import { Usage } from "./state";
+import { Usage, UsageTotals } from "./state";
 
-export function UsagePanel({ usage, model }: { usage: Usage; model: string }) {
+function HistoryRow({ label, totals }: { label: string; totals: UsageTotals }) {
+  const share = totals.localTokensGenerated * 100 / Math.max(totals.localTokensGenerated + totals.frontierPromptTokens + totals.frontierCompletionTokens, 1);
+  const cost = totals.frontierCostUsd ? `$${totals.frontierCostUsd.toFixed(2)}` : totals.subscriptionCostUsd ? `~$${totals.subscriptionCostUsd.toFixed(2)} subscription` : "-";
   return (
-    <section className="w-full space-y-4 text-xs">
-      <h2 className="uppercase tracking-wide text-mx-bright glow">Session usage</h2>
+    <div className="flex justify-between gap-2">
+      <span className="text-mx-mid">{label}</span>
+      <span className="text-mx-green tabular-nums">{totals.tasks} task{totals.tasks !== 1 ? "s" : ""} · {share.toFixed(0)}% local · {cost}</span>
+    </div>
+  );
+}
+
+// Usage and cost: the orchestrator's own tokens/spend, plus this project's
+// usage history. The local-model side (which models, active/run counts)
+// moved to ActiveModelsPanel.tsx, per the requested sidebar order: Overall
+// goal -> Pending task -> Active LLMs -> Usage and cost.
+export function UsagePanel({ usage, model, usageHistory }: { usage: Usage; model: string; usageHistory: { previousSession: UsageTotals | null; allTime: UsageTotals | null } }) {
+  return (
+    <>
       <section>
         <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Frontier model</h3>
         <div className="text-mx-bright">
@@ -28,32 +42,13 @@ export function UsagePanel({ usage, model }: { usage: Usage; model: string }) {
           </span>
         </div>
       </section>
-      <section>
-        <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Local models</h3>
-        <div className="flex justify-between gap-2">
-          <span className="text-mx-mid">Tokens generated</span>
-          <span className="text-mx-green tabular-nums">{usage.localTokensGenerated.toLocaleString()}</span>
-        </div>
-        {Object.keys(usage.localModels).length === 0 ? (
-          <div className="text-mx-dim italic">No delegations yet.</div>
-        ) : (
-          <ul className="space-y-1 mt-2">
-            {Object.entries(usage.localModels)
-              .sort((a, b) => b[1].tokens - a[1].tokens)
-              .map(([name, { tokens, active, runs }]) => (
-                <li
-                  key={name}
-                  className={`flex items-center gap-2${active ? " text-mx-bright" : " text-mx-mid"}`}
-                >
-                  {active && <span className="inline-block h-2 w-2 rounded-full bg-mx-green animate-pulse"></span>}
-                  <span className="text-mx-bright">{name}</span>
-                  <span className="text-mx-mid">{runs} run{runs !== 1 ? "s" : ""}</span>
-                  <span className="text-mx-green tabular-nums">{tokens.toLocaleString()}</span>
-                </li>
-              ))}
-          </ul>
-        )}
-      </section>
-    </section>
+      {(usageHistory.previousSession || usageHistory.allTime) && (
+        <section>
+          <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">History for this project</h3>
+          {usageHistory.previousSession && <HistoryRow label="Previous session" totals={usageHistory.previousSession} />}
+          {usageHistory.allTime && <HistoryRow label="All time" totals={usageHistory.allTime} />}
+        </section>
+      )}
+    </>
   );
 }
