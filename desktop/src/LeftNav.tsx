@@ -70,9 +70,11 @@ export function LeftNav({
         type="button"
         title={open ? "Hide sidebar" : "Show projects & commands"}
         onClick={onToggle}
-        className="flex w-4 shrink-0 items-center justify-center border-r border-mx-dim bg-mx-panel text-mx-dim hover:bg-mx-panel2 hover:text-mx-bright"
+        className="group flex w-6 shrink-0 items-center justify-center border-r border-mx-dim bg-mx-panel2 hover:bg-mx-dim"
       >
-        {open ? "‹" : "›"}
+        <span className="flex h-14 w-5 items-center justify-center rounded-full border border-mx-mid bg-mx-panel text-base font-bold text-mx-green glow group-hover:border-mx-bright group-hover:text-mx-bright">
+          {open ? "‹" : "›"}
+        </span>
       </button>
     </div>
   );
