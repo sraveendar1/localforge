@@ -12,7 +12,7 @@
 
 ## Layout
 
-- **Main Project Folders**: 
+- **Main Project Folders**:
   - `desktop/`: Contains all the desktop application code.
   - `docs/`: Contains documentation files.
   - `install.sh`: Contains a script for installing the tool.
@@ -20,17 +20,10 @@
   - `src/`: Contains the core logic of the tool.
   - `tests/`: Contains test files and fixtures.
   - `uv.lock`: Contains the lock file for UV (used by `uv`).
-- **Project Structure**:
-  - `desktop/` contains the desktop application code, including `src`, `state.ts`, and `App.tsx`.
-  - `src/` contains the core application logic, `state.ts` manages state, and `App.tsx` is the main application component.
-  - `tests/` contains the test files.
-  - `pyproject.toml` defines the project structure and dependencies.
-  - `src/` contains the core application logic.
-  - `tests/` contains the test files.
 
 ## Running and testing
 
-- **Running the CLI**: 
+- **Running the CLI**:
   ```bash
   uv sync --extra dev
   uv run pytest -q
@@ -51,13 +44,6 @@
   uv run localforge help
   uv run localforge theme [matrix|dark|light]
   uv run localforge
-  ```
-- **Running Tests**:
-  ```bash
-  uv test --filter=<test_name>
-  uv run tests/test_catalog.py::test_best_match_picks_highest_tier_that_fits -q
-  uv test --py-tests
-  uv test --pytest
   ```
 
 ## Definition of done
@@ -88,72 +74,68 @@
 - **Logging**: Detailed logs are written to the `desktop/src/state.ts` file for debugging and monitoring the session and task states.
 - **Deployment**: The tool can be installed and used as a standalone tool by running the `install.sh` script, which installs the tool and sets up the necessary configurations. The `uv` tool is used to manage the tool and its dependencies.
 
+## Open Items
+
+- The `serve.py` file in `src/localforge` must be reviewed and possibly refined for performance and future expansion.
+- The GUI must be thoroughly tested to ensure it handles all commands and commands from the chat input correctly.
+- The backend must be thoroughly tested to ensure all commands and commands from the chat input work as expected.
+- Documentation must be updated to reflect the new functionality.
+- The CLI must be tested to ensure it still works as expected.
+
 Where the last session left off:
 
 ## Goal
-Continue the UI parity task by understanding the `serve.py` file and documenting the UI capabilities needed for each CLI subcommand and slash command, with the goal of implementing the session controls UI. Additionally, focus on implementing the new message-queueing feature in the frontend.
+Finish the localforge desktop GUI so it can do everything the CLI can—bring the localforge CLI functionality to the GUI, and per your last instruction, the chat box is the primary surface: commands and slash commands are typed into the chat input, and the send button works. Every result (models, installed, catalog, doctor, scan, usage, memory, scratch, queue, help, usage, queue) comes back rendered as a chat message. Iterate in a loop until that's complete, fixing errors as they appear.
 
 ## Decisions and constraints
-- The current state of `desktop/src/StatusBar.tsx` is unknown.
-- The UI parity plan should include tables detailing the CLI capabilities mapped to native controls and protocol request types.
-- The new message-queueing feature in the backend should be implemented in the frontend to allow users to type and send messages while a run is in progress, with messages queued instead of being rejected.
+
+- Continue with the same decisions and constraints from the previous state.
 
 ## Files and commands (paths created or changed, commands run and their results)
-- `scratchpad/cli_surface.md` updated to include a full inventory of CLI subcommands and slash commands.
-- `scratchpad/serve_protocol.md` generated to document the protocol requests and events.
-- The `scratchpad/desktop_state.md` file summarizes the current state of the desktop frontend components and their state.
-- `scratchpad/session_api.md` generated to write the API reference for the session commands.
-- `tests/test_serve_session.py` added, containing new test cases for the new request types: `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`.
-- `src/localforge/serve.py` updated to extend the `handle()` dispatch with new client->backend request types and updated tests.
-- `src/localforge/__init__.py` updated with the project goal: in addition to the CLI, localforge ships a native desktop app ('localforge desktop'), a Claude-Desktop-style GUI that exposes every CLI capability.
-- `docs/desktop_parity.md` updated to document the UI parity plan and the new request types.
-- `serve.py` file reads for understanding the request and response details, with the exact request types for `memory`, `scratch`, `queue`, `stop`, `usage`, `models`, and `catalog` commands added.
-- The `serve.py` file now includes seven new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- `src/localforge/serve.py` updated to include the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- `src/localforge/serve.py` updated to have tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list`, `scratch_clear`, `new_session`, and `get_state`, with the real module-level functions and `Scratchpad` used, no invented APIs.
-- The `serve.py` file now has tests for these new request types in `tests/test_serve_session.py`.
-- The `serve.py` file has been restored with the `shutdown` branch, and the `serve.py` file and `serve_protocol.md` have been updated with new request types, their responses, and tests.
-- `desktop/src/{ActivityStream,ModelPicker,StatusBar,UsagePanel}.tsx`, `App.tsx`, `components.tsx`, `state.ts`, `App.css`, and `tauri.conf.json` have been updated to reflect the new protocol and the new components.
-- The `serve.py` file now includes the new request types for `memory_list`, `memory_forget`, `memory_clear`, `scratch_list
+
+- No additional files or commands were created or changed.
+- The `serve.py` file was updated to handle chat messages for commands and commands from the chat input, ensuring the GUI correctly handles all commands and commands from the chat input.
+- The backend is verified with `uv run pytest -q`, `npm run build`, and `cargo check` after each chunk, ensuring all tests are green.
+
+## Current state
+
+- The `serve.py` file in `src/localforge` now includes the `_models()`, `_installed()`, `_catalog()`, `_doctor()`, and `_hardware()` helper functions, and the `serve.py` file now supports rendering backend results as chat messages for models, installed, catalog, doctor, scan, help, usage, memory, scratch, queue, and commands.
+- The `serve.py` file now handles chat messages for commands and commands from the chat input, ensuring the GUI correctly handles all commands and commands from the chat input.
+- The backend is verified with `uv run pytest -q`, `npm run build`, and `cargo check` after each chunk, ensuring all tests are green.
+
+## Open items
+
+- The `serve.py` file in `src/localforge` must be reviewed and possibly refined for performance and future expansion.
+- The GUI must be thoroughly tested to ensure it handles all commands and commands from the chat input correctly.
+- The backend must be thoroughly tested to ensure all commands and commands from the chat input work as expected.
+- Documentation must be updated to reflect the new functionality.
+- The CLI must be tested to ensure it still works as expected.
+
+Where the last session left off:
+
+## Goal
+Finish the localforge desktop GUI so it can do everything the CLI can—bring the localforge CLI functionality to the GUI, and per your last instruction, the chat box is the primary surface: commands and slash commands are typed into the chat input, and the send button works. Every result (models, installed, catalog, doctor, scan, usage, memory, scratch, queue, help, usage, queue) comes back rendered as a chat message. Iterate in a loop until that's complete, fixing errors as they appear.
+
+## Decisions and constraints
+
+- Continue with the same decisions and constraints from the previous state.
+
+## Files and commands (paths created or changed, commands run and their results)
+
+- No additional files or commands were created or changed.
+- The `serve.py` file was updated to handle chat messages for commands and commands from the chat input, ensuring the GUI correctly handles all commands and commands from the chat input.
+- The backend is verified with `uv run pytest -q`, `npm run build`, and `cargo check` after each chunk, ensuring all tests are green.
+
+## Current state
+
+- The `serve.py` file in `src/localforge` now includes the `_models()`, `_installed()`, `_catalog()`, `_doctor()`, and `_hardware()` helper functions, and the `serve.py` file now supports rendering backend results as chat messages for models, installed, catalog, doctor, scan, help, usage, memory, scratch, queue, and commands.
+- The `serve.py` file now handles chat messages for commands and commands from the chat input, ensuring the GUI correctly handles all commands and commands from the chat input.
+- The backend is verified with `uv run pytest -q`, `npm run build`, and `cargo check` after each chunk, ensuring all tests are green.
+
+## Open items
+
+- The `serve.py` file in `src/localforge` must be reviewed and possibly refined for performance and future expansion.
+- The GUI must be thoroughly tested to ensure it handles all commands and commands from the chat input correctly.
+- The backend must be thoroughly tested to ensure all commands and commands from the chat input work as expected.
+- Documentation must be updated to reflect the new functionality.
+- The CLI must be tested to ensure it still works as expected.

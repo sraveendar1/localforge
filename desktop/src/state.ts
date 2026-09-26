@@ -35,6 +35,7 @@ export type ChatState = {
   memory: MemoryState;
   scratchFiles: ScratchFile[];
   queue: string[];  // New queue field
+  streamOutput: boolean;  // New ChatState field
 };
 export const initialState: ChatState = {
   messages: [],
@@ -56,7 +57,8 @@ export const initialState: ChatState = {
   systemStats: null,
   memory: { facts: [], narrative: "" },
   scratchFiles: [],
-  queue: []  // Initialize queue to an empty array
+  queue: [],  // Initialize queue to an empty array
+  streamOutput: false  // Initialize streamOutput to false
 };
 
 // Apply fn to the last assistant message, returning a new array.
@@ -108,7 +110,7 @@ function withStats(state: ChatState, stats: any): ChatState {
 export function applyEvent(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
-      return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve };
+      return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
     case "run_started":
       return { ...state, running: true, status: "", messages: [...state.messages, { role: "assistant", text: "", items: [] }] };
     case "frontier_round":
@@ -172,7 +174,7 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
     case "error":
       return withStats(addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error")), ev.stats);
     case "settings":
-      return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model };
+      return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model, streamOutput: ev.stream_output ?? state.streamOutput };
     case "system_stats":
       return { ...state, systemStats: { hardware: ev.hardware ?? {}, cpuPercent: Number(ev.cpu_percent ?? 0), ramUsedGb: Number(ev.ram_used_gb ?? 0), ramTotalGb: Number(ev.ram_total_gb ?? 0) } };
     case "memory":
@@ -180,9 +182,21 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
     case "scratch":
       return { ...state, scratchFiles: Array.isArray(ev.files) ? ev.files : [] };
     case "session_reset":
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove };
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
+    case "compacted":
+      return addItem(state, { kind: "note", text: ev.message ?? `Compacted ${ev.before_messages} to ${ev.after_messages} (${ev.changed})` });
+    case "summary": {
+      const summaryText = ev.memory ? `Memory: ${ev.memory}\nMessage count: ${ev.message_count ?? 0}\nChars: ${ev.chars ?? 0}\nModel: ${ev.model ?? ""}` : "Nothing summarised yet.";
+      return addItem(state, { kind: "note", text: summaryText });
+    }
+    case "note_added":
+      return addItem(state, { kind: "note", text: `Note queued: ${String(ev.note ?? "")} (${Number(ev.count ?? 0)} queued)` });
+    case "why": {
+      const lines = Array.isArray(ev.lines) ? ev.lines.map(String) : [String(ev.lines ?? "Nothing pending.")];
+      return addItem(state, { kind: "note", text: lines.join("\n") });
+    }
     default:
       return state;
   }

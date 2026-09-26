@@ -6,18 +6,21 @@ JSON; everything else goes to stderr.
 """
 from __future__ import annotations
 
-import dataclasses, json, sys, threading, uuid
+import dataclasses, json, shutil, sys, threading, uuid
 from pathlib import Path
-from typing import Callable, IO, List
+from typing import Callable, IO, List, Optional
 from localforge import memory
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
-from localforge.tools import ActivityHooks
+from localforge.tools import ActivityHooks, Dispatcher
 from localforge.workspace import Workspace
+from localforge import usage_store
 
 import psutil
 from localforge.hardware import detect_hardware
+from localforge.backends.ollama import OllamaBackend
+from localforge.catalog import load_catalog, recommendations
 
 class Cancelled(Exception):
     """Raised from on_frontier to stop a run between rounds."""
@@ -28,6 +31,43 @@ def _jsonable_stats(stats) -> dict | None:
     if dataclasses.is_dataclass(stats):
         return dataclasses.asdict(stats)
     return dict(vars(stats))
+
+def _models():
+    hw = detect_hardware()
+    recs = recommendations(hw)
+    models = []
+    for modality, entry in recs.items():
+        if entry is not None:
+            models.append({'modality': modality, 'model': entry.model_dump()})
+    return models
+
+def _installed():
+    ollama = OllamaBackend()
+    try:
+        installed = ollama.list_installed()
+    except Exception:
+        installed = []
+    return [{'model': model['name'], 'status': 'installed'} for model in installed]
+
+def _catalog():
+    catalog = load_catalog()
+    return [{'name': entry.name, 'modality': entry.modality, 'runtime': entry.runtime, 'min_vram_gb': entry.min_vram_gb, 'min_ram_gb': entry.min_ram_gb, 'disk_gb': entry.disk_gb, 'quality_tier': entry.quality_tier} for entry in catalog]
+
+def _doctor():
+    checks = []
+    ollama_path = shutil.which('ollama')
+    checks.append({'name': 'Ollama installed', 'ok': ollama_path is not None, 'detail': ollama_path or 'Ollama not installed. Install it from https://ollama.com.'})
+    try:
+        hardware = detect_hardware()
+        checks.append({'name': 'Hardware detected', 'ok': True, 'detail': f'OS: {hardware.os} ({hardware.arch}), CPU cores: {hardware.cpu_cores}, RAM: {hardware.ram_gb} GB, Free disk: {hardware.free_disk_gb} GB.'})
+    except Exception as e:
+        checks.append({'name': 'Hardware detection', 'ok': False, 'detail': str(e)})
+    return checks
+
+def _hardware():
+    return detect_hardware().model_dump()
+
+NOTE_PREFIX = "Note from the user: "
 
 class StdioServer:
     def __init__(self, root: Path, frontier_model: str, cli_provider: str | None = None,
@@ -42,6 +82,7 @@ class StdioServer:
         self.run_fn = run_fn
         self.auto_approve = auto_approve
         self.always_allow: set[str] = set()
+        self.stream_output = False
         if scratch_root is not None:
             self.scratch_root = scratch_root
             self._scratchpad = None
@@ -59,6 +100,11 @@ class StdioServer:
         self._todos: list[dict] = []
         self._queue: List[str] = []  # New queue attribute
         self._queue_lock = threading.Lock()  # Lock for the queue
+        self._notes: list[str] = []  # New notes attribute
+        self._notes_lock = threading.Lock()  # Lock for the notes attribute
+
+        # Add _pending_info attribute
+        self._pending_info: dict[str, tuple[str, str, str]] = {}
 
     def emit(self, event_type: str, **fields) -> None:
         with self._write_lock:
@@ -99,9 +145,13 @@ class StdioServer:
         return holder[0] == "approve"
 
     def _resolve(self, request_id: str, decision: str) -> bool:
+        if decision not in {"approve", "allow", "yes", "decline", "deny", "no", "always", "all"}:
+            self.emit("error", message=f"Unknown decision: {decision}")
+            return False
         with self._pending_lock:
             entry = self._pending.get(request_id)
         if entry is None:
+            self.emit("error", message=f"No pending approval for id {request_id}")
             return False
         entry[1][0] = decision
         entry[0].set()
@@ -134,6 +184,11 @@ class StdioServer:
         )
 
     def _run_turn(self, text: str) -> None:
+        with self._notes_lock:
+            notes = self._notes.copy()
+            self._notes.clear()
+        if notes:
+            text = "\n".join([NOTE_PREFIX + note for note in notes]) + "\n" + text
         workspace = Workspace(self.root, approver=self.approve, scratch=self.scratch_root)
         try:
             result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace)
@@ -182,7 +237,7 @@ class StdioServer:
                 elif cmd == "/clear" or cmd == "/new":
                     self.handle_clear_command()
                 elif cmd == "/usage":
-                    self.handle_usage_command()
+                    self.handle_usage_command(arg)
                 elif cmd == "/models" or cmd == "/installed" or cmd == "/catalog" or cmd == "/doctor" or cmd == "/scan":
                     self.handle_catalog_command(cmd)
                 elif cmd == "/model":
@@ -192,7 +247,17 @@ class StdioServer:
                 elif cmd == "/run":
                     self.handle_run_command(arg)
                 elif cmd == "/help":
-                    self.handle_help_command()
+                    self.handle_help_command(arg)
+                elif cmd == "/compact":
+                    self.handle_compact_command()
+                elif cmd == "/summary":
+                    self.handle_summary_command()
+                elif cmd == "/tell":
+                    self.handle_tell_command(arg)
+                elif cmd == "/why":
+                    self.handle_why_command()
+                elif cmd == "/stream":
+                    self.handle_stream_command(arg)
                 else:
                     self.emit("error", message=f"Unknown command: {cmd}")
             elif self.busy:
@@ -204,7 +269,61 @@ class StdioServer:
                 self.emit("run_started", text=text)
                 self._worker = threading.Thread(target=self._run_turn, args=(text,), daemon=True)
                 self._worker.start()
-        # ... (rest of the handle method remains unchanged)
+        elif message_type == "memory_list":
+            self.handle_memory_command('')
+        elif message_type == "memory_forget":
+            name = str(message.get('name', '')).strip()
+            if not name:
+                self.emit('error', message='Missing name to forget.')
+            else:
+                self.handle_memory_command(f'forget {name}')
+        elif message_type == "memory_clear":
+            self.handle_memory_command('clear')
+        elif message_type == "scratch_list":
+            self.handle_scratch_command('')
+        elif message_type == "scratch_clear":
+            self.handle_scratch_command('clear')
+        elif message_type == "queue_list":
+            self.handle_queue_command('')
+        elif message_type == "queue_clear":
+            self.handle_queue_command('clear')
+        elif message_type == "new_session":
+            self.handle_clear_command()
+        elif message_type == "get_state":
+            self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+            self.emit('todos_updated', todos=self._todos)
+            self._emit_queue()
+        elif message_type == "set_model":
+            model = str(message.get('model', '')).strip()
+            if model:
+                self.frontier_model = model
+                self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        elif message_type == "set_auto":
+            self.auto_approve = bool(message.get('enabled', False))
+            self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        elif message_type == "set_stream":
+            self.stream_output = message.get('enabled', False)
+            self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        elif message_type == "approval_response":
+            self._resolve(str(message.get('id', '')), str(message.get('decision', 'decline')))
+        elif message_type == "cancel":
+            self.handle_stop_command()
+        elif message_type == "system_stats":
+            try:
+                cpu_percent = psutil.cpu_percent(interval=0.01)
+                memory = psutil.virtual_memory()
+                ram_used_gb = round(memory.used / (1024 ** 3), 1)
+                ram_total_gb = round(memory.total / (1024 ** 3), 1)
+            except Exception:
+                cpu_percent = 0
+                ram_used_gb = 0
+                ram_total_gb = 0
+            self.emit('system_stats', hardware=_hardware(), cpu_percent=cpu_percent, ram_used_gb=ram_used_gb, ram_total_gb=ram_total_gb)
+        elif message_type == "shutdown":
+            return False
+        else:
+            self.emit("error", message=f"Unknown message type: {message_type}")
+        return True
 
     def handle_memory_command(self, arg: str):
         if not arg:
@@ -264,10 +383,45 @@ class StdioServer:
                 self._queue.clear()
             self._emit_queue()
 
-    def handle_usage_command(self):
-        all_time_totals = usage_store.get_all_time_totals()
-        previous_session_totals = usage_store.get_previous_session_totals()
-        self.emit("usage_history", all_time_totals=all_time_totals, previous_session_totals=previous_session_totals)
+    def handle_usage_command(self, arg: str = "") -> None:
+        if arg:
+            command = arg.split(" ")[0]
+            if command == "/memory":
+                self.handle_memory_command("")
+            elif command == "/scratch":
+                self.handle_scratch_command("")
+            elif command == "/queue":
+                self.handle_queue_command("")
+            elif command == "/stop":
+                self.handle_stop_command()
+            elif command == "/clear" or command == "/new":
+                self.handle_clear_command()
+            elif command == "/models" or command == "/installed" or command == "/catalog" or command == "/doctor" or command == "/scan":
+                self.handle_catalog_command(command)
+            elif command == "/model":
+                self.handle_model_command("")
+            elif command == "/auto":
+                self.handle_auto_command("")
+            elif command == "/run":
+                self.handle_run_command("")
+            elif command == "/help":
+                self.handle_help_command()
+            elif command == "/compact":
+                self.handle_compact_command()
+            elif command == "/summary":
+                self.handle_summary_command()
+            elif command == "/tell":
+                self.handle_tell_command("")
+            elif command == "/why":
+                self.handle_why_command()
+            elif command == "/stream":
+                self.handle_stream_command("")
+            else:
+                self.emit("usage", command=command, message=f"Usage for {command} not found.")
+        else:
+            all_time_totals = usage_store.get_all_time_totals()
+            previous_session_totals = usage_store.get_previous_session_totals()
+            self.emit("usage", all_time_totals=all_time_totals, previous_session_totals=previous_session_totals)
 
     def handle_catalog_command(self, cmd: str):
         if cmd == "/models":
@@ -275,11 +429,11 @@ class StdioServer:
         elif cmd == "/installed":
             self.emit("installed", models=_installed())
         elif cmd == "/catalog":
-            self.emit("catalog", catalog=_catalog())
+            self.emit("catalog", items=_catalog())
         elif cmd == "/doctor":
             self.emit("doctor", checks=_doctor())
         elif cmd == "/scan":
-            self.emit("system_stats", hardware=_hardware())
+            self.emit("system_stats", hardware=_hardware(), cpu_percent=psutil.cpu_percent(interval=0.01), ram_used_gb=round(psutil.virtual_memory().used / (1024 ** 3), 1), ram_total_gb=round(psutil.virtual_memory().total / (1024 ** 3), 1))
 
     def handle_model_command(self, arg: str):
         if not arg:
@@ -294,7 +448,7 @@ class StdioServer:
 
     def handle_auto_command(self, arg: str):
         self.auto_approve = arg.lower() == "on"
-        self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model)
+        self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
 
     def handle_run_command(self, arg: str):
         if self.busy:
@@ -305,7 +459,7 @@ class StdioServer:
             self._worker = threading.Thread(target=self._run_turn, args=(arg.strip(),), daemon=True)
             self._worker.start()
 
-    def handle_help_command(self):
+    def handle_help_command(self, arg: str = "") -> None:
         commands = [
             {"name": "/memory", "description": "Show or clear this folder's memory"},
             {"name": "/scratch", "description": "List or clear this session's scratchpad"},
@@ -321,14 +475,60 @@ class StdioServer:
             {"name": "/model <id>", "description": "Show or switch the orchestrator model"},
             {"name": "/auto on|off", "description": "Approve file changes and commands without asking"},
             {"name": "/run <task>", "description": "Work on a task in this folder"},
-            {"name": "/help", "description": "Show this list of commands"}
+            {"name": "/help", "description": "Show this list of commands"},
+            {"name": "/compact", "description": "Compact the conversation history"},
+            {"name": "/summary", "description": "Show the session summary"},
+            {"name": "/tell <note>", "description": "Append a note for the running task"},
+            {"name": "/why", "description": "Explain the pending approval request"},
+            {"name": "/stream [on|off]", "description": "Toggle stream output on or off"}
         ]
         self.emit("command_help", commands=commands)
 
-    # ... (rest of the handle method remains unchanged)
+    def handle_compact_command(self):
+        if self.busy:
+            self.emit("error", message="A run is already in progress.")
+        else:
+            try:
+                before_messages = len(self.conversation.messages)
+                dispatcher = Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()), hooks=self._hooks())
+                changed = memory.compact(self.conversation, dispatcher, root=self.root)
+                after_messages = len(self.conversation.messages)
+                self.emit("compacted", before_messages=before_messages, after_messages=after_messages, changed=changed, message=f"Conversation history compacted from {before_messages} to {after_messages} turns.")
+            except Exception as e:
+                self.emit("error", message=str(e))
+
+    def handle_summary_command(self):
+        summary = {"memory": self.conversation.memory, "message_count": len(self.conversation.messages), "chars": self.conversation.chars(), "model": self.frontier_model}
+        self.emit("summary", **summary)
+
+    def handle_tell_command(self, arg: str):
+        if not arg:
+            self.emit("error", message="No note text provided.")
+        else:
+            with self._notes_lock:
+                self._notes.append(arg)
+            self.emit("note_added", note=arg)
+
+    def handle_why_command(self):
+        with self._pending_lock:
+            lines = []
+            for request_id, (event, decision) in self._pending.items():
+                kind, title, detail = self._pending_info[request_id]
+                lines.append(f"{kind.capitalize()}: {title} - {detail}")
+            lines.append(f"Auto-approve is {'on' if self.auto_approve else 'off'}")
+            self.emit("why", lines=lines)
+
+    def handle_stream_command(self, arg: str):
+        if not arg:
+            self.stream_output = not self.stream_output
+        elif arg.lower() == "on":
+            self.stream_output = True
+        elif arg.lower() == "off":
+            self.stream_output = False
+        self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
 
     def serve_forever(self) -> None:
-        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root))
+        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output)
         try:
             for line in self.inp:
                 line = line.strip()
@@ -356,11 +556,11 @@ class StdioServer:
             self._scratchpad.remove()
             self._scratchpad = None
 
-def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False) -> None:
+def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False, stream_output: bool = False) -> None:
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        server = StdioServer(root, frontier_model, cli_provider, out=real_stdout, inp=sys.stdin, auto_approve=auto_approve)
+        server = StdioServer(root, frontier_model, cli_provider, out=real_stdout, inp=sys.stdin, auto_approve=auto_approve, stream_output=stream_output)
         server.serve_forever()
     finally:
         sys.stdout = real_stdout
