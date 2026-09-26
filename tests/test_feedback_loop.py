@@ -231,3 +231,75 @@ def test_no_open_work_means_no_question(project, monkeypatch):
     monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("asked"))
     cli_module._offer_open_work_at_start(project)
+
+
+# --- /tasks: SLASH_HELP listed it, but no command existed (typing it errored:
+# "No such command 'tasks'") -- unlike /queue (tasks waiting behind the one
+# running right now, in *this* session), /tasks is unfinished work left from
+# *earlier*, already-ended tasks, and only the single most recent one was ever
+# surfaced, automatically, at session start. --------------------------------------------
+
+
+def test_tasks_lists_every_saved_entry_not_just_the_latest(project, monkeypatch, capsys):
+    import localforge.cli as cli_module
+
+    memory.save_open_work(project, "build the API", "the user stopped it", ["add tests"], [])
+    memory.save_open_work(project, "add auth", "hit the round ceiling", ["wire up JWT"], ["auth.py"])
+    monkeypatch.setattr(cli_module, "_session", type("S", (), {"root": project, "runner": None})())
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: False)  # just list, no picker
+    cli_module.tasks_command(action=None)
+    out = capsys.readouterr().out
+    assert "build the API" in out and "add auth" in out
+    assert "1." in out and "2." in out
+
+
+def test_no_unfinished_tasks_says_so(project, monkeypatch, capsys):
+    import localforge.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "_session", type("S", (), {"root": project, "runner": None})())
+    cli_module.tasks_command(action=None)
+    assert "No unfinished work from earlier tasks." in capsys.readouterr().out
+
+
+def test_tasks_clear_discards_all_of_them(project, monkeypatch, capsys):
+    import localforge.cli as cli_module
+
+    memory.save_open_work(project, "build the API", "stopped", [], [])
+    memory.save_open_work(project, "add auth", "stopped", [], [])
+    monkeypatch.setattr(cli_module, "_session", type("S", (), {"root": project, "runner": None})())
+    cli_module.tasks_command(action="clear")
+    assert memory.open_work(project) == []
+    assert "Discarded 2" in capsys.readouterr().out
+
+
+def test_choosing_one_from_the_list_can_continue_it(project, monkeypatch):
+    import localforge.cli as cli_module
+
+    memory.save_open_work(project, "build the API", "stopped", ["finish tests"], [])
+    memory.save_open_work(project, "add auth", "stopped", ["wire up JWT"], [])
+    monkeypatch.setattr(cli_module, "_session", type("S", (), {"root": project, "runner": None})())
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module.console, "input", lambda prompt="": "2")  # the second entry
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)  # continue it now
+    ran = []
+    monkeypatch.setattr(cli_module, "app", lambda argv, standalone_mode=True: ran.append(argv))
+    cli_module.tasks_command(action=None)
+    assert len(ran) == 1 and ran[0][0] == "run"
+    assert "add auth" in ran[0][1] and "wire up JWT" in ran[0][1]
+
+
+def test_continuing_while_a_task_is_already_running_queues_instead_of_running_directly(project, monkeypatch):
+    """Reported (elsewhere, same session): a command reading input or
+    running a task synchronously while the background worker is already
+    busy can corrupt things. Resuming open work must go through the same
+    queue a normally-typed task would, not call app(["run", ...]) directly
+    on top of whatever the worker thread is doing."""
+    import localforge.cli as cli_module
+
+    memory.save_open_work(project, "build the API", "stopped", [], [])
+    runner = type("R", (), {"busy": True, "submit": lambda self, task: 1})()
+    monkeypatch.setattr(cli_module, "_session", type("S", (), {"root": project, "runner": runner})())
+    app_called = []
+    monkeypatch.setattr(cli_module, "app", lambda *a, **k: app_called.append(a))
+    cli_module._resume_open_work(memory.open_work(project)[0])
+    assert not app_called  # never runs synchronously while the worker is busy

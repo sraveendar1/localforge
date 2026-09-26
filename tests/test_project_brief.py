@@ -1,9 +1,14 @@
-"""`localforge init`: a project brief, like Claude Code's CLAUDE.md, written
-and kept current by the local memory model.
+"""`localforge goals` (`/init` is a backward-compatible alias): a project
+brief, like Claude Code's CLAUDE.md, written and kept current by the local
+memory model.
 
 Asked for: "a similar function like init in claude that captures the overall
 objective of the project and keeps it updated using the memory selected open
-weighted llm".
+weighted llm". Renamed to `goals`, since it's really capturing what the
+project is *for*, not just a one-time init step -- and it's no longer only a
+one-time step: the first task in a goal-less project offers to draft it
+right then, and a mid-session prompt offers to refresh it once enough has
+changed.
 """
 
 from unittest.mock import patch
@@ -16,6 +21,7 @@ import localforge.orchestrator as orch
 from localforge import brief, memory, trust
 from localforge.catalog import ModelEntry
 from localforge.hardware import HardwareProfile
+from localforge.orchestrator import RunResult, RunStats
 from localforge.tools import Dispatcher
 from localforge.workspace import Workspace
 
@@ -69,7 +75,7 @@ def local_keeper(monkeypatch):
 def test_the_brief_is_drafted_from_the_project_and_what_localforge_remembers(project, local_keeper):
     memory.remember(project, "deploy", "Deploys to fly.io on merge.", type="project")
     memory.save(project, "Last session: added the /todos endpoint.")
-    CliRunner().invoke(cli_module.app, ["init"])
+    CliRunner().invoke(cli_module.app, ["goals"])
 
     prompt = local_keeper.prompts[0]
     assert "# Todo API" in prompt and "fastapi" in prompt  # README and manifest
@@ -79,37 +85,43 @@ def test_the_brief_is_drafted_from_the_project_and_what_localforge_remembers(pro
 
 
 def test_the_brief_is_written_to_the_project_after_approval(project, local_keeper):
-    out = CliRunner().invoke(cli_module.app, ["init"], ).output
+    out = CliRunner().invoke(cli_module.app, ["goals"], ).output
     assert (project / "AGENTS.md").read_text() == DRAFT
     assert "Created AGENTS.md" in out and "Every session in this folder now starts with" in out
 
 
+def test_init_is_still_a_working_alias_for_goals(project, local_keeper):
+    out = CliRunner().invoke(cli_module.app, ["init"]).output
+    assert (project / "AGENTS.md").read_text() == DRAFT
+    assert "Created AGENTS.md" in out
+
+
 def test_declining_writes_nothing(project, local_keeper):
     cli_module._session.auto_approve = False  # declined (no terminal to approve on)
-    out = CliRunner().invoke(cli_module.app, ["init"]).output
+    out = CliRunner().invoke(cli_module.app, ["goals"]).output
     assert not (project / "AGENTS.md").exists()
     assert "declined" in out
 
 
 def test_a_refresh_rewrites_from_scratch_but_an_update_builds_on_what_is_there(project, local_keeper):
     (project / "AGENTS.md").write_text("# Project brief\n\n## What this project is\nThe old description.\n")
-    CliRunner().invoke(cli_module.app, ["init"])
+    CliRunner().invoke(cli_module.app, ["goals"])
     assert "The old description." in local_keeper.prompts[-1] and "keep what's still true" in local_keeper.prompts[-1]
 
-    CliRunner().invoke(cli_module.app, ["init", "--refresh"])
+    CliRunner().invoke(cli_module.app, ["goals", "--refresh"])
     assert "The old description." not in local_keeper.prompts[-1]
 
 
 def test_markdown_wrapped_in_a_code_fence_is_unwrapped(project, monkeypatch, local_keeper):
     local_keeper.reply = "```markdown\n# Project brief\n\nIt is a todo API.\n```"
-    CliRunner().invoke(cli_module.app, ["init"])
+    CliRunner().invoke(cli_module.app, ["goals"])
     assert (project / "AGENTS.md").read_text().startswith("# Project brief")
     assert "```" not in (project / "AGENTS.md").read_text()
 
 
 def test_without_a_local_model_it_says_so_instead_of_using_the_paid_one(project, monkeypatch):
     monkeypatch.setattr(cli_module, "_memory_dispatcher", lambda hooks=None: Dispatcher(_hw(), catalog=[], installed=set(), hooks=hooks))
-    result = CliRunner().invoke(cli_module.app, ["init"])
+    result = CliRunner().invoke(cli_module.app, ["goals"])
     assert result.exit_code == 1 and "No local model is available" in result.output
     assert not (project / "AGENTS.md").exists()
 
@@ -150,7 +162,7 @@ def test_the_old_name_is_still_read_and_init_moves_it_to_agents_md(project, loca
     (project / "LOCALFORGE.md").write_text("# Project brief\n\nThe old description.\n")
     assert "The old description." in brief.brief_for_prompt(project)  # still read, before CLAUDE.md
     local_keeper.reply = "# Project brief\n\nThe updated description.\n"
-    result = CliRunner().invoke(cli_module.app, ["init"], input="y\ny\n")
+    result = CliRunner().invoke(cli_module.app, ["goals"], input="y\ny\n")
     assert (project / "AGENTS.md").read_text().startswith("# Project brief")
     assert not (project / "LOCALFORGE.md").exists(), result.output  # moved, after its own approval
 
@@ -183,7 +195,7 @@ def test_no_changes_means_no_pending_update(project, local_keeper):
 def test_init_offers_the_pending_update_without_asking_the_model_again(project, local_keeper):
     (project / "AGENTS.md").write_text("# Project brief\n\nOld.\n")
     brief.save_pending(project, "# Project brief\n\nDrafted at the end of the last session.\n")
-    out = CliRunner().invoke(cli_module.app, ["init"], ).output
+    out = CliRunner().invoke(cli_module.app, ["goals"], ).output
     assert "update drafted at the end of the last session" in out
     assert "Drafted at the end of the last session." in (project / "AGENTS.md").read_text()
     assert local_keeper.prompts == []  # no second draft needed
@@ -213,16 +225,16 @@ def test_a_drafted_update_is_offered_at_the_next_session_start(project, monkeypa
     monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)
     ran = []
-    monkeypatch.setattr(cli_module, "app", lambda argv, standalone_mode=True: ran.append(argv))
+    monkeypatch.setattr(cli_module, "_write_goals", lambda folder, **kw: ran.append(folder) or True)
     cli_module._offer_brief_update_at_start(project)
-    assert ran == [["init"]]  # reviewed through /init: the diff and approval as usual
+    assert ran == [project]  # reviewed through /goals: the diff and approval as usual
 
 
-def test_later_leaves_the_draft_for_init(project, monkeypatch):
+def test_later_leaves_the_draft_for_goals(project, monkeypatch):
     brief.save_pending(project, "# Project brief\n\nDraft.\n")
     monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 2)
-    monkeypatch.setattr(cli_module, "app", lambda *a, **kw: pytest.fail("ran /init"))
+    monkeypatch.setattr(cli_module, "_write_goals", lambda *a, **kw: pytest.fail("ran /goals"))
     cli_module._offer_brief_update_at_start(project)
     assert brief.pending_path(project).is_file()
 
@@ -231,3 +243,279 @@ def test_no_draft_means_no_question(project, monkeypatch):
     monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("asked"))
     cli_module._offer_brief_update_at_start(project)
+
+
+# --- offering to set goals from a project's first task ---------------------------------------
+
+
+def _run_directly(task: str, **kw) -> None:
+    """CliRunner's `invoke()` swaps out `sys.stdin` for its own isolated
+    stream for the call, so patching `sys.stdin.isatty` beforehand has no
+    effect on code reached through it -- call `run()` as a plain function
+    instead, like the rest of the suite does for isatty-sensitive paths
+    (see `_offer_upgrades_at_start`/`_offer_brief_update_at_start` tests)."""
+    cli_module.run(task=task, frontier_model=kw.pop("frontier_model", "claude-opus-5"), show_usage=False, yes=kw.pop("yes", False))
+
+
+def test_the_first_task_in_a_goal_less_project_offers_to_draft_goals(project, local_keeper, monkeypatch, capsys):
+    """Asked for: the "what do you want to build" moment should itself be
+    the moment goals are captured, seeded with that task -- not a separate
+    step someone has to remember."""
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)  # yes, set them up
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("build a todo API")
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+
+    assert (project / "AGENTS.md").read_text() == DRAFT
+    assert "No AGENTS.md yet for this project" in out
+    assert "build a todo API" in local_keeper.prompts[0]  # seeded with the task, not just a cold read
+
+
+def test_declining_the_first_task_offer_is_not_asked_again_this_session(project, monkeypatch, capsys):
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    asked = []
+
+    def fake_ask_number(prompt, count):
+        asked.append(1)
+        return 2  # no, not now
+
+    monkeypatch.setattr(cli_module, "_ask_number", fake_ask_number)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("one")
+            capsys.readouterr()  # discard the first task's output
+            _run_directly("two")
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+
+    assert not (project / "AGENTS.md").exists()
+    assert len(asked) == 1  # only offered once, on the first task
+    assert "No AGENTS.md yet" not in out
+
+
+def test_a_scripted_run_is_never_asked_about_goals(project, capsys):
+    """Default test environment: no real tty, so this must never fire --
+    a scripted/CI `localforge run` must not block on a prompt."""
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("one", yes=True)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert not (project / "AGENTS.md").exists()
+    assert "No AGENTS.md yet" not in out
+
+
+# --- offering to refresh goals mid-session, not only at the next start -----------------------
+
+
+def test_goals_refresh_is_offered_once_enough_has_changed_mid_session(project, local_keeper, monkeypatch, capsys):
+    (project / "AGENTS.md").write_text("# Project brief\n\nOld.\n")
+    cli_module._session.files_changed = cli_module.GOALS_REFRESH_THRESHOLD
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 2)  # not now
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("one")
+            out = capsys.readouterr().out
+            assert "may be out of date" in out
+            # The watermark moved up, so it isn't offered again immediately after.
+            _run_directly("two")
+            out2 = capsys.readouterr().out
+    finally:
+        cli_module.console.pop_theme()
+    assert "may be out of date" not in out2
+
+
+def test_goals_refresh_is_not_offered_below_the_threshold(project, local_keeper, monkeypatch, capsys):
+    (project / "AGENTS.md").write_text("# Project brief\n\nOld.\n")
+    cli_module._session.files_changed = cli_module.GOALS_REFRESH_THRESHOLD - 1
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("asked"))
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("one")
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "may be out of date" not in out
+
+
+def test_goals_offers_never_read_stdin_from_the_background_worker_thread(project, local_keeper, monkeypatch):
+    """Reported: "not seeing the ability to queue... single threaded." Both
+    goals offers call _ask_number, a blocking console.input() -- fine on the
+    main thread, but on the background worker thread (background.py's
+    TaskRunner) it would read stdin out from under prompt_toolkit's own
+    PromptSession, which owns the terminal for the whole session. That
+    silently broke background tasks (and therefore queueing behind one) for
+    any project with no AGENTS.md yet, or one with 5+ changed files. The
+    offer must be skipped -- not just answered a particular way -- whenever
+    `run()` executes on the worker thread; _ask_number must never even be
+    called there."""
+    from localforge.background import TaskRunner
+
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("_ask_number was called from the worker thread"))
+
+    def run_task(task: str) -> None:
+        cli_module.run(task=task, frontier_model="claude-opus-5", show_usage=False, yes=False)
+
+    runner = TaskRunner(run_task)
+    cli_module._session.runner = runner
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            runner.submit("build a todo API")
+            runner.thread.join(timeout=5)
+    finally:
+        cli_module.console.pop_theme()
+        cli_module._session.runner = None
+    assert not runner.busy
+    # Deferred, not lost: skipped on the worker thread rather than consumed,
+    # so a later foreground opportunity can still offer it.
+    assert not (project / "AGENTS.md").exists()
+    assert cli_module._session.goals_offered is False
+
+
+def test_the_deferred_goals_offer_still_fires_once_off_the_worker_thread(project, local_keeper, monkeypatch, capsys):
+    """The flip side of the test above: run() on the main thread (no
+    background runner in play) must still make the offer as before -- the
+    fix is thread-aware, not a blanket disable."""
+    monkeypatch.setattr(cli_module.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda prompt, count: 1)  # yes, set them up
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with patch.object(cli_module, "run_orchestrator", return_value=RunResult("done", RunStats())):
+            _run_directly("build a todo API")
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert (project / "AGENTS.md").read_text() == DRAFT
+    assert "No AGENTS.md yet for this project" in out
+
+
+# --- /goals stays readable while a task is running -------------------------------------
+
+
+def _busy(monkeypatch):
+    """A stand-in runner that looks busy, without a real background task."""
+    from unittest.mock import MagicMock
+
+    runner = MagicMock()
+    runner.busy = True
+    monkeypatch.setattr(cli_module._session, "runner", runner)
+    return runner
+
+
+def test_goals_shows_the_current_file_instead_of_refusing_while_busy(project, monkeypatch, capsys):
+    """Reported: "/goals has to wait until the current task is done" refused
+    even a look at the file, unlike /memory and /scratch, which stay
+    readable while busy and only block their mutating subactions."""
+    (project / "AGENTS.md").write_text("# Project brief\n\n## What this project is\nA todo API.\n")
+    _busy(monkeypatch)
+    monkeypatch.setattr(cli_module, "_ask_number", lambda *a: pytest.fail("no draft should be attempted"))
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        cli_module.goals(refresh=False)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "A todo API." in out
+    assert "has to wait" not in out
+
+
+def test_goals_refresh_still_waits_while_busy(project, monkeypatch, capsys):
+    """--refresh genuinely needs the local model and the diff-approval flow
+    a running task may itself be using, so it still has to wait."""
+    (project / "AGENTS.md").write_text("# Project brief\n\nOld.\n")
+    _busy(monkeypatch)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with pytest.raises(cli_module.typer.Exit):
+            cli_module.goals(refresh=True)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "has to wait until the current task is done" in out
+
+
+def test_goals_with_no_file_yet_still_waits_while_busy(project, monkeypatch, capsys):
+    """Nothing to just show, and drafting one from scratch needs the local
+    model -- so this still has to wait, same as before."""
+    _busy(monkeypatch)
+    cli_module.console.push_theme(cli_module.theme.get_theme("matrix"))
+    try:
+        with pytest.raises(cli_module.typer.Exit):
+            cli_module.goals(refresh=False)
+    finally:
+        cli_module.console.pop_theme()
+    out = capsys.readouterr().out
+    assert "has to wait until the current task is done" in out
+    assert not (project / "AGENTS.md").exists()
+
+
+def test_the_repl_lets_goals_through_while_busy_so_it_can_decide_for_itself():
+    """repl.BUSY_BLOCKED no longer includes goals/init: the command itself
+    now tells a mutating refresh apart from a harmless read."""
+    from unittest.mock import MagicMock
+
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    console = MagicMock()
+    reader = MagicMock()
+    reader.read.side_effect = ["/goals", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, console, reader, runner)
+    app.assert_called_once_with(["goals"], standalone_mode=False)
+    runner.shutdown.assert_called_once()
+
+
+# --- a session starting in a project with goals says what the project is for ------------
+
+
+def test_the_project_summary_prints_at_session_start(project, capsys):
+    """Asked for: "why doesn't the goal have an overall summary in user
+    readable fashion similar to init or claude.md". AGENTS.md already has
+    exactly that section -- it just never reached the human, only the
+    orchestrator's system prompt (Conversation.brief)."""
+    (project / "AGENTS.md").write_text(
+        "# Project brief\n\n## What this project is\nA todo API for the team, built with FastAPI.\n\n## How it's built\nPython.\n"
+    )
+    cli_module._print_project_summary(project)
+    out = capsys.readouterr().out
+    assert "Project:" in out
+    assert "A todo API for the team, built with FastAPI." in out
+    assert "Python." not in out  # only the "what this project is" section, not the whole file
+
+
+def test_no_summary_line_without_a_goals_file(project, capsys):
+    cli_module._print_project_summary(project)
+    assert capsys.readouterr().out == ""
+
+
+def test_start_session_prints_the_summary_after_trust_before_choosing_a_model(project, monkeypatch, capsys):
+    (project / "AGENTS.md").write_text("# Project brief\n\n## What this project is\nA todo API.\n")
+    monkeypatch.setattr(cli_module, "_ask_trust", lambda folder: True)
+    order = []
+    monkeypatch.setattr(cli_module, "_print_project_summary", lambda folder: order.append("summary"))
+
+    def picker():
+        order.append("choose")
+        return False  # stop right there, before anything else at session start
+
+    monkeypatch.setattr(cli_module, "_choose_orchestrator_at_start", picker)
+    assert cli_module._start_session() is False
+    assert order == ["summary", "choose"]

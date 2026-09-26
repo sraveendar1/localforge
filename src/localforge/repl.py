@@ -31,7 +31,7 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /run <task>       work on a task in this folder (or just type it directly)
   /clear            start a fresh conversation (/clear --forget also drops saved memory)
   /compact          have a local model condense the conversation into session memory
-  /init             write AGENTS.md: what this project is, for future sessions
+  /goals            write AGENTS.md: this project's goals, for future sessions (/init still works)
   /memory           show this folder's memory (/memory forget <name>, /memory clear)
   /scratch          list this session's scratchpad (/scratch clear to empty it)
   /auto <on|off>    approve file changes and commands without asking
@@ -39,13 +39,12 @@ SLASH_HELP = """[bold]Commands:[/bold]
   /why              explain what you're being asked to approve (or just ask in words)
   /model <id>       show or switch the orchestrator (a local Ollama model or a cloud one)
   /summary          what's happening now: which model is doing what, the plan, the queue
-  /queue            tasks waiting behind the current one (/queue clear to drop them)
+  /queue            drop tasks waiting behind the current one (/queue clear)
   /stop             stop the running task
   /tell <note>      add a note to the running task
   /usage            token usage for the last task and this session
   /setup            one-time interactive setup
-  /doctor           check everything's configured correctly
-  /scan             show detected hardware
+  /doctor           check everything's configured correctly (includes detected hardware)
   /models           best-fit local model per modality
   /catalog          full model catalog
   /installed        models actually on disk
@@ -170,7 +169,23 @@ def status_style(theme_name: str) -> Style:
         }
     )
 
-BUSY_BLOCKED = {"clear", "compact", "model", "setup", "uninstall", "delete", "run", "init", "upgrade"}
+BUSY_BLOCKED = {"clear", "compact", "setup", "uninstall", "delete", "run", "upgrade"}
+# /goals (and its /init alias) are deliberately not here: they decide for
+# themselves whether to wait (drafting a new file/update needs the local
+# model and diff-approval a running task may be using) or just show the
+# current AGENTS.md, which touches nothing a running task depends on.
+# /model is deliberately not here either (reported: "/model is not able to
+# switch immediately" -- it used to be fully blocked while busy, with a
+# carve-out only for the paused-on-a-usage-limit case via runner.waiting).
+# Switching model is always just an env var write (config.save) plus a
+# printed confirmation -- it never touches the Conversation, Workspace or
+# any state a running task holds a live reference to, and it's only ever
+# dispatched from the main REPL thread (never the worker), so there's no
+# race to guard against. A running task keeps using the frontier_model it
+# was called with either way -- the switch takes effect for whatever's
+# typed next, or immediately if the running task is paused on a usage limit
+# (see cli._LiveActivity._sleep_until, which polls the env var for exactly
+# this).
 # /memory and /scratch are otherwise safe to run while busy (they only read),
 # but these specific actions mutate state the running task holds a live
 # reference to: /memory clear|forget touches conversation.facts/.memory
@@ -327,7 +342,7 @@ def _read_eval(app: typer.Typer, console: Console, reader: LineReader, runner) -
                 if position:
                     console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
                 continue
-            blocked = cmd in BUSY_BLOCKED and not (cmd == "model" and runner.waiting)
+            blocked = cmd in BUSY_BLOCKED
             if not blocked:
                 action = remainder.split(" ", 1)[0] if remainder else ""
                 blocked = action in MUTATING_SUBCOMMANDS.get(cmd, ())

@@ -40,7 +40,7 @@ from localforge.workspace import Workspace
 
 app = typer.Typer(
     name="localforge",
-    help="A frontier model orchestrates open-weight models running locally on your machine.",
+    help="A paid model (or an open-weighted one) orchestrates open-weighted models running locally on your machine.",
 )
 console = Console()
 
@@ -105,8 +105,8 @@ def help(ctx: typer.Context) -> None:
 
 
 def _usage_bar(local_tokens: int, frontier_tokens: int, width: int = 40) -> str:
-    """A Claude-Code-style horizontal bar showing the local/frontier token
-    split for one run, e.g. "██████████████░░░░░░ 70% local / 30% frontier".
+    """A Claude-Code-style horizontal bar showing the open-weighted/paid
+    token split for one run, e.g. "██████████████░░░░░░ 70% open-weighted / 30% paid".
     """
     total = local_tokens + frontier_tokens
     if total == 0:
@@ -115,7 +115,7 @@ def _usage_bar(local_tokens: int, frontier_tokens: int, width: int = 40) -> str:
     frontier_width = width - local_width
     bar = f"[success]{'█' * local_width}[/success][warning]{'█' * frontier_width}[/warning]"
     pct_local = round(100 * local_tokens / total)
-    return f"{bar}  {pct_local}% local / {100 - pct_local}% frontier"
+    return f"{bar}  {pct_local}% open-weighted / {100 - pct_local}% paid"
 
 
 START_SESSION_HINT = "Type [accent]localforge[/accent] to start a session."
@@ -139,16 +139,13 @@ def _print_getting_started() -> None:
             "[bold]Get started:[/bold]\n\n"
             "  [accent]localforge[/accent]\n\n"
             "The first session walks you through it: installing Ollama, picking a model\n"
-            "for your hardware, and how you want to reach a frontier model (or staying\n"
-            "fully local). To do that part now instead: [accent]localforge setup[/accent]."
+            "for your hardware, and how you want to reach a paid model (or staying\n"
+            "fully open-weighted). To do that part now instead: [accent]localforge setup[/accent]."
         )
     console.print(Panel(body, title="localforge", expand=False, border_style="panel.border"))
 
 
-@app.command()
-def scan() -> None:
-    """Detect this machine's hardware."""
-    hw = detect_hardware()
+def _print_hardware(hw) -> None:
     console.print(f"OS: {hw.os} ({hw.arch})")
     console.print(f"CPU cores: {hw.cpu_cores}")
     console.print(f"RAM: {hw.ram_gb} GB")
@@ -158,6 +155,12 @@ def scan() -> None:
             console.print(f"GPU: {gpu.name} — {gpu.vram_gb} GB VRAM ({gpu.backend})")
     else:
         console.print("GPU: none detected (CPU-only)")
+
+
+@app.command()
+def scan() -> None:
+    """Detect this machine's hardware (also shown by /doctor)."""
+    _print_hardware(detect_hardware())
 
 
 @app.command()
@@ -384,7 +387,7 @@ def _prompt_for_provider() -> str:
         "local": "Local      (open-weight model via Ollama — no API key, fully self-hosted)",
     }
 
-    console.print("\nWhich frontier model should orchestrate your tasks?")
+    console.print("\nWhich model should orchestrate your tasks — a paid model, or an open-weighted one?")
     for i, name in enumerate(providers, start=1):
         console.print(f"  {i}) {labels.get(name, name)}")
 
@@ -470,7 +473,7 @@ def _prompt_for_model(provider: str) -> str:
         labels = {c: "already downloaded" for c in choices if local_transport.model_name(c) in installed}
     if not choices:
         _drain_buffered_input()
-        return _prompt_nonempty("Enter the exact frontier model id")
+        return _prompt_nonempty("Enter the exact orchestrator model id")
 
     console.print("\nWhich model should it use?")
     for i, model_id in enumerate(choices, start=1):
@@ -519,11 +522,11 @@ def _prompt_nonempty_hidden(message: str) -> str:
 @app.command()
 def setup() -> None:
     """One-time interactive setup: installs Ollama, pulls recommended models,
-    and saves your frontier model API key so future runs just work.
+    and saves your paid model's API key (or picks an open-weighted orchestrator) so future runs just work.
     """
     console.print("[bold]localforge setup[/bold]\n")
-    console.print("This gets the machine ready: Ollama, local models that fit your hardware,")
-    console.print("and how you want to reach a frontier model — or stay fully local.\n")
+    console.print("This gets the machine ready: Ollama, open-weighted models that fit your hardware,")
+    console.print("and how you want to reach a paid model — or stay fully open-weighted.\n")
 
     # 1. Ollama
     if shutil.which("ollama") is None:
@@ -562,7 +565,7 @@ def setup() -> None:
     frontier_model: str | None = None
     auth_method = config.AUTH_API_KEY
     if provider not in FRONTIER_PROVIDERS:
-        console.print(f"[error]Unknown provider {provider!r}.[/error] Skipping — configure a frontier model manually later.")
+        console.print(f"[error]Unknown provider {provider!r}.[/error] Skipping — configure an orchestrator model manually later.")
     else:
         env_var = FRONTIER_PROVIDERS[provider]
         auth_method = config.AUTH_API_KEY if env_var is None else _prompt_for_auth_method(provider)
@@ -661,7 +664,7 @@ def setup() -> None:
         console.print(f"Asking {via} to pick the best local models for this machine...")
         recs = recommend_models(hw, frontier_model, cli_provider=advisor_cli, installed=installed)
     else:
-        console.print("[warning]No usable frontier model id — falling back to the built-in heuristic.[/warning]")
+        console.print("[warning]No usable orchestrator model id — falling back to the built-in heuristic.[/warning]")
         recs = recommendations(hw, installed=installed)
 
     _print_model_plan(recs, installed, hw)
@@ -733,7 +736,7 @@ def doctor() -> None:
         name = local_transport.model_name(chosen_model)
         on_disk = _installed_model_names(OllamaBackend())
         if name in on_disk or f"{name}:latest" in on_disk:
-            console.print(f"[success]✓[/success] Orchestrator: {name} (local, via Ollama — no account needed)")
+            console.print(f"[success]✓[/success] Orchestrator: {name} (open-weighted model, via Ollama — no account needed)")
         else:
             ok = False
             console.print(f"[error]✗[/error] Orchestrator {name} is not downloaded — run `ollama pull {name}`")
@@ -751,7 +754,7 @@ def doctor() -> None:
             works, why = cli_transport.probe(cli_provider)
             if works:
                 console.print(
-                    f"[success]✓[/success] Frontier via `{spec['command']}` login "
+                    f"[success]✓[/success] Paid model via `{spec['command']}` login "
                     f"({cli_provider} subscription — no API key, no per-token billing)"
                 )
             else:
@@ -760,22 +763,24 @@ def doctor() -> None:
                 console.print(f"  [warning]{escape(_cli_failure_advice(cli_provider, why))}[/warning]")
     elif chosen_model and (found_keys or is_local_frontier):
         via = "self-hosted, no API key needed" if is_local_frontier else f"via {', '.join(found_keys)}"
-        console.print(f"[success]✓[/success] Frontier model configured: {chosen_model} ({via})")
+        console.print(f"[success]✓[/success] Paid model configured: {chosen_model} ({via})")
     elif found_keys:
         console.print(
-            f"[warning]![/warning] API key(s) found ({', '.join(found_keys)}) but no frontier model "
+            f"[warning]![/warning] API key(s) found ({', '.join(found_keys)}) but no orchestrator model "
             "chosen — run `localforge setup` to pick one explicitly."
         )
         ok = False
     else:
         ok = False
         console.print(
-            "[error]✗[/error] No frontier model configured — run `localforge setup`, "
-            "export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS) + ", or pick an open-weight "
+            "[error]✗[/error] No orchestrator model configured — run `localforge setup`, "
+            "export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS) + ", or pick an open-weighted "
             "model as the orchestrator (`localforge setup`, provider \"local\")"
         )
 
     hw = detect_hardware()
+    console.print()
+    _print_hardware(hw)
     recs = recommendations(hw)
     missing = [modality for modality, entry in recs.items() if entry is None]
     if not missing:
@@ -813,7 +818,7 @@ def _cli_provider_for(frontier_model: str, explicit: bool) -> str | None:
 
 def _orchestrator_label(frontier_model: str, cli_provider: str | None) -> str:
     if _is_local_model(frontier_model):
-        label = f"{local_transport.model_name(frontier_model)} (local, via Ollama — no account, no billing)"
+        label = f"{local_transport.model_name(frontier_model)} (open-weighted model, via Ollama — no account, no billing)"
         size = local_transport.parameter_billions(frontier_model)
         if size is not None and size < local_transport.MIN_RELIABLE_BILLIONS:
             label += (
@@ -857,8 +862,8 @@ def run(
         None,
         "--model",
         "-m",
-        help="Frontier model to orchestrate with (any LiteLLM model string, e.g. claude-opus-5, gpt-5). "
-        "Defaults to whatever `localforge setup` saved, or claude-opus-5 if setup was never run.",
+        help="Orchestrator model to use (any LiteLLM model string, e.g. claude-opus-5, gpt-5 -- paid -- "
+        "or ollama/<model> -- open-weighted). Defaults to whatever `localforge setup` saved, or claude-opus-5 if setup was never run.",
     ),
     show_usage: bool = typer.Option(
         False,
@@ -872,8 +877,8 @@ def run(
         help="Approve every file change and command without asking (inside a session: /auto).",
     ),
 ) -> None:
-    """Run a task in the current folder: the frontier model investigates and plans,
-    local models write the code, and you approve each change."""
+    """Run a task in the current folder: the orchestrator (a paid model, or an open-weighted one)
+    investigates and plans, open-weighted models write the code, and you approve each change."""
     explicit_model = frontier_model
     frontier_model = config.litellm_model_id(frontier_model or os.environ.get(config.FRONTIER_MODEL_ENV_VAR) or "claude-opus-5")
     cli_provider = _cli_provider_for(frontier_model, explicit=bool(explicit_model))
@@ -899,6 +904,23 @@ def run(
                 "interactively to trust it, or pass --yes to allow this run."
             )
             raise typer.Exit(code=1)
+    on_worker = _session.runner is not None and threading.current_thread() is _session.runner.thread
+    if sys.stdin.isatty() and not on_worker:
+        # Both offers call _ask_number, a blocking console.input() -- fine on
+        # the main thread (a foreground run, or the first task of a fresh
+        # session before the worker exists), but on the background worker
+        # thread it would read stdin out from under prompt_toolkit's own
+        # PromptSession, which owns the terminal for the whole session (see
+        # background.py's module docstring). That silently broke the
+        # "prompt stays usable, tasks queue behind the running one" behavior
+        # entirely -- reported as "not seeing the ability to queue... single
+        # threaded" -- for any project with no AGENTS.md yet, or one where 5+
+        # files had changed since it was last checked.
+        if not _session.goals_offered and not brief.existing_brief(folder):
+            _session.goals_offered = True
+            _offer_initial_goals(folder, task)
+        else:
+            _maybe_offer_goals_refresh(folder)
     activity = _session.make_activity(frontier_model)
     scratch = _session.scratchpad_for(folder)
     workspace = Workspace(
@@ -1099,7 +1121,7 @@ class _LiveActivity:
 
     def _on_delegate(self, modality: str, entry) -> None:
         self._stop_spinner()
-        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (local, via {entry.runtime})")
+        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (open-weighted model, via {entry.runtime})")
         self._at_line_start = True
         self._first_token_at = None
         # Nothing streams while the model loads into memory, which can take
@@ -1364,7 +1386,7 @@ class _BackgroundActivity(_LiveActivity):
         state = self.runner.state
         state.local_model, state.local_what = entry.name, f"working on {modality}"
         state.local_tokens, state.local_started = 0, time.monotonic()
-        console.print(f"  → {modality} → [accent]{entry.name}[/accent] (local)", highlight=False)
+        console.print(f"  → {modality} → [accent]{entry.name}[/accent] (open-weighted model)", highlight=False)
         self._step(f"→ {modality} delegated to {entry.name}")
 
     def _on_token(self, chunk: str) -> None:
@@ -1455,6 +1477,8 @@ class _SessionState:
         self.stream_output = False  # /stream on: print local output in full as well
         self.id = uuid.uuid4().hex[:12]  # this session, for the usage history
         self.files_changed = 0  # approved writes/deletes, so the exit hook knows if the brief is stale
+        self.goals_offered = False  # asked (accepted or not) about drafting AGENTS.md on this project's first task
+        self.files_changed_at_last_goals_prompt = 0  # watermark for the mid-session goals-refresh offer
         self.announced = False
         self.interactive = False  # True inside the REPL; a one-off run cleans up after itself
         self.runner = None  # background.TaskRunner when the session runs tasks in the background
@@ -1545,7 +1569,7 @@ def _model_choices() -> list[tuple[str, str, dict]]:
         choices.append(
             (
                 f"ollama/{name}",
-                f"ollama/{name}  (local — no account, no billing)",
+                f"ollama/{name}  (open-weighted model — no account, no billing)",
                 {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"},
             )
         )
@@ -1695,12 +1719,47 @@ def _start_session() -> bool:
     if not _ask_trust(Path.cwd().resolve()):
         console.print("Not trusted — exiting. cd into a folder you trust and run localforge there.")
         return False
+    _print_project_summary(Path.cwd().resolve())
     if not _choose_orchestrator_at_start():
         return False
     _offer_upgrades_at_start()
     _offer_brief_update_at_start(Path.cwd().resolve())
     _offer_open_work_at_start(Path.cwd().resolve())
     return True
+
+
+def _print_project_summary(folder: Path) -> None:
+    """AGENTS.md's "What this project is" section, in plain English, right
+    when a session starts -- asked for: "why doesn't the goal have an
+    overall summary in user readable fashion similar to init or claude.md".
+    The section has always been drafted (it's `/goals`'s own opening
+    section), but until now it only ever reached the orchestrator's system
+    prompt (`Conversation.brief`) -- a human starting a session never saw it
+    unless they went looking at the raw file. No AGENTS.md yet, or one
+    without that section (another tool's brief, whose layout isn't known):
+    nothing printed, same as before."""
+    summary = brief.section(brief.existing_brief(folder), ("what this project is",))
+    if summary:
+        console.print(f"[bold]Project:[/bold] {summary}\n", highlight=False)
+
+
+def _resume_open_work(entry: dict) -> None:
+    """Continue a saved open-work entry. If a background task is already
+    running, this queues behind it (like any other typed task) instead of
+    running synchronously on the caller's thread -- calling app(["run", ...])
+    directly here would run a second task on top of whatever the worker
+    thread is doing, unguarded by the queue."""
+    resume = memory.RESUME_PREFIX + entry["task"] + "\n\n" + memory.describe_open_work(entry)
+    runner = _session.runner
+    if runner is not None and runner.busy:
+        position = runner.submit(resume)
+        if position:
+            console.print(f"[dim]Queued (#{position}) — it starts when the current task finishes. /queue to see.[/dim]")
+        return
+    try:
+        app(["run", resume], standalone_mode=False)
+    except typer.Exit:
+        pass
 
 
 def _offer_open_work_at_start(folder: Path) -> None:
@@ -1715,40 +1774,85 @@ def _offer_open_work_at_start(folder: Path) -> None:
     if not items:
         return
     entry = items[-1]
-    more = f" (and {len(items) - 1} older unfinished task(s); /memory to see them)" if len(items) > 1 else ""
+    more = f" (and {len(items) - 1} older unfinished task(s); /tasks to see them)" if len(items) > 1 else ""
     console.print(f"\n[bold]Unfinished from last session:[/bold]{more}")
     console.print(escape(memory.describe_open_work(entry)))
     console.print("  1) Continue it now\n  2) Not now (you'll be asked again next time)\n  3) Discard it")
     answer = _ask_number("Choose", 3)
     if answer == 1:
-        resume = memory.RESUME_PREFIX + entry["task"] + "\n\n" + memory.describe_open_work(entry)
-        try:
-            app(["run", resume], standalone_mode=False)
-        except typer.Exit:
-            pass
+        _resume_open_work(entry)
     elif answer == 3:
         memory.clear_open_work(folder, entry["task"])
         console.print("[dim]Discarded.[/dim]")
     console.print()
 
 
+@app.command(name="tasks")
+def tasks_command(
+    action: str = typer.Argument(None, help="`clear` to discard all of it. Omit to list it."),
+) -> None:
+    """Show unfinished work left from earlier tasks that stopped before
+    finishing (Ctrl+C, a usage limit, the round ceiling, an error).
+
+    Different from /queue, which is tasks waiting behind the one running
+    right now, in *this* session -- /tasks is about *earlier*, already-ended
+    ones. Only the most recent is offered automatically at the start of a
+    session; this shows all of them (up to memory.MAX_OPEN_WORK), any time.
+    """
+    root = _session.root or Path.cwd().resolve()
+    items = memory.open_work(root)
+    if action == "clear":
+        if not items:
+            console.print("Nothing to clear.")
+            return
+        for entry in items:
+            memory.clear_open_work(root, entry["task"])
+        console.print(f"[success]✓[/success] Discarded {len(items)} unfinished task(s).")
+        return
+    if action:
+        console.print(f"[error]Unknown action {escape(action)!r}.[/error] Use /tasks, or /tasks clear.")
+        raise typer.Exit(code=1)
+    if not items:
+        console.print("No unfinished work from earlier tasks.")
+        return
+    for i, entry in enumerate(items, 1):
+        console.print(f"[bold]{i}.[/bold] {escape(memory.describe_open_work(entry))}\n")
+    if not sys.stdin.isatty():
+        return
+    try:
+        choice = console.input(f"Continue one of these now? Number 1-{len(items)}, or Enter to leave them: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        console.print()
+        return
+    if not choice:
+        return
+    if not choice.isdigit() or not (1 <= int(choice) <= len(items)):
+        console.print("[warning]Not a number from the list — nothing changed.[/warning]")
+        return
+    entry = items[int(choice) - 1]
+    console.print("  1) Continue it now\n  2) Discard it\n  3) Leave it")
+    answer = _ask_number("Choose", 3)
+    if answer == 1:
+        _resume_open_work(entry)
+    elif answer == 2:
+        memory.clear_open_work(root, entry["task"])
+        console.print("[dim]Discarded.[/dim]")
+
+
 def _offer_brief_update_at_start(folder: Path) -> None:
     """A drafted AGENTS.md update from the end of the last session (it
     changed files, so the project's scope may have moved). It used to wait,
-    with one dim line at exit, until the user happened to run /init, and the
-    brief drifted. Offer it now; approving still goes through the diff."""
+    with one dim line at exit, until the user happened to run /goals, and
+    the brief drifted. Offer it now; approving still goes through the diff."""
     if not brief.pending_path(folder).is_file() or not sys.stdin.isatty():
         return
     console.print(
         f"\n[bold]{brief.BRIEF_FILE} may be out of date.[/bold] Last session changed files, and a local model drafted an "
         "update: what's still true kept, what changed added."
     )
-    console.print("  1) Review it now (you'll see the diff)\n  2) Later (/init when you're ready)")
+    console.print("  1) Review it now (you'll see the diff)\n  2) Later (/goals when you're ready)")
     if _ask_number("Choose", 2) == 1:
-        try:
-            app(["init"], standalone_mode=False)
-        except typer.Exit:
-            pass
+        _write_goals(folder)
     console.print()
 
 
@@ -1958,8 +2062,8 @@ def _first_run_setup() -> bool:
     setup here rather than telling them to go and do it themselves."""
     console.print(
         "[bold]Nothing to work with yet.[/bold] Setup installs Ollama if you don't have it, has a model "
-        "picked for this machine's hardware, and saves how you want to reach a frontier model (or lets "
-        "you skip that and stay fully local)."
+        "picked for this machine's hardware, and saves how you want to reach a paid model (or lets "
+        "you skip that and stay fully open-weighted)."
     )
     console.print("  1) Set it up now\n  2) Not now")
     answer = _ask_number("Choose", 2)
@@ -2100,7 +2204,7 @@ def _save_memory_at_exit() -> None:
 def _draft_brief_update(root: Path, dispatcher, activity) -> None:
     """After a session that changed files, have the keeper draft an updated
     brief and leave it pending. Never written to the project here: the user
-    reviews it with /init, like any other change."""
+    reviews it with /goals, like any other change."""
     current = brief.existing_brief(root)
     keeper = memory.keeper(dispatcher)
     if not current or not _session.files_changed or keeper is None:
@@ -2113,7 +2217,7 @@ def _draft_brief_update(root: Path, dispatcher, activity) -> None:
         return
     if text and text.strip() != current.strip():
         brief.save_pending(root, text)
-        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE}; you'll be offered it next session (or /init).[/dim]")
+        console.print(f"[dim]{keeper.name} drafted an updated {brief.BRIEF_FILE}; you'll be offered it next session (or /goals).[/dim]")
 
 
 @app.command(name="memory")
@@ -2143,7 +2247,7 @@ def memory_command(
         raise typer.Exit(code=1)
 
     keeper = memory.keeper(_memory_dispatcher())
-    who = f"kept by {keeper.name} (local)" if keeper else "no local model available to keep it"
+    who = f"kept by {keeper.name} (open-weighted model)" if keeper else "no open-weighted model available to keep it"
     facts, summary = memory.list_facts(root), memory.load(root)
     if not facts and not summary:
         console.print(f"Nothing remembered for this folder yet ({who}). Memory is saved when you /exit.")
@@ -2195,9 +2299,9 @@ def summary() -> None:
 
 @app.command(name="queue")
 def queue_command(
-    action: str = typer.Argument(None, help="Omit to list queued tasks; `clear` to drop them."),
+    action: str = typer.Argument(None, help="`clear` to drop queued tasks. See /summary to list them."),
 ) -> None:
-    """Tasks waiting behind the current one."""
+    """Drop tasks waiting behind the current one (see /summary for the list)."""
     runner = _session.runner
     if runner is None or not runner.queue:
         console.print("The queue is empty. Type a task while one is running to queue it.")
@@ -2206,8 +2310,7 @@ def queue_command(
         runner.queue.clear()
         console.print("[success]✓[/success] Queue cleared.")
         return
-    for i, task in enumerate(runner.queue, 1):
-        console.print(f"  {i}. {escape(task)}", highlight=False)
+    console.print("The queue is shown in [bold]/summary[/bold]. Use [bold]/queue clear[/bold] to drop it.")
 
 
 @app.command()
@@ -2345,7 +2448,7 @@ def _answer_side_question(question: str) -> None:
     console.print(
         Panel(
             Markdown(text),
-            title=f"Answer — from {escape(entry.name)} (local, while the task keeps running)",
+            title=f"Answer — from {escape(entry.name)} (open-weighted model, while the task keeps running)",
             border_style="panel.border",
         )
     )
@@ -2359,32 +2462,32 @@ def explain_to_user(question: str, approval) -> None:
     if question.strip().lower().rstrip("?") not in ("why", "why this", "what", "explain", ""):
         if answer := _answer_with_local_model(question, approval):
             text, model = answer
-            console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (local)", border_style="panel.border"))
+            console.print(Panel(Markdown(text), title=f"Answer — from {escape(model)} (open-weighted model)", border_style="panel.border"))
 
 
-@app.command()
-def init(
-    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the brief from scratch instead of updating it."),
-) -> None:
-    """Write (or update) AGENTS.md: what this project is, for every future session.
-
-    A local model reads the project and what localforge remembers, and drafts
-    it; you see the diff and approve it like any other change.
+def _write_goals(folder: Path, refresh: bool = False, seed_task: str = "") -> bool:
+    """Draft (or update) AGENTS.md and write it through the normal diff
+    approval. Returns whether it was actually written, so a caller using
+    this as a side step -- the auto-offer on a project's first task, or the
+    mid-session refresh -- can just move on instead of aborting the task
+    over it. `seed_task` is the task the user just typed, when this runs
+    because that's the first task in a project with no AGENTS.md yet: the
+    goals should reflect what they actually asked for, not just a cold read
+    of the file tree.
     """
-    folder = Path.cwd().resolve()
     if not trust.is_trusted(folder) and not _ask_trust(folder):
         console.print("Not trusted — nothing written.")
-        raise typer.Exit(code=1)
+        return False
 
     activity = _session.make_activity("local model")
     dispatcher = _memory_dispatcher(activity.hooks())
     keeper = memory.keeper(dispatcher)
     if keeper is None:
         console.print(
-            "[error]No local model is available to write the brief.[/error] "
-            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /init again."
+            "[error]No local model is available to write the goals.[/error] "
+            "Install one (e.g. `ollama pull qwen2.5:7b`) and run /goals again."
         )
-        raise typer.Exit(code=1)
+        return False
 
     workspace = Workspace(folder, approver=activity.approve, scratch=_session.scratchpad_for(folder).root)
     current = "" if refresh else brief.existing_brief(folder)
@@ -2393,30 +2496,119 @@ def init(
         console.print("[dim]Using the update drafted at the end of the last session.[/dim]")
         text = pending
     else:
-        console.print(f"[dim]Reading the project with {escape(keeper.name)} (local)…[/dim]")
-        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder))
+        console.print(f"[dim]Reading the project with {escape(keeper.name)} (open-weighted model)…[/dim]")
+        context = brief.gather_context(workspace, memory.load(folder), memory.facts_for_prompt(folder), goal_hint=seed_task)
         try:
             text = brief.draft(keeper, context, current, context_limit=dispatcher.context_limit(keeper))
         except Exception as exc:  # noqa: BLE001 - reported plainly, nothing written
-            console.print(f"[error]Couldn't write the brief:[/error] {escape(str(exc))}")
-            raise typer.Exit(code=1) from None
+            console.print(f"[error]Couldn't write the goals:[/error] {escape(str(exc))}")
+            return False
         finally:
             activity.close()
     if not text:
-        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /init --refresh.[/warning]")
-        raise typer.Exit(code=1)
+        console.print(f"[warning]{escape(keeper.name)} returned nothing usable. Try /goals --refresh.[/warning]")
+        return False
 
     result = workspace.write_file(brief.BRIEF_FILE, text)
     console.print(result.splitlines()[0])
     if result.startswith(("Created ", "Updated ")):
         if _session.conversation is not None:
             _session.conversation.brief = brief.brief_for_prompt(folder)
-        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /init again to refresh it.[/dim]")
+        console.print(f"[dim]Every session in this folder now starts with {brief.BRIEF_FILE}. /goals again to refresh it.[/dim]")
         if (folder / brief.LEGACY_BRIEF).is_file():
             # The brief's old name: its content is in AGENTS.md now. Removing it
             # goes through the normal delete approval, like any other change.
             console.print(f"[dim]{brief.LEGACY_BRIEF} is the old name for this file, and AGENTS.md replaces it.[/dim]")
             console.print(workspace.delete_path(brief.LEGACY_BRIEF).splitlines()[0])
+        return True
+    return False
+
+
+def _busy_elsewhere() -> bool:
+    """A background task is running on its own thread right now -- used to
+    decide whether /goals must wait (drafting a new file/update needs the
+    local model and the diff-approval flow a running task also uses) or can
+    just show what's already there."""
+    runner = _session.runner
+    return runner is not None and runner.busy
+
+
+@app.command()
+def goals(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
+) -> None:
+    """Show, or write/update, AGENTS.md: this project's goals, for every future session.
+
+    A local model reads the project and what localforge remembers, and drafts
+    it; you see the diff and approve it like any other change.
+    """
+    folder = Path.cwd().resolve()
+    if _busy_elsewhere():
+        # Reported: /goals refused outright while a task ran, with no way to
+        # even see the project's stated objective in the meantime -- unlike
+        # /memory and /scratch, which stay readable and only block their
+        # mutating subactions. Drafting an update genuinely needs the local
+        # model a running task may be using, and --refresh means exactly
+        # that; but just showing the current file touches nothing a running
+        # task depends on, so there's no reason to make that wait too.
+        current = brief.existing_brief(folder)
+        if refresh or not current:
+            console.print("[warning]/goals has to wait until the current task is done[/warning] (/summary to check on it, /stop to end it).")
+            raise typer.Exit(code=1)
+        console.print(Panel(Markdown(current), title=f"{brief.BRIEF_FILE} (current)", border_style="panel.border"))
+        console.print("[dim]A task is running -- this is the file as it stands. /goals again once it's done to draft an update.[/dim]")
+        return
+    if not _write_goals(folder, refresh=refresh):
+        raise typer.Exit(code=1)
+
+
+@app.command(name="init", hidden=True)
+def init(
+    refresh: bool = typer.Option(False, "--refresh", help="Rewrite the goals from scratch instead of updating them."),
+) -> None:
+    """Alias for /goals (the old name)."""
+    goals(refresh=refresh)
+
+
+# Approved file changes since the goals file was last checked (offered or
+# drafted) before the mid-session refresh is offered again. Keeps the prompt
+# tied to how much has actually changed, not a fixed number of tasks.
+GOALS_REFRESH_THRESHOLD = 5
+
+
+def _offer_initial_goals(folder: Path, task: str) -> None:
+    """The first task in a project with no AGENTS.md yet is the moment the
+    user is actually telling localforge what this project is for -- so
+    offer to capture it right then, seeded with that task, instead of
+    waiting for someone to remember a separate /goals later."""
+    console.print(
+        f"\n[bold]No {brief.BRIEF_FILE} yet for this project.[/bold] Set its goals up now, using what you just "
+        "asked for? (a local model drafts it from the project plus your task; you'll see the diff)"
+    )
+    console.print("  1) Yes\n  2) Not now (/goals whenever you're ready)")
+    if _ask_number("Choose", 2) == 1:
+        _write_goals(folder, seed_task=task)
+    console.print()
+
+
+def _maybe_offer_goals_refresh(folder: Path) -> None:
+    """Ask whether the goals file should be refreshed once enough has
+    changed since it was last checked -- a real prompt during the session,
+    not only the pending-draft offer at the next session's start."""
+    if not brief.existing_brief(folder):
+        return
+    changed = _session.files_changed - _session.files_changed_at_last_goals_prompt
+    if changed < GOALS_REFRESH_THRESHOLD:
+        return
+    _session.files_changed_at_last_goals_prompt = _session.files_changed
+    console.print(
+        f"\n[bold]{brief.BRIEF_FILE} may be out of date[/bold] ({changed} file change(s) since it was last "
+        "checked). Update it now?"
+    )
+    console.print("  1) Review it now (you'll see the diff)\n  2) Not now")
+    if _ask_number("Choose", 2) == 1:
+        _write_goals(folder)
+    console.print()
 
 
 @app.command()
@@ -2490,7 +2682,7 @@ def usage() -> None:
     if not total.tasks:
         return
     table = Table(title=f"Usage history for {escape(root.name)}", title_justify="left")
-    for column in ("Span", "Tasks", "Local tokens", "Frontier tokens", "Cost"):
+    for column in ("Span", "Tasks", "Open-weighted", "Orchestrator", "Cost"):
         table.add_column(column, justify="right" if column != "Span" else "left")
     if previous and previous.tasks:
         table.add_row("Previous session", *_usage_row(previous))
@@ -2532,7 +2724,7 @@ def _print_session_usage_panel(entries: list[tuple[str, RunStats]]) -> None:
     cost = f" ({'; '.join(notes)})" if notes else ""
     lines = [
         *_work_split_lines(local, prompt, completion, ", ".join(models)),
-        f"  [dim]{prompt + completion} frontier tokens in all{cost}[/dim]",
+        f"  [dim]{prompt + completion} orchestrator tokens in all{cost}[/dim]",
     ]
     if len(models) == 1 and (saved := _savings_line(local, models[0])):
         lines.append(saved)
@@ -2565,7 +2757,7 @@ def _savings_line(local_tokens: int, frontier_model: str) -> str:
         price = None
     if not price:
         return ""
-    return f"[success]≈ ${local_tokens * price:.4f} saved[/success]: what {local_tokens} tokens of local output would have cost from {frontier_model}"
+    return f"[success]≈ ${local_tokens * price:.4f} saved[/success]: what {local_tokens} tokens of open-weighted output would have cost from {frontier_model}"
 
 
 def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None:
@@ -2573,7 +2765,7 @@ def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None
         *_work_split_lines(
             stats.local_tokens_generated, stats.frontier_prompt_tokens, stats.frontier_completion_tokens, frontier_model
         ),
-        f"  [dim]{stats.frontier_total_tokens} frontier tokens in all{_frontier_cost_note(stats)}[/dim]",
+        f"  [dim]{stats.frontier_total_tokens} orchestrator tokens in all{_frontier_cost_note(stats)}[/dim]",
     ]
     if saved := _savings_line(stats.local_tokens_generated, frontier_model):
         usage_lines.append(saved)
@@ -2581,16 +2773,16 @@ def _print_usage_panel(stats, frontier_model: str, title: str = "Usage") -> None
 
 
 def _work_split_lines(local: int, frontier_in: int, frontier_out: int, frontier_label: str) -> list[str]:
-    """Who did the work. The bar compares what each side *wrote*: local
+    """Who did the work. The bar compares what each side *wrote*: open-weighted
     output against the orchestrator's own output (plans, instructions,
-    answers). Comparing local output with everything the orchestrator
-    *read* made every task look frontier-heavy, since each step re-reads
+    answers). Comparing open-weighted output with everything the orchestrator
+    *read* made every task look orchestrator-heavy, since each step re-reads
     the whole conversation. What it read is shown on its own line: that's
-    where most frontier cost goes."""
+    where most orchestrator cost goes."""
     return [
         _usage_bar(local, frontier_out),
         "",
-        f"[success]■[/success] Written by local models: {local} tokens — never sent to or billed by the frontier API",
+        f"[success]■[/success] Written by open-weighted models: {local} tokens — never sent to or billed by a paid API",
         f"[warning]■[/warning] Written by the orchestrator ({frontier_label}): {frontier_out} tokens",
         f"  Orchestrator read: {frontier_in} tokens (its instructions, the conversation, file reads)",
     ]

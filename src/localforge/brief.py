@@ -2,22 +2,28 @@
 
 Claude Code has CLAUDE.md; this is the same idea, written by a local model
 rather than a paid one, in AGENTS.md -- the name other coding agents already
-read, so one file serves them all. `localforge init` reads the project (its
-layout, README, manifests, entry points) together with what localforge
-remembers of your sessions, and drafts `AGENTS.md`: the objective, how the project is
-built, how to run it, and the decisions worth knowing. Every later session
-starts with it, so the orchestrator doesn't have to rediscover the project
-(which costs frontier tokens every time).
+read, so one file serves them all. `localforge goals` (`/init` still works,
+as an alias) reads the project (its layout, README, manifests, entry
+points) together with what localforge remembers of your sessions, and
+drafts `AGENTS.md`: the objective, how the project is built, how to run it,
+and the decisions worth knowing. Every later session starts with it, so the
+orchestrator doesn't have to rediscover the project (which costs paid
+tokens every time). The first task in a project with no AGENTS.md yet
+offers to draft it right then, seeded with that task's own description
+(see `gather_context`'s `goal_hint`), rather than waiting for a separate
+manual step.
 
 It's a file in the project, so it's shared with the team and reviewed like
 any other change: it's written through the usual diff-and-approval path, and
 never rewritten silently. After a session that changed files, the keeper
-drafts an update and leaves it pending for `/init` to review.
+drafts an update and leaves it pending for `/goals` to review; the same
+review is also offered mid-session once enough has changed, not only at
+the next session's start.
 
 An existing AGENTS.md (the user's, or another tool's) is updated in place,
 through the diff, never overwritten unseen. A CLAUDE.md (Claude Code's) is
 read when there's no AGENTS.md, never written. LOCALFORGE.md is this file's
-old name: still read, and /init moves it to AGENTS.md.
+old name: still read, and /goals moves it to AGENTS.md.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from __future__ import annotations
 from pathlib import Path
 
 BRIEF_FILE = "AGENTS.md"
-LEGACY_BRIEF = "LOCALFORGE.md"  # the old name; read, and moved to AGENTS.md by /init
+LEGACY_BRIEF = "LOCALFORGE.md"  # the old name; read, and moved to AGENTS.md by /goals
 # Read (in this order) when there's no AGENTS.md; never written.
 OTHER_BRIEFS = (LEGACY_BRIEF, "CLAUDE.md", ".cursorrules", ".github/copilot-instructions.md")
 MANIFESTS = (
@@ -117,7 +123,7 @@ def section(text: str, names: tuple[str, ...]) -> str:
 def grounding_for_local(root: Path, limit: int = GROUNDING_CHARS) -> str:
     """The part of the brief every delegated task gets, so local models write
     code that fits the project without the orchestrator repeating it (which
-    costs paid tokens, and gets forgotten). From a brief /init wrote, just the
+    costs paid tokens, and gets forgotten). From a brief /goals wrote, just the
     sections above; from another tool's brief (CLAUDE.md, AGENTS.md), its
     opening, since its layout is unknown."""
     text = existing_brief(root)
@@ -158,10 +164,12 @@ def take_pending(root: Path) -> str:
     return text
 
 
-def gather_context(workspace, memory_text: str = "", facts: str = "") -> str:
+def gather_context(workspace, memory_text: str = "", facts: str = "", goal_hint: str = "") -> str:
     """What the local model is given: the project's own shape, plus what
     localforge remembers of the work (so the brief reflects the objective,
-    not just the file tree)."""
+    not just the file tree). `goal_hint` is the task the user just typed,
+    when this is a project's first goals draft -- the objective should
+    reflect what they actually asked for, not just a cold file-tree read."""
     root = Path(workspace.root)
     parts = [workspace.snapshot()]
 
@@ -179,6 +187,8 @@ def gather_context(workspace, memory_text: str = "", facts: str = "") -> str:
         if path.is_file():
             parts.append(f"{name}:\n{path.read_text(errors='replace')[:MANIFEST_CHARS]}")
 
+    if goal_hint:
+        parts.append("What you're being asked to build right now:\n" + goal_hint)
     if facts:
         parts.append("What localforge remembers about this project:\n" + facts)
     if memory_text:

@@ -9,7 +9,7 @@
                               name, description, type (user | feedback |
                               project | reference)
         usage.json          /usage history (usage_store.py)
-        brief-update.md     a drafted AGENTS.md update awaiting /init (brief.py)
+        brief-update.md     a drafted AGENTS.md update awaiting /goals (brief.py)
 
 It used to live under ~/.config/localforge/projects/<folder>-<hash>/; the
 user asked for it in the (trusted) project folder instead, so it moves with

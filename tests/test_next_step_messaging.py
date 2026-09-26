@@ -71,6 +71,25 @@ def test_doctor_ready_message_points_to_the_session(monkeypatch):
     assert "Ready to go. Type localforge to start a session." in out
 
 
+def test_doctor_also_shows_the_detected_hardware(monkeypatch):
+    """/scan was folded into /doctor so there's one command for "am I set up
+    and what have I got", not two."""
+    monkeypatch.setenv("LOCALFORGE_FRONTIER_MODEL", "ollama/qwen2.5:72b")
+    from localforge.hardware import HardwareProfile
+
+    hw = HardwareProfile(os="Linux", arch="x86_64", cpu_cores=8, ram_gb=64, free_disk_gb=500, gpus=[])
+    with (
+        patch.object(cli_module, "shutil") as mock_shutil,
+        patch.object(cli_module.OllamaBackend, "is_running", return_value=True),
+        patch.object(cli_module, "detect_hardware", return_value=hw),
+        patch.object(cli_module, "_installed_model_names", return_value={"qwen2.5:72b"}),
+    ):
+        mock_shutil.which.return_value = "/usr/bin/ollama"
+        out = _flat(CliRunner().invoke(cli_module.app, ["doctor"]).output)
+
+    assert "OS: Linux" in out and "RAM: 64" in out and "GPU: none detected" in out
+
+
 def test_no_code_still_tells_users_to_try_localforge_run():
     """The old `Try: localforge run "..."` next-step line must not creep back
     into any user-facing message.

@@ -1,10 +1,11 @@
 # localforge
 
-A frontier model (Claude, GPT, or any provider) orchestrates open-weight
-models running **locally** on your machine. `localforge` profiles your
-hardware, picks open-weight models that will actually run well on it, pulls
-them via [Ollama](https://ollama.com), and hands them subtasks — coding,
-documentation, and (future) image/video generation — while a frontier model
+An orchestrator model — a paid one (Claude, GPT, or any provider), or an
+open-weighted model itself — directs open-weight models running **locally**
+on your machine. `localforge` profiles your hardware, picks open-weight
+models that will actually run well on it, pulls them via
+[Ollama](https://ollama.com), and hands them subtasks — coding,
+documentation, and (future) image/video generation — while the orchestrator
 of your choice does the planning and delegation.
 
 No vendor lock-in: the orchestrator is called through
@@ -31,7 +32,7 @@ Type a task to build it, or /help for commands. /exit to leave.
 localforge>
 ```
 
-It works in the folder you start it in, like Claude Code. The frontier model
+It works in the folder you start it in, like Claude Code. The orchestrator
 reads your code (`read_file`, `list_files`, `search`), runs commands
 (`git clone`, tests, installs), keeps a visible plan, and hands the actual
 writing to your local models, which write whole files. Before any file is
@@ -62,7 +63,7 @@ flooding the screen with code. While it works you can:
   cached — the project brief, remembered facts, the last session's summary
   — by a local model, without waiting behind the running task. Anything
   that reads as an actual task (not a question) still queues as normal.
-- type another task: it's queued and runs next (`/queue` to see or clear)
+- type another task: it's queued and runs next (see it in `/summary`, `/queue clear` to drop it)
 - `/tell <note>`: add something to the task that's running now
 - `/stop` or Ctrl+C: stop the current task (the session stays open)
 - `/usage`, `/memory`, `/scratch` and the other read-only commands
@@ -82,20 +83,25 @@ and code before anything touches a real file. Moving a draft into the project
 shows you the diff first. It's deleted when the session ends (`/scratch` shows
 what's in it).
 
-**`localforge init`:** like Claude Code's `/init`, this writes a project
-brief — `AGENTS.md` (the file other coding agents read too): what the project
-is, how it's built, how to run and test it, and the decisions worth keeping.
-The local models get its stack, commands and conventions with every task, so
-the code they write fits the project. A **local** model writes it, from
-the project itself plus what localforge remembers of your sessions, and you
-approve the diff like any other change. Every later session starts with it,
-so the frontier model doesn't pay to rediscover your project each time. After
-a session that changed files, the local model drafts an update, and the next
-session offers it to you as a diff (or `/init` reviews it; `/init --refresh`
-rewrites from scratch). An existing `AGENTS.md` is updated in place; a
-`CLAUDE.md` is read when there's no `AGENTS.md`, and never written. It also
-has a "Definition of done": the exact commands that check a change, which
-localforge uses before a task is allowed to finish.
+**`localforge goals`** (`/init` still works, as an alias): like Claude Code's
+`/init`, this writes a project brief — `AGENTS.md` (the file other coding
+agents read too): what the project is, how it's built, how to run and test
+it, and the decisions worth keeping. The local models get its stack,
+commands and conventions with every task, so the code they write fits the
+project. A **local** model writes it, from the project itself plus what
+localforge remembers of your sessions, and you approve the diff like any
+other change. The first task in a project with no `AGENTS.md` yet offers to
+draft it right then, seeded with that task's own description, rather than
+waiting for you to remember `/goals` later. Every later session starts with
+it, so the orchestrator doesn't have to rediscover your project each time.
+After a session that changed files, the local model drafts an update, and
+the next session offers it to you as a diff (or `/goals` reviews it;
+`/goals --refresh` rewrites from scratch); mid-session, once enough files
+have changed, you're offered the same review without waiting for the next
+session. An existing `AGENTS.md` is updated in place; a `CLAUDE.md` is read
+when there's no `AGENTS.md`, and never written. It also has a "Definition of
+done": the exact commands that check a change, which localforge uses before
+a task is allowed to finish.
 
 **Memory:** localforge keeps memory per project, in the project's own
 `.localforge/` folder, so it moves with the folder. Git ignores that folder by
@@ -114,17 +120,18 @@ different attempts does it stop and tell you what's blocking. A brief
 connection hiccup with Claude is retried once. Ctrl+C stops the current task
 without ending the session.
 
-**Where the money goes:** the frontier model is told it's the expensive one:
-it plans, directs and checks, and the local models write. It doesn't paste
-files or code into its instructions: it names `context_files`, and localforge
-hands those files straight to the local model. What a local model writes
-comes back to the frontier model as a short summary, while you still see the
+**Where the money goes:** the orchestrator (a paid model, unless you're running
+fully open-weighted) is told it's the expensive one: it plans, directs and
+checks, and the open-weighted models write. It doesn't paste files or code
+into its instructions: it names `context_files`, and localforge hands those
+files straight to the open-weighted model. What an open-weighted model writes
+comes back to the orchestrator as a short summary, while you still see the
 full diff. Claude also orchestrates at medium thinking effort
 (`LOCALFORGE_ORCHESTRATOR_EFFORT` to change). `/usage` shows the last task, this session,
 the previous session and this project's all-time totals — how much of the
-work the local models did, and an estimate of what that would have cost from
-the frontier model. The totals are kept per project, so they survive closing
-the session.
+work the open-weighted models did, and an estimate of what that would have
+cost from a paid model. The totals are kept per project, so they survive
+closing the session.
 
 **Always visibly alive:** while a task runs, the bottom line shows a hammer
 and anvil working away, the model doing the work, how long it's been, a
@@ -132,7 +139,7 @@ running token count, and, if a step goes quiet, how long for:
 
 ```
 localforge> add a health endpoint
-  → coding → qwen2.5-coder:7b (local)
+  → coding → qwen2.5-coder:7b (open-weighted model)
           ⠴ Forging with qwen2.5-coder:7b… (5s · ↓ 62 tokens · working on coding, 12 tok/s) │ /summary · /stop
   │     app = FastAPI()
   │     @app.get("/health")
@@ -169,15 +176,18 @@ with no Claude/OpenAI/Gemini account and no billing, even if you set one up
 before. Models under ~7B work but plan unreliably, and localforge says so.
 If a cloud account hits its usage limit mid-session, `/model` is the way out.
 
-**Web access:** local models have no internet access. The frontier model does any research (`web_search`, `fetch_url`, built into localforge so it works the same with an API key or CLI login) and passes what it found into each subtask's instructions. When you orchestrate through a CLI login, that CLI's own tools (shell, file edits, web, connected apps) are switched off, and it runs in an empty scratch folder, so it can plan and delegate but can't touch your files. `fetch_url` refuses localhost and private-network addresses.
+**Web access:** open-weighted models have no internet access. The orchestrator does any research (`web_search`, `fetch_url`, built into localforge so it works the same with an API key or CLI login) and passes what it found into each subtask's instructions. When you orchestrate through a CLI login, that CLI's own tools (shell, file edits, web, connected apps) are switched off, and it runs in an empty scratch folder, so it can plan and delegate but can't touch your files. `fetch_url` refuses localhost and private-network addresses.
 
 While a task runs you see which local model each subtask goes to, and that model's output streams in live as it's generated, followed by its token count and speed.
 
 Type a task directly and it runs (shorthand for `/run <task>`), or use a
-slash command for anything else — `/usage`, `/setup`, `/doctor`, `/scan`,
-`/theme dark`, `/delete <names>`, `/help` for the full list, `/exit` to leave. Every
-slash command reuses the exact same code as its `localforge <command>`
-equivalent — there's no second implementation to drift out of sync.
+slash command for anything else — `/usage`, `/setup`, `/doctor` (also shows
+detected hardware), `/theme dark`, `/delete <names>`, `/help` for the full
+list, `/exit` to leave. Every slash command reuses the exact same code as
+its `localforge <command>` equivalent — there's no second implementation to
+drift out of sync. (`localforge scan` — hardware detection alone, no config
+checks — is still there as a plain CLI command, just left off the
+interactive `/help` menu since `/doctor` already covers it.)
 
 Piped/scripted invocations (`localforge | cat`, CI, no real terminal
 attached) skip the session and keep the old print-and-exit behavior, so
@@ -213,7 +223,7 @@ cd localforge
 
 That installs the CLI and nothing else. The first time you run `localforge`
 it offers to do the rest — install Ollama, pick a model for your hardware,
-and set up how you reach a frontier model (or stay fully local) — where you
+and set up how you reach a paid model (or stay fully open-weighted) — where you
 can see it and say no. (`./install.sh --setup` does that during install
 instead, and `localforge setup` can be run any time.)
 
@@ -253,14 +263,14 @@ work there without extra auth setup.
    (`src/localforge/catalog_data.yaml`) to recommend the best local model per
    task type — preferring a model you already have installed over a
    fresh download, and marking which ones are installed.
-3. **`localforge run "<task>"`** — the frontier model plans the task, calls
+3. **`localforge run "<task>"`** — the orchestrator plans the task, calls
    tools like `delegate_coding_task` / `delegate_docs_task`, and those calls
    are dispatched to the matched local model running under Ollama. Results
-   flow back into the frontier model's context until it produces a final
+   flow back into the orchestrator's context until it produces a final
    answer. Every delegation is printed as it happens, e.g.:
    ```
-   → delegating coding to qwen2.5-coder:14b (local, via ollama)
-   → delegating docs to mistral-nemo:12b (local, via ollama)
+   → delegating coding to qwen2.5-coder:14b (open-weighted model, via ollama)
+   → delegating docs to mistral-nemo:12b (open-weighted model, via ollama)
    ```
    so you always know which local model is doing the actual work for a
    given task, not just that "something local" is running.
@@ -274,7 +284,7 @@ what the task asked. This is caught at three levels:
 
 1. **A cheap heuristic tripwire in the dispatcher.** Every delegated result
    is checked for the obvious failure modes above before it's ever shown to
-   the frontier model. If flagged, `localforge` automatically retries once
+   the orchestrator. If flagged, `localforge` automatically retries once
    — with a different model if this hardware fits more than one for that
    modality, or the same model with reinforced instructions ("your previous
    attempt was rejected: ...") otherwise. You'll see both delegation
@@ -300,7 +310,7 @@ what the task asked. This is caught at three levels:
    on top. A failing verdict gets the same `[WARNING: ...]` treatment,
    with the judge's specific reason attached, and never blocks the write —
    you still see the diff and decide.
-3. **The frontier model is explicitly instructed not to trust delegated
+3. **The orchestrator is explicitly instructed not to trust delegated
    results at face value** — to check them against what it asked for,
    treat `[WARNING: ...]`-tagged results with extra scrutiny, and delegate
    a subtask again with clearer instructions rather than passing a bad
@@ -319,7 +329,7 @@ Each `localforge run` is stateless — it starts a fresh conversation with no
 memory of any previous invocation. *Within* one run, though, a long task
 can accumulate a lot of tool-result content (e.g. several rounds of
 generated code); left unchecked, that would grow the context sent to the
-frontier model — and the cost of every round — without bound. Once more
+orchestrator — and the cost of every round — without bound. Once more
 than `KEEP_RECENT_TOOL_RESULTS` (currently 4) tool results have
 accumulated, older ones are collapsed in place to a short placeholder
 (`[superseded: earlier result, N chars -- no longer kept in full in
@@ -335,31 +345,33 @@ answer. Inside a session, type `/usage`: you get the last task and, after two
 or more tasks, running totals for the whole session. For a one-off run, add
 `--usage` (`localforge run "..." --usage`). Failed runs still count toward
 `/usage`, because they spent real tokens too. The panel is a Claude-Code-style
-horizontal bar showing the local/frontier split at a glance, with the exact
-numbers below it:
+horizontal bar showing the open-weighted/paid split at a glance, with the
+exact numbers below it:
 
 ```
 ╭─────────────────────────────── Usage ────────────────────────────────╮
-│ ████████████████████████████████████░░░  92% local / 8% frontier    │
+│ ████████████████████████████████████░░░  92% open-weighted / 8% paid│
 │                                                                       │
-│ ■ Local models: 4200 tokens — never sent to or billed by the         │
-│   frontier API                                                       │
-│ ■ Frontier (claude-opus-5): 280 in + 70 out = 350 tokens ($0.0200)   │
+│ ■ Written by open-weighted models: 4200 tokens — never sent to or   │
+│   billed by a paid API                                               │
+│ ■ Written by the orchestrator (claude-opus-5): 70 tokens             │
+│   Orchestrator read: 280 tokens (its instructions, the conversation) │
+│   350 orchestrator tokens in all ($0.0200)                           │
 ╰────────────────────────────────────────────────────────────────────────╯
 ```
 
-(green segment/marker = local, yellow = frontier)
+(green segment/marker = open-weighted, yellow = paid orchestrator)
 
-The frontier numbers are real: token counts come from the API response's
-own `usage` field, and the dollar cost is computed by LiteLLM's own pricing
-table (`litellm.completion_cost`) for whichever model you actually used —
-not a guess. The "local models" figure comes from Ollama's own `eval_count`
-for each generation, summed across every subtask delegated during the run;
-it's the clearest proxy for "how much work happened without touching the
-frontier API at all" (and therefore without frontier tokens/cost for it),
-even though we don't attach a speculative dollar figure to what it "would
-have cost" on the frontier side, since that depends on a model/pricing
-assumption we can't verify.
+The orchestrator's numbers are real: token counts come from the API
+response's own `usage` field, and the dollar cost is computed by LiteLLM's
+own pricing table (`litellm.completion_cost`) for whichever model you
+actually used — not a guess. The "open-weighted models" figure comes from
+Ollama's own `eval_count` for each generation, summed across every subtask
+delegated during the run; it's the clearest proxy for "how much work
+happened without touching a paid API at all" (and therefore without any
+orchestrator tokens/cost for it), even though we don't attach a speculative
+dollar figure to what it "would have cost" from the orchestrator, since that
+depends on a model/pricing assumption we can't verify.
 
 ### Managing disk space
 
@@ -387,9 +399,9 @@ was installed) and wipe `~/.ollama` entirely, for a fully clean slate; this
 is asked about separately even without the flag, so it's never bundled
 into a single "yes to everything."
 
-### Choosing a frontier model
+### Choosing an orchestrator model
 
-`setup` always asks explicitly which frontier provider
+`setup` always asks explicitly which orchestrator provider
 (Anthropic/OpenAI/Gemini, **or `local`**) to use — localforge never
 silently guesses this from whatever API key happens to already be in your
 environment (if you have multiple keys set for unrelated tools, that
@@ -444,7 +456,7 @@ provider's API key page (Anthropic's Console, OpenAI's Platform dashboard,
 or Google AI Studio) so you don't have to go find it, then you paste the
 key in as usual.
 
-**The frontier/orchestrator model doesn't have to be a proprietary API at
+**The orchestrator doesn't have to be a proprietary API at
 all.** Picking provider `local` lets an open-weight model served by Ollama
 be the orchestrator itself — no API key, no per-token cost, fully
 self-hosted. Model ids for this provider use LiteLLM's `ollama/<model>`
@@ -479,9 +491,9 @@ picks with an **Installed** column.
 During `setup`, model selection isn't purely rule-based: the
 catalog is first filtered down to only the models that actually fit this
 machine's RAM, VRAM, *and* free disk space (`catalog.candidates()`), and
-then the frontier model itself is asked to pick the best one per modality
+then the orchestrator itself is asked to pick the best one per modality
 from that filtered list (`advisor.recommend_models()`), weighing quality
-against how much headroom each choice leaves. The frontier model can only
+against how much headroom each choice leaves. The orchestrator can only
 choose from models that already passed the hardware/disk check — it can't
 invent one we have no backend for — and if the call fails for any reason
 (no network, bad key, malformed response), it falls back to the same
@@ -500,10 +512,10 @@ deterministic highest-quality-tier pick `localforge models` uses on its own.
 4. Installs `localforge` as a standalone CLI tool onto your `PATH` (no
    virtualenv to activate, no `pip` to manage — uv even fetches a matching
    Python for you).
-5. Asks which frontier model provider to use and for its API key (saving
-   both to `~/.config/localforge/config.env` so you only enter it once),
-   then installs and starts [Ollama](https://ollama.com) if it isn't
-   already, and has the frontier model itself pick which local models to
+5. Asks which orchestrator provider to use and for its API key if it needs
+   one (saving both to `~/.config/localforge/config.env` so you only enter
+   it once), then installs and starts [Ollama](https://ollama.com) if it
+   isn't already, and has the orchestrator itself pick which local models to
    pull — see "Hardware-aware model selection" below.
 
 After that, `localforge` just works in any terminal — no repeated setup, no
@@ -540,7 +552,7 @@ localforge doctor                                # is everything set up correctl
 localforge scan                                  # what hardware do I have?
 localforge models                                # what will run well on it?
 localforge run "Build a todo REST API with docs" # do the thing
-localforge run "..." --model gpt-5               # use a different frontier model
+localforge run "..." --model gpt-5               # use a different orchestrator model
 localforge run "..." --usage                     # also print token usage (in a session: /usage)
 localforge installed                             # what local models are actually on disk, and how big
 localforge delete                                # pick installed model(s) to delete, review, then confirm
@@ -574,7 +586,7 @@ and applies immediately to the running command as well as every future one.
   approximate download size; `candidates()` filters to models that fit
   RAM/VRAM/disk, `best_match()` picks the highest-quality one
   deterministically.
-- `advisor.py` — lets the frontier model pick among `candidates()` for each
+- `advisor.py` — lets the orchestrator pick among `candidates()` for each
   modality (via a tool call constrained with a JSON-schema `enum`, so it
   can't hallucinate a model outside the catalog), falling back to
   `best_match()` on any failure.
@@ -583,14 +595,14 @@ and applies immediately to the running command as well as every future one.
   response (used to drive an actual download progress bar in `setup`). `comfyui.py` is a stub
   reserved for image/video generation, since those are job-based (submit →
   poll → fetch file) rather than a single request/response like text.
-- `tools.py` — turns catalog + backends into tool schemas the frontier model
+- `tools.py` — turns catalog + backends into tool schemas the orchestrator
   can call, and dispatches each call to the right local model. Also resolves
   the judge model (`Dispatcher.judge()`) and runs it against delegated
   output, in parallel with the syntax check for file writes.
 - `orchestrator.py` — the plan → delegate → collect loop, built directly on
   LiteLLM rather than a multi-agent framework, so the delegation logic stays
   simple, provider-agnostic, and easy to step through.
-- `config.py` — persists setup choices (API keys, chosen frontier model,
+- `config.py` — persists setup choices (API keys, chosen orchestrator model,
   theme) to `~/.config/localforge/config.env`, loaded automatically on
   every CLI invocation without overriding variables already set in the
   shell. `FRONTIER_PROVIDERS["local"]` maps to `None` (no API key) for the

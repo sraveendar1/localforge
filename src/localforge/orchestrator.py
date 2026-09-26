@@ -88,6 +88,21 @@ WRAP_UP_ROUNDS = 3
 # times; after that the orchestrator is told to try something else.
 MAX_ATTEMPTS_PER_CALL = 3
 
+# read_file/search/list_files, in that order of how often this actually
+# fires: re-reading the same file or re-searching the same pattern.
+EXPLORE_TOOLS = ("read_file", "search", "list_files")
+# Reported (with a screenshot): dozens of read_file/search calls cycling over
+# the same handful of files with no edit in between, until the task ran out
+# of rounds having made no real progress. `done_calls` only catches an EXACT
+# repeat (identical name + args), so re-reading the same file at a different
+# offset, or re-searching with a slightly different pattern, was invisible to
+# it -- and the checkpoint's own "no progress" check doesn't catch this
+# either, since each of those calls is a distinct, successful call and counts
+# toward `progress` just like a real edit would. This is a separate, cheap
+# counter keyed on the *target* (the path or pattern), not the exact call, so
+# it catches exactly the churn the exact-repeat guard can't.
+EXPLORE_REPEAT_THRESHOLD = 3
+
 # How many of the most recent tool results to keep in full. Once a task runs
 # long enough to accumulate more than this many, older ones are collapsed to
 # a short placeholder in place -- otherwise a long task's full history
@@ -567,6 +582,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     done_calls: dict[tuple[str, str], str] = {}  # successful calls only
     failures: dict[tuple[str, str], int] = {}  # failed attempts per identical call
     last_error: dict[tuple[str, str], str] = {}
+    explore_counts: dict[str, int] = {}  # "read_file:src/x.py" -> times explored since the last real change
     used_tools = nudged = False
     progress = 0  # new, successful steps since the last checkpoint
     task = _Progress()
@@ -634,6 +650,20 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                     error = str(exc) or type(exc).__name__
                     result = None
                 if error is None:
+                    if name in EXPLORE_TOOLS:
+                        target = args.get("pattern") if name == "search" else (args.get("path") or "(whole project)")
+                        explore_key = f"{name}:{target}"
+                        explore_counts[explore_key] = explore_counts.get(explore_key, 0) + 1
+                        if explore_counts[explore_key] >= EXPLORE_REPEAT_THRESHOLD:
+                            result += (
+                                f"\n\n[Note: {name} on {target!r} has now been called "
+                                f"{explore_counts[explore_key]} times this task with no file change in between. "
+                                "If you already have what you need, act on it now (edit_file or a delegate_*_task) "
+                                "instead of checking it again; if something specific is still unclear, say what's "
+                                "missing rather than re-reading or re-searching the same thing.]"
+                            )
+                    else:
+                        explore_counts.clear()  # a real step happened -- exploration gets a fresh slate
                     done_calls[key] = result  # only successes are cached; failures may be retried
                     progress += name != "update_todos"
                 else:

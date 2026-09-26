@@ -331,13 +331,33 @@ def test_stopping_while_paused_cancels_the_task():
     assert runner.state.waiting_for == ""
 
 
-def test_model_is_allowed_while_paused_but_not_while_working():
+def test_model_is_allowed_while_paused_on_a_limit():
     from localforge import repl
 
     runner = MagicMock()
     runner.approval = None
     runner.busy = True
     runner.waiting = True
+    reader = MagicMock()
+    reader.read.side_effect = ["/model ollama/qwen2.5:7b", "/exit"]
+    app = MagicMock()
+    repl._read_eval(app, MagicMock(), reader, runner)
+    app.assert_called_once_with(["model", "ollama/qwen2.5:7b"], standalone_mode=False)
+
+
+def test_model_is_also_allowed_while_a_task_is_just_ordinarily_running():
+    """Reported: "/model is not able to switch immediately" -- it used to be
+    fully blocked while a task was busy, with an exception carved out only
+    for the paused-on-a-usage-limit case. Switching model never touches
+    state a running task holds a live reference to (it's just an env var
+    write), so there's no reason to make the user wait for the task to
+    finish before it takes effect for the next one."""
+    from localforge import repl
+
+    runner = MagicMock()
+    runner.approval = None
+    runner.busy = True
+    runner.waiting = False  # ordinarily running, not paused on a limit
     reader = MagicMock()
     reader.read.side_effect = ["/model ollama/qwen2.5:7b", "/exit"]
     app = MagicMock()

@@ -27,10 +27,19 @@ import time
 from dataclasses import dataclass, field
 from collections.abc import Callable
 
+from localforge import local_transport
+
 # Just a small spinner: it has to keep moving so a slow step doesn't look
 # like a hang, but the line stays plain text in the session's own colors.
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 SPINNER_ASCII = "|/-\\"
+
+
+def _orchestrator_kind(model: str) -> str:
+    """"Paid model" or "Open-weighted model", for /summary -- the
+    orchestrator itself can be either (an ollama/... id), unlike a
+    delegated worker model, which is always open-weighted."""
+    return "Open-weighted model" if model.startswith(local_transport.PREFIXES) else "Paid model"
 # After this long with no new step, the toolbar says how long it's been --
 # "still working" beats a frozen-looking line.
 QUIET_AFTER_SECONDS = 20
@@ -334,12 +343,12 @@ class TaskRunner:
             s = self.state
             lines = [
                 f"Task: {s.task}  ({_elapsed(s.started)}, ↓ {_thousands(s.tokens())} tokens)",
-                f"Orchestrator: {s.orchestrator} — {s.phase or 'starting'}",
+                f"Orchestrator ({_orchestrator_kind(s.orchestrator)}): {s.orchestrator} — {s.phase or 'starting'}",
             ]
             if s.waiting_for:
                 lines.append(f"Paused: {s.waiting_for} (the task continues by itself; /model to switch now)")
             if s.local_model:
-                lines.append(f"Local model: {s.local_model} {s.local_what} — {s.local_tokens} tokens so far")
+                lines.append(f"Open-weighted model: {s.local_model} {s.local_what} — {s.local_tokens} tokens so far")
             elif s.downloading:
                 lines.append(s.downloading)
             if self.approval is not None:

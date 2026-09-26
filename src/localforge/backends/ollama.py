@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections.abc import Callable
 
@@ -17,6 +18,23 @@ from localforge.backends.base import BackendResult
 ProgressCallback = Callable[[dict], None]
 
 OLLAMA_BASE_URL = "http://localhost:11434"
+
+# Serializes every generate() call in this process against Ollama's own
+# server. Reported bug: a side question asked mid-task (see
+# background.TaskRunner.ask_side_question, which fires on its own thread by
+# design, deliberately concurrent with the running task) sent a *second*
+# concurrent request to Ollama for a local-model call. On the kind of
+# memory-constrained machine this project targets (see catalog.py's balanced
+# selection notes -- often just one model fits at all), Ollama can't hold two
+# models' weights at once and evicts whichever is already loaded to make room
+# for the new request, which yanks the model out from under the running
+# task's in-flight generate() call mid-stream and surfaces as a hard failure
+# ("the task stops"), not a graceful retry. A single process-wide lock around
+# the actual request makes a second call wait its turn instead of racing the
+# first one -- exactly what "fire-and-forget, answered whenever it's ready"
+# already promises for a side question, just actually enforced. local_transport.py's
+# own /api/chat calls (a local orchestrator) share this same lock for the same reason.
+GENERATE_LOCK = threading.Lock()
 
 
 class OllamaNotRunningError(RuntimeError):
@@ -229,26 +247,32 @@ class OllamaBackend:
         """Run the model. With `on_token`, the reply is streamed and each chunk
         is handed over as Ollama produces it, so the user watches the local
         model work instead of staring at a spinner until it's done.
+
+        Serialized process-wide via GENERATE_LOCK (see its comment above):
+        two concurrent calls can otherwise make Ollama evict one model's
+        weights to load the other, which fails whichever call was already
+        mid-stream.
         """
-        if on_token is not None:
-            return self._generate_streaming(model_name, prompt, on_token, **kwargs)
-        options = _with_context(prompt, MAX_QUIET_OUTPUT_TOKENS, kwargs, self.trained_context(model_name), model_name)
-        with self._client(GENERATE_TIMEOUT) as client:
-            resp = client.post(
-                "/api/generate",
-                json={"model": model_name, "prompt": prompt, "stream": False, "options": options, **kwargs},
-            )
-            if (error := error_from(resp, model_name)) is not None:
-                raise error
-            data = resp.json()
-            # "eval_count" is Ollama's count of tokens it generated for this
-            # response -- used for usage metrics, not for the API call itself.
-            return {
-                "type": "text",
-                "content": data["response"],
-                "tokens": data.get("eval_count", 0),
-                "truncated": data.get("done_reason") == "length",
-            }
+        with GENERATE_LOCK:
+            if on_token is not None:
+                return self._generate_streaming(model_name, prompt, on_token, **kwargs)
+            options = _with_context(prompt, MAX_QUIET_OUTPUT_TOKENS, kwargs, self.trained_context(model_name), model_name)
+            with self._client(GENERATE_TIMEOUT) as client:
+                resp = client.post(
+                    "/api/generate",
+                    json={"model": model_name, "prompt": prompt, "stream": False, "options": options, **kwargs},
+                )
+                if (error := error_from(resp, model_name)) is not None:
+                    raise error
+                data = resp.json()
+                # "eval_count" is Ollama's count of tokens it generated for this
+                # response -- used for usage metrics, not for the API call itself.
+                return {
+                    "type": "text",
+                    "content": data["response"],
+                    "tokens": data.get("eval_count", 0),
+                    "truncated": data.get("done_reason") == "length",
+                }
 
     def _generate_streaming(self, model_name: str, prompt: str, on_token: Callable[[str], None], **kwargs) -> BackendResult:
         """Stream a generation, with guards so a stuck model can't hang the

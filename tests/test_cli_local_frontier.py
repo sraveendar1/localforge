@@ -83,7 +83,8 @@ def test_doctor_reports_configured_for_local_frontier_without_any_api_key(monkey
         mock_shutil.which.return_value = "/usr/bin/ollama"
         result = CliRunner().invoke(cli_module.app, ["doctor"])
 
-    assert "Orchestrator: qwen2.5:72b (local, via Ollama — no account needed)" in result.output
+    out = " ".join(result.output.split())
+    assert "Orchestrator: qwen2.5:72b (open-weighted model, via Ollama — no account needed)" in out
 
 
 def test_doctor_local_orchestrator_ignores_a_stale_claude_login_but_needs_the_model(monkeypatch):
