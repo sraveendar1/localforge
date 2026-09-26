@@ -271,9 +271,25 @@ about the orchestrator, delegation, or approvals is reimplemented for it.
 
 ### Installing the desktop app
 
-There's no downloadable installer yet (see "Packaging a standalone app"
-below for where that's headed) — for now, building it yourself is
-straightforward:
+**The easy way:** grab the installer for your OS from the
+[Releases page](https://github.com/sraveendar1/localforge/releases) —
+a `.dmg` for macOS (Apple Silicon) or an `.AppImage`/`.deb` for Linux.
+No Rust, Node, Python, or `uv` needed on your machine; the whole CLI is
+bundled inside as a standalone binary (see "Packaging a standalone app"
+below). Open the `.dmg` and drag **LocalForge Desktop** into
+`/Applications`, or make the `.AppImage` executable and run it. Windows
+isn't published yet — see the note in `.github/workflows/release.yml`.
+This is also what makes `/desktop`/`localforge desktop` (below) work: it
+looks for the app installed exactly this way.
+
+Releases are built automatically by
+[`.github/workflows/release.yml`](.github/workflows/release.yml) whenever
+a maintainer pushes a `v*` tag (`git tag v0.2.0 && git push origin v0.2.0`),
+so a new tag is all it takes to publish a new installer for every
+supported OS — no one has to build it by hand.
+
+**Building it yourself** (for development, or an OS/architecture without a
+published release):
 
 ```bash
 # 1. Install the localforge CLI first -- the app spawns it as a backend.
@@ -308,13 +324,15 @@ prerequisites guide](https://v2.tauri.app/start/prerequisites/) if
 specific checkout/binary instead of whatever `localforge` resolves to on
 your `PATH` — useful when developing the Python and desktop sides together.
 
-**Packaging a standalone app (in progress):** `scripts/build_sidecar.sh`
-packages the entire `localforge` CLI (Python interpreter and all) into one
-standalone binary via [PyInstaller](https://pyinstaller.org), which Tauri
-then embeds directly into the built app as a "sidecar" — the end goal being
-a single downloaded app that needs no separate CLI install at all. Run it
-once per OS you're building for (PyInstaller doesn't cross-compile) before
-`npm run tauri build`:
+**Packaging a standalone app:** `scripts/build_sidecar.sh` packages the
+entire `localforge` CLI (Python interpreter and all) into one standalone
+binary via [PyInstaller](https://pyinstaller.org), which Tauri then embeds
+directly into the built app as a "sidecar" — so a downloaded release needs
+no separate CLI install at all. This is exactly what
+`.github/workflows/release.yml` runs before `tauri build` for every
+published release; run it yourself the same way before your own
+`npm run tauri build`, once per OS you're building for (PyInstaller doesn't
+cross-compile):
 
 ```bash
 ./scripts/build_sidecar.sh      # from the repo root; needs uv

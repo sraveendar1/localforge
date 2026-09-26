@@ -1,0 +1,111 @@
+name: Release desktop app
+
+# Builds real, double-clickable installers (.dmg, .msi, .AppImage/.deb) for
+# the desktop app on every OS and publishes them to a GitHub Release --
+# "simpler install" for an end user then means "open the Releases page,
+# download the file for your OS, run it", no Rust/Node/uv toolchain needed
+# on their machine at all (that's only needed here, in CI, once per release).
+#
+# Each OS builds its own PyInstaller sidecar first (scripts/build_sidecar.sh
+# -- PyInstaller doesn't cross-compile, so this can't be done from one
+# runner for every OS) and only then runs the Tauri build, since
+# tauri.conf.json's externalBin requires that binary to already exist on
+# disk (see scripts/build_sidecar.sh's own comment, and the "resource path
+# `binaries/localforge-...` doesn't exist" failure this exact workflow
+# exists to stop happening to anyone building it by hand).
+#
+# macOS here targets Apple Silicon only (the current macos-latest runner's
+# native architecture) -- an Intel Mac build would need its own
+# macos-13 (x86_64) matrix entry, left out for now since PyInstaller can't
+# cross-build it from an arm64 runner either.
+#
+# Windows is deliberately left out of this first version: Windows support
+# hasn't been tested at all yet (see the CLAUDE.md Windows-compatibility
+# audit -- termios/chmod calls are guarded, but run_command's shell=True
+# spawns cmd.exe, not a POSIX shell, which is untested), and
+# scripts/build_sidecar.sh's own sanity check
+# (`env -i HOME=... PATH=/usr/bin:/bin ...`) hard-codes a Unix PATH that
+# doesn't exist on Windows -- so adding a Windows job here would likely
+# just be the first red build. Add a `windows-latest` matrix entry (with
+# `shell: bash` on the sidecar-build and uv-install steps, since Windows
+# runners don't have bash by default outside Git Bash) once the CLI itself
+# has been verified on Windows.
+#
+# Never verified by actually running: GitHub Actions minutes and a real
+# published release are both real-world side effects this environment has
+# no way to trigger or observe, so treat the first real run of this
+# workflow as the first time any of it has executed for real, the same way
+# the local sidecar/tauri build was the first time *that* had run for real.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            name: macOS (Apple Silicon)
+          - platform: ubuntu-22.04
+            name: Linux
+
+    runs-on: ${{ matrix.platform }}
+    name: ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies (Tauri v2 + webkit)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build the localforge sidecar
+        run: bash scripts/build_sidecar.sh
+
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build and publish the desktop app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: "LocalForge Desktop ${{ github.ref_name }}"
+          releaseBody: "See the [README](https://github.com/${{ github.repository }}/blob/main/README.md#installing-the-desktop-app) for what's new and how to install."
+          releaseDraft: true
+          prerelease: false
