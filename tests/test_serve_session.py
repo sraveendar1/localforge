@@ -2,6 +2,7 @@ import io
 import json
 import types
 
+from localforge import trust
 from localforge.serve import StdioServer, Scratchpad
 
 
@@ -10,6 +11,7 @@ def make_server(tmp_path, **kwargs):
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     kwargs.setdefault("conversation", object())
+    trust.trust(tmp_path)  # these tests are about the protocol, not the trust gate itself
     server = StdioServer(tmp_path, "test-model", out=out, run_fn=lambda *args: None, scratch_root=scratch, **kwargs)
     return server, out
 

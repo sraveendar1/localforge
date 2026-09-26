@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, memory
+from localforge import brief, memory, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -124,6 +124,16 @@ class StdioServer:
             self._scratchpad.ensure()
             self.scratch_root = self._scratchpad.root
         self.conversation = conversation if conversation is not None else Conversation(memory=memory.load(self.root), facts=memory.facts_for_prompt(self.root))
+        # The terminal REPL asks this interactively before a session ever
+        # starts (trust.py's decide()/apply_choice() were written to be
+        # shared with "a native desktop front end" -- see its docstring --
+        # but nothing actually called them here, so the desktop app just
+        # failed outright with "run localforge there once interactively",
+        # forcing a trip to a terminal for every new folder). Here it's
+        # resolved over the protocol instead: serve_forever() tells the
+        # frontend once at startup, handle() answers it, and everything
+        # else is a no-op until it's settled.
+        self.trusted = trust.is_trusted(self.root)
         self._write_lock = threading.Lock()
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
@@ -277,6 +287,17 @@ class StdioServer:
 
     def handle(self, message: dict) -> bool:
         message_type = message.get("type")
+        if message_type == "shutdown":
+            return False
+        if message_type == "trust_response":
+            decision = "yes" if message.get("trust") else "no"
+            self.trusted = trust.apply_choice(self.root, decision)
+            self.emit("trust_result", trusted=self.trusted, folder=str(self.root))
+            # "No" ends the session, same as the terminal prompt.
+            return self.trusted
+        if not self.trusted:
+            self.emit("trust_required", folder=str(self.root))
+            return True
         if message_type == "user_message":
             text = str(message.get("text", "")).strip()
             image = _parse_image(message.get("image"))
@@ -382,8 +403,6 @@ class StdioServer:
                 ram_used_gb = 0
                 ram_total_gb = 0
             self.emit('system_stats', hardware=_hardware(), cpu_percent=cpu_percent, ram_used_gb=ram_used_gb, ram_total_gb=ram_total_gb)
-        elif message_type == "shutdown":
-            return False
         else:
             self.emit("error", message=f"Unknown message type: {message_type}")
         return True
@@ -608,6 +627,8 @@ class StdioServer:
 
     def serve_forever(self) -> None:
         self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output)
+        if not self.trusted:
+            self.emit("trust_required", folder=str(self.root))
         try:
             for line in self.inp:
                 line = line.strip()
@@ -631,9 +652,37 @@ class StdioServer:
         self._decline_all_pending()
         if self._worker is not None:
             self._worker.join(timeout=5)
+        self._save_memory_at_exit()
         if self._scratchpad is not None:
             self._scratchpad.remove()
             self._scratchpad = None
+
+    def _save_memory_at_exit(self) -> None:
+        """Mirrors cli.py's `_save_memory_at_exit()` -- the desktop app has
+        no `/exit`, so this is the only place a session ends. Before this,
+        switching folders (or quitting) just killed the backend process
+        outright (lib.rs's `kill_session()` writes `{"type": "shutdown"}`
+        then kills the child), so even the one piece of cross-session state
+        the CLI gives a folder -- the condensed session note and remembered
+        facts, see memory.py -- was silently lost every time, on top of the
+        raw chat transcript that was never going to survive a process restart
+        anyway (see Conversation's own docstring: no cross-run persistence
+        by design). Reported as "when I switch folders the chats are
+        completely lost" -- this at least means the *next* time you open
+        that folder, the orchestrator still has last session's summary and
+        anything it was told to remember, same as ending a terminal session
+        with /exit already gave the CLI.
+        """
+        try:
+            if not any(m.get("role") == "user" for m in self.conversation.messages[1:]):
+                return
+            dispatcher = Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()), hooks=self._hooks())
+            if memory.keeper(dispatcher) is None:
+                return
+            memory.extract_facts(self.conversation, dispatcher, self.root, self._hooks())
+            memory.compact(self.conversation, dispatcher, self._hooks(), keep_recent_turns=0, root=self.root)
+        except Exception:  # noqa: BLE001 - best-effort only; never block shutdown over this
+            pass
 
 def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False, stream_output: bool = False) -> None:
     real_stdout = sys.stdout

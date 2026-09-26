@@ -1029,8 +1029,12 @@ def serve(
     if cli_provider and not cli_transport.available(cli_provider):
         fail(cli_transport.requirements_message(cli_provider))
     folder = Path.cwd().resolve()
-    if not trust.is_trusted(folder):
-        fail(f"{folder} isn't a trusted folder. Run `localforge` there once interactively to trust it.")
+    # Trust is no longer decided here: an untrusted folder used to make this
+    # command fail outright with "run localforge there once interactively",
+    # forcing a trip to a terminal before the desktop app could ever open a
+    # new folder. serve_stdio()'s StdioServer now asks over the protocol
+    # itself (trust_required / trust_response), same as the terminal REPL's
+    # prompt but rendered by the GUI instead of blocking on stdin.
     serve_stdio(folder, frontier_model, cli_provider, auto_approve=yes)
 
 

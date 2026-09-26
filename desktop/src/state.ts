@@ -49,6 +49,7 @@ export type ChatState = {
   scratchFiles: ScratchFile[];
   queue: string[];  // New queue field
   streamOutput: boolean;  // New ChatState field
+  trustRequired: string | null;  // folder path awaiting a trust decision, or null
 };
 export const initialState: ChatState = {
   messages: [],
@@ -73,7 +74,8 @@ export const initialState: ChatState = {
   memory: { facts: [], narrative: "", goal: "" },
   scratchFiles: [],
   queue: [],  // Initialize queue to an empty array
-  streamOutput: false  // Initialize streamOutput to false
+  streamOutput: false,  // Initialize streamOutput to false
+  trustRequired: null
 };
 
 function toUsageTotals(raw: any): UsageTotals | null {
@@ -139,6 +141,13 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
       return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
+    case "trust_required":
+      return { ...state, trustRequired: String(ev.folder ?? "") };
+    case "trust_result":
+      // A "no" ends the session -- the backend closes and localforge-exit
+      // (App.tsx) sets connected: false, so there's nothing to clear here
+      // beyond the prompt itself.
+      return { ...state, trustRequired: ev.trusted ? null : state.trustRequired };
     case "run_started":
       return { ...state, running: true, status: "", messages: [...state.messages, { role: "assistant", text: "", items: [] }] };
     case "frontier_round":

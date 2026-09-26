@@ -7,6 +7,7 @@ import json
 import threading
 import time
 
+from localforge import trust
 from localforge.orchestrator import OrchestrationError
 from localforge.serve import StdioServer
 
@@ -31,6 +32,7 @@ def make_server(tmp_path, run_fn=None, **kwargs):
     scratch = tmp_path / "scratch"
     scratch.mkdir(exist_ok=True)
     kwargs.setdefault("conversation", object())
+    trust.trust(tmp_path)  # these tests are about the protocol, not the trust gate itself
     server = StdioServer(tmp_path, "test-model", out=out, run_fn=run_fn or _done, scratch_root=scratch, **kwargs)
     return server, out
 

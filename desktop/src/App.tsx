@@ -106,7 +106,7 @@ function App() {
 
   function submit() {
     const text = input.trim();
-    if (!text || !chat.connected) return;
+    if (!text || !chat.connected || chat.trustRequired) return;
     setChat(s => addUserMessage(s, text, attachedImage?.dataUrl));
     const image = attachedImage ? { mime_type: attachedImage.mimeType, data: attachedImage.data } : undefined;
     setInput("");
@@ -122,7 +122,11 @@ function App() {
   const lastAssistant = chat.messages.map(m => m.role).lastIndexOf("assistant");
 
   useEffect(() => {
-    if (chat.connected) {
+    // Held back until any trust prompt is resolved -- the backend no-ops
+    // everything except trust_response until then, so there's nothing yet
+    // for these to usefully fetch, and firing them again once trust clears
+    // (the dependency below) is what actually populates the sidebar.
+    if (chat.connected && !chat.trustRequired) {
       send({ type: "get_state" });
       send({ type: "memory_list" });  // still needed: feeds GoalPanel's goal/narrative
       send({ type: "queue_list" });  // Request the queue list on connect
@@ -130,7 +134,7 @@ function App() {
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
     }
-  }, [chat.connected, send]);
+  }, [chat.connected, chat.trustRequired, send]);
 
   useEffect(() => {
     if (chat.connected) {
@@ -163,7 +167,31 @@ function App() {
         />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
-            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.messages.length === 0 ? (
+            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.trustRequired ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
+                <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-amber glow">Trust this folder?</h1>
+                <p className="max-w-md font-mono text-xs text-mx-dim">{chat.trustRequired}</p>
+                <p className="max-w-md text-xs text-mx-mid">
+                  localforge hasn't run here before. Trusting it lets the orchestrator read, create, change, move
+                  and delete files in this folder and run commands in it -- each change still asks for approval
+                  first (or Auto-approve) unless you decline here.
+                </p>
+                <div className="flex gap-2 pt-2">
+                  <button
+                    className="rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright"
+                    onClick={() => send({ type: "trust_response", trust: true })}
+                  >
+                    Trust this folder
+                  </button>
+                  <button
+                    className="rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright"
+                    onClick={() => send({ type: "trust_response", trust: false })}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : chat.messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-mx-mid">
                 <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-bright glow">localforge</h1>
                 <p className="text-xs text-mx-dim">A frontier model plans. Local models do the writing.</p>
@@ -204,7 +232,7 @@ function App() {
             <button
               type="button"
               title="Attach an image (needs a vision-capable orchestrator)"
-              disabled={!chat.connected}
+              disabled={!chat.connected || !!chat.trustRequired}
               onClick={pickImage}
               className="self-end rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
             >
@@ -213,7 +241,7 @@ function App() {
             <textarea
               rows={3}
               className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"
-              placeholder={chat.connected ? "Ask localforge, or type / for commands…" : "Open a folder to start"}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands…" : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
               onKeyDown={e => {
@@ -240,7 +268,7 @@ function App() {
               }}
             />
             {chat.running && <button className="self-end rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "cancel" })}>Stop</button>}
-            <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !input.trim()} onClick={submit}>Send</button>
+            <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !!chat.trustRequired || !input.trim()} onClick={submit}>Send</button>
           </div>
         </main>
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
