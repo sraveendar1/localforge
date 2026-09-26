@@ -12,6 +12,8 @@ import { addError, addUserMessage, applyEvent, initialState, removeApproval } fr
 import { SystemPanel } from "./SystemPanel";
 import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import { Curtain } from "./Curtain";
+import { LeftNav } from "./LeftNav";
+import { addRecentFolder, loadRecentFolders } from "./recentFolders";
 import type { ChatState } from "./state";
 import "./App.css";
 
@@ -21,6 +23,8 @@ function App() {
   const [input, setInput] = useState("");
   const [modelDraft, setModelDraft] = useState("claude-opus-5");
   const [slashActive, setSlashActive] = useState(0);
+  const [leftNavOpen, setLeftNavOpen] = useState(false);
+  const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const endRef = useRef<HTMLDivElement>(null);
   const slashMatches = matchSlashCommands(input.trim());
 
@@ -54,12 +58,17 @@ function App() {
     []
   );
 
+  async function startSessionForFolder(dir: string) {
+    setFolder(dir);
+    setChat(initialState);
+    setRecentFolders(r => addRecentFolder(dir, r));
+    try { await invoke("start_session", { folder: dir, model: modelDraft.trim() || null }); } catch (err) { setChat(s => addError(s, String(err))); }
+  }
+
   async function openFolder() {
     const dir = await open({ directory: true, multiple: false });
     if (typeof dir !== "string") return;
-    setFolder(dir);
-    setChat(initialState);
-    try { await invoke("start_session", { folder: dir, model: modelDraft.trim() || null }); } catch (err) { setChat(s => addError(s, String(err))); }
+    await startSessionForFolder(dir);
   }
 
   function submit() {
@@ -109,6 +118,14 @@ function App() {
       </header>
       {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-dim">{chat.status}</div>}
       <div className="flex min-h-0 flex-1">
+        <LeftNav
+          open={leftNavOpen}
+          onToggle={() => setLeftNavOpen(o => !o)}
+          recentFolders={recentFolders}
+          currentFolder={folder}
+          onSelectFolder={startSessionForFolder}
+          onOpenDialog={openFolder}
+        />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
             {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.messages.length === 0 ? (
