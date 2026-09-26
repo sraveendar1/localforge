@@ -1,4 +1,5 @@
 import { SLASH_COMMANDS } from "./SlashMenu";
+import { Curtain } from "./Curtain";
 
 // A collapsible left rail (chevron-toggled): a static command reference so
 // new users don't have to type "/" to discover what's available, and a
@@ -22,9 +23,8 @@ export function LeftNav({
   return (
     <div className="flex h-full shrink-0">
       {open && (
-        <nav className="flex w-64 flex-col overflow-y-auto border-r border-mx-dim bg-mx-panel p-3 text-xs">
-          <section className="mb-4">
-            <h2 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-bright glow">Projects</h2>
+        <nav className="flex w-64 flex-col gap-3 overflow-y-auto border-r border-mx-dim bg-mx-panel p-3 text-xs">
+          <Curtain title="Projects">
             {recentFolders.length === 0 ? (
               <p className="text-mx-dim italic">No recent projects yet.</p>
             ) : (
@@ -53,9 +53,8 @@ export function LeftNav({
             >
               Open folder…
             </button>
-          </section>
-          <section>
-            <h2 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-bright glow">Commands</h2>
+          </Curtain>
+          <Curtain title="Commands" defaultOpen={false}>
             <ul className="space-y-1.5">
               {SLASH_COMMANDS.map(c => (
                 <li key={c.name}>
@@ -64,7 +63,7 @@ export function LeftNav({
                 </li>
               ))}
             </ul>
-          </section>
+          </Curtain>
         </nav>
       )}
       <button
