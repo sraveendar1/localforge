@@ -32,6 +32,21 @@ def _jsonable_stats(stats) -> dict | None:
         return dataclasses.asdict(stats)
     return dict(vars(stats))
 
+MAX_IMAGE_BASE64_CHARS = 30_000_000  # ~22 MB decoded; well above any real screenshot, a guard against a mistake
+
+def _parse_image(raw) -> dict | None:
+    """The GUI's `user_message.image` field (`{"mime_type", "data"}`,
+    `data` base64) validated into the shape content_blocks.user_content()
+    expects, or None -- never raises, since a malformed/missing image
+    should just mean "no image", not fail the whole message."""
+    if not isinstance(raw, dict):
+        return None
+    mime_type = str(raw.get("mime_type", ""))
+    data = str(raw.get("data", ""))
+    if not mime_type.startswith("image/") or not data or len(data) > MAX_IMAGE_BASE64_CHARS:
+        return None
+    return {"mime_type": mime_type, "data": data}
+
 def _models():
     hw = detect_hardware()
     recs = recommendations(hw)
@@ -116,7 +131,7 @@ class StdioServer:
         self._pending_lock = threading.Lock()
         self._hardware: HardwareProfile | None = None
         self._todos: list[dict] = []
-        self._queue: List[str] = []  # New queue attribute
+        self._queue: List[tuple[str, Optional[dict]]] = []  # (text, image) pairs
         self._queue_lock = threading.Lock()  # Lock for the queue
         self._notes: list[str] = []  # New notes attribute
         self._notes_lock = threading.Lock()  # Lock for the notes attribute
@@ -132,7 +147,7 @@ class StdioServer:
 
     def _emit_queue(self) -> None:
         with self._queue_lock:
-            items = list(self._queue)
+            items = [text for text, _ in self._queue]  # images aren't shown in the queue strip
         self.emit("queue", items=items)
 
     @property
@@ -203,7 +218,7 @@ class StdioServer:
             on_answer_text=lambda text: self.emit("text_delta", text=text)
         )
 
-    def _run_turn(self, text: str) -> None:
+    def _run_turn(self, text: str, image: dict | None = None) -> None:
         with self._notes_lock:
             notes = self._notes.copy()
             self._notes.clear()
@@ -211,7 +226,7 @@ class StdioServer:
             text = "\n".join([NOTE_PREFIX + note for note in notes]) + "\n" + text
         workspace = Workspace(self.root, approver=self.approve, scratch=self.scratch_root)
         try:
-            result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace)
+            result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace, image=image)
             self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats))
             self._record_usage(result.stats)
         except Cancelled:
@@ -253,17 +268,18 @@ class StdioServer:
         with self._queue_lock:
             if not self._queue:
                 return
-            next_text = self._queue.pop(0)
+            next_text, next_image = self._queue.pop(0)
         self._emit_queue()
         self._cancel.clear()
         self.emit("run_started", text=next_text)
-        self._worker = threading.Thread(target=self._run_turn, args=(next_text,), daemon=True)
+        self._worker = threading.Thread(target=self._run_turn, args=(next_text, next_image), daemon=True)
         self._worker.start()
 
     def handle(self, message: dict) -> bool:
         message_type = message.get("type")
         if message_type == "user_message":
             text = str(message.get("text", "")).strip()
+            image = _parse_image(message.get("image"))
             if not text:
                 self.emit("error", message="Empty message.")
             elif text.startswith("/") and len(text) > 1:
@@ -305,12 +321,12 @@ class StdioServer:
                     self.emit("error", message=f"Unknown command: {cmd}")
             elif self.busy:
                 with self._queue_lock:
-                    self._queue.append(text)
+                    self._queue.append((text, image))
                 self._emit_queue()
             else:
                 self._cancel.clear()
                 self.emit("run_started", text=text)
-                self._worker = threading.Thread(target=self._run_turn, args=(text,), daemon=True)
+                self._worker = threading.Thread(target=self._run_turn, args=(text, image), daemon=True)
                 self._worker.start()
         elif message_type == "memory_list":
             self.handle_memory_command('')
