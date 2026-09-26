@@ -37,6 +37,11 @@ class ModelEntry(BaseModel):
     # Weights read per generated token, GB: the whole model for a dense one,
     # far less for a mixture-of-experts. None = the whole download.
     active_gb: float | None = None
+    # Set only for a synthetic entry representing an "advanced" cloud
+    # delegate target (runtime "api"/"cli"; see delegate_target.py and
+    # tools.Dispatcher.resolve()) -- which provider's API key/CLI login to
+    # use. None for every real catalog entry.
+    provider: str | None = None
 
 
 class NoFittingModelError(RuntimeError):

@@ -8,6 +8,16 @@ class BackendResult(TypedDict, total=False):
     content: str  # text content, or a filesystem path when type == "file"
     tokens: int  # tokens the local model generated, for usage metrics; 0 if unknown
     truncated: bool  # the output hit the length cap and stops mid-way
+    # Only meaningful for a cloud delegate backend (backends/cloud.py); a
+    # local backend never sets these, and 0.0 means "free/not applicable"
+    # everywhere else. Kept apart the same way RunStats keeps
+    # frontier_cost_usd apart from frontier_via_subscription: cost_usd is
+    # real, billed money (an API-key delegate); notional_cost_usd is what
+    # the call *would* have cost on pay-per-token billing, drawn instead
+    # from a CLI subscription's quota -- never to be presented as
+    # separately-charged money.
+    cost_usd: float
+    notional_cost_usd: float
 
 
 class Backend(Protocol):

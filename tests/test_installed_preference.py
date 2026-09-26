@@ -117,7 +117,7 @@ def test_advisor_tells_the_frontier_model_which_candidates_are_installed():
     assert '"installed": true' in prompt
     assert "no download" in prompt.lower()
     # the installed flag is attached to the right model
-    nemo_segment = prompt[prompt.index('"mistral-nemo:12b"') :][:200]
+    nemo_segment = prompt[prompt.index('"mistral-nemo:12b"') :][:400]
     assert '"installed": true' in nemo_segment
 
 

@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from localforge import brief, verify, web
+from localforge import brief, delegate_target, verify, web
 from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
@@ -515,6 +515,14 @@ class Dispatcher:
         self._last_check_failure: str | None = None
         self._check_failure_shown = False
         self.local_tokens_generated = 0  # running total, for usage metrics
+        # A per-modality "advanced" override (delegate_target.py) can route
+        # to a paid cloud model instead of a free local one -- tracked
+        # separately from local_tokens_generated/cost since that's real (or
+        # subscription-notional) money, never free local compute. See
+        # backends/cloud.py's BackendResult fields for where these come from.
+        self.delegate_tokens_generated = 0
+        self.delegate_cost_usd = 0.0
+        self.delegate_notional_cost_usd = 0.0
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
         for modality, meta in TASK_MODALITIES.items():
@@ -524,21 +532,46 @@ class Dispatcher:
 
     def resolve(self, modality: str) -> ModelEntry:
         if modality not in self._resolved_models:
-            entry = best_match(modality, self.hardware, self.catalog, installed=self.installed)
-            if self.installed is not None and entry.name not in self.installed and modality in TEXT_MODALITIES:
-                # Nothing installed for this modality: an installed model of
-                # another text modality can do the job (a coder writes a fine
-                # README) rather than pulling gigabytes mid-task. Seen live: a
-                # "general" subtask silently downloaded qwen2.5:3b.
-                stand_ins = [
-                    m
-                    for other in TEXT_MODALITIES
-                    if other != modality
-                    for m in candidates(other, self.hardware, self.catalog, self.installed)
-                    if m.name in self.installed and m.runtime == entry.runtime
-                ]
-                if stand_ins:
-                    entry = max(stand_ins, key=lambda m: m.quality_tier)
+            target = delegate_target.get(modality)
+            if target.kind == "ollama":
+                # An explicit pin: use it as-is, download-approval flow and
+                # all (see _run()) -- never silently substituted, unlike the
+                # automatic stand-in logic below, which only exists to avoid
+                # surprising an automatic pick with an unwanted download.
+                entry = next(
+                    (m for m in self.catalog if m.modality == modality and m.name == target.model), None,
+                )
+                if entry is None:
+                    # A stale pin (catalog changed since, or hand-edited
+                    # config) degrades to automatic rather than crashing the
+                    # task -- delegate_target.parse() already applies this
+                    # same policy to a garbled saved value.
+                    entry = best_match(modality, self.hardware, self.catalog, installed=self.installed)
+            elif target.is_cloud:
+                # A synthetic, non-catalog entry: no hardware-fit fields
+                # apply to a cloud model, and it's never a download (see
+                # _run()'s runtime == "ollama" gate). backends/cloud.py
+                # reads .provider to pick the right API key/CLI login.
+                entry = ModelEntry(
+                    name=target.model, modality=modality, runtime=target.kind, provider=target.provider,
+                    min_vram_gb=0, min_ram_gb=0, disk_gb=0, quality_tier=0,
+                )
+            else:
+                entry = best_match(modality, self.hardware, self.catalog, installed=self.installed)
+                if self.installed is not None and entry.name not in self.installed and modality in TEXT_MODALITIES:
+                    # Nothing installed for this modality: an installed model of
+                    # another text modality can do the job (a coder writes a fine
+                    # README) rather than pulling gigabytes mid-task. Seen live: a
+                    # "general" subtask silently downloaded qwen2.5:3b.
+                    stand_ins = [
+                        m
+                        for other in TEXT_MODALITIES
+                        if other != modality
+                        for m in candidates(other, self.hardware, self.catalog, self.installed)
+                        if m.name in self.installed and m.runtime == entry.runtime
+                    ]
+                    if stand_ins:
+                        entry = max(stand_ins, key=lambda m: m.quality_tier)
             self._resolved_models[modality] = entry
         return self._resolved_models[modality]
 
@@ -717,16 +750,30 @@ class Dispatcher:
             from localforge import upgrades
 
             upgrades.mark_managed(entry.name)  # localforge downloaded it, so an upgrade may replace it
-        backend.ensure_available(entry.name, on_progress=on_pull)
+        # entry.provider is only set for a cloud delegate target (see
+        # resolve()); Ollama's backend doesn't accept the kwarg at all, so
+        # it's only added when there's actually a provider to pass.
+        extra = {"provider": entry.provider} if entry.provider else {}
+        backend.ensure_available(entry.name, on_progress=on_pull, **extra)
         started = time.monotonic()
-        window = {"context_limit": self.context_limit(entry)}
+        window = {"context_limit": self.context_limit(entry), **extra}
         prompt = _prompt_for(modality, instructions, self.grounding(), self.preferences())
         if hooks.on_token is not None:
             result = backend.generate(entry.name, prompt, on_token=hooks.on_token, **window)
         else:
             result = backend.generate(entry.name, prompt, **window)
         tokens = result.get("tokens", 0)
-        self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
+        if entry.runtime in ("api", "cli"):
+            # A cloud delegate target: real (or subscription-notional)
+            # money, never free local compute -- kept apart in usage
+            # accounting (see cli.py's /usage panel). Checked explicitly
+            # (not "not ollama") so a non-Ollama *local* backend (a test
+            # stub, or a future runtime) still counts as free local compute.
+            self.delegate_tokens_generated += tokens
+            self.delegate_cost_usd += result.get("cost_usd", 0.0)
+            self.delegate_notional_cost_usd += result.get("notional_cost_usd", 0.0)
+        else:
+            self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
         if hooks.on_done is not None:
             hooks.on_done(modality, entry, tokens, time.monotonic() - started)
         return result
