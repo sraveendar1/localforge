@@ -9,15 +9,27 @@ for GUI/CLI parity:
   which `handle_why_command()` reads.
 - `/auto` with no argument (or a typo) forced auto-approve off instead of
   toggling it, unlike the CLI's own bare `/auto`.
+- The actual entry point the desktop app spawns, `serve_stdio()`, called
+  `StdioServer(..., stream_output=stream_output)`, but `StdioServer.__init__`
+  never declared a `stream_output` parameter at all -- so `localforge serve
+  --stdio` (exactly what `desktop/src-tauri/src/lib.rs`'s `start_session`
+  runs) raised `TypeError` and exited immediately, before writing a single
+  byte of protocol JSON, every time the desktop app opened a folder. No
+  existing test caught this because every other test in this file
+  constructs `StdioServer` directly and never goes through `serve_stdio()`
+  itself -- confirmed live by piping JSON messages into the real
+  `localforge serve --stdio` subprocess and watching it crash before the
+  fix and answer normally after.
 """
 
 import io
 import json
+import sys
 import threading
 import time
 
 from localforge.orchestrator import Conversation
-from localforge.serve import StdioServer
+from localforge.serve import StdioServer, serve_stdio
 
 
 def make_server(tmp_path, **kwargs):
@@ -125,3 +137,24 @@ def test_bare_auto_command_toggles_instead_of_forcing_off(tmp_path):
 
     server.handle_auto_command("off")
     assert server.auto_approve is False
+
+
+def test_serve_stdio_the_real_entry_point_does_not_crash_on_startup(tmp_path, monkeypatch):
+    """This is the actual function `localforge serve --stdio` calls (see
+    cli.py's `serve` command) and the actual function
+    desktop/src-tauri/src/lib.rs's `start_session` spawns via that CLI
+    command -- as opposed to every other test in this file, which
+    constructs StdioServer directly and would not have caught a mismatched
+    keyword argument between serve_stdio() and StdioServer.__init__."""
+    from localforge import trust
+
+    trust.trust(tmp_path)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"type": "shutdown"}\n'))
+    fake_stdout = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", fake_stdout)
+
+    serve_stdio(tmp_path, "test-model", auto_approve=False, stream_output=True)
+
+    lines = [json.loads(l) for l in fake_stdout.getvalue().splitlines() if l.strip()]
+    assert lines[0]["type"] == "ready"
+    assert lines[0]["stream_output"] is True

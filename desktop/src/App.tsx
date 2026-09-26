@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -38,7 +38,19 @@ function App() {
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chat.messages]);
 
-  const send = (obj: object) => invoke("send_message", { message: JSON.stringify(obj) }).catch(err => setChat(s => addError(s, String(err))));
+  // `useCallback` with no deps keeps this reference stable across renders --
+  // without it, this was a new function every render, and since it's a
+  // dependency of the two effects below, every state update (even a single
+  // streamed token) re-fired them: get_state/memory_list/scratch_list/
+  // queue_list sent again on every render, and the system_stats interval
+  // torn down and recreated on every render too. That's an unbounded
+  // feedback loop -- each response triggers a re-render, which re-sends the
+  // requests, which triggers more responses -- and a very plausible reason
+  // the app felt slow regardless of the machine it ran on.
+  const send = useCallback(
+    (obj: object) => invoke("send_message", { message: JSON.stringify(obj) }).catch(err => setChat(s => addError(s, String(err)))),
+    []
+  );
 
   async function openFolder() {
     const dir = await open({ directory: true, multiple: false });

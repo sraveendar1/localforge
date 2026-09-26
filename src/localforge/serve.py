@@ -79,7 +79,8 @@ class StdioServer:
     def __init__(self, root: Path, frontier_model: str, cli_provider: str | None = None,
                  out: IO[str] | None = None, inp: IO[str] | None = None,
                  run_fn: Callable = run_orchestrator, auto_approve: bool = False,
-                 conversation: Conversation | None = None, scratch_root: Path | None = None):
+                 conversation: Conversation | None = None, scratch_root: Path | None = None,
+                 stream_output: bool = False):
         self.root = Path(root).resolve()
         self.frontier_model = frontier_model
         self.cli_provider = cli_provider
@@ -88,7 +89,7 @@ class StdioServer:
         self.run_fn = run_fn
         self.auto_approve = auto_approve
         self.always_allow: set[str] = set()
-        self.stream_output = False
+        self.stream_output = stream_output
         if scratch_root is not None:
             self.scratch_root = scratch_root
             self._scratchpad = None
