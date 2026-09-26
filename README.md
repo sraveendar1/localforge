@@ -12,6 +12,10 @@ No vendor lock-in: the orchestrator is called through
 [LiteLLM](https://github.com/BerriAI/litellm), so swapping `claude-opus-5`
 for `gpt-5` or a self-hosted model is a one-line config change.
 
+Use it from a terminal (`localforge`, see [Interactive session](#interactive-session)
+below) or as a native desktop app (see [Desktop app (GUI)](#desktop-app-gui))
+— both drive the exact same engine, so nothing behaves differently between them.
+
 ## Interactive session
 
 Run `localforge` with no arguments in a real terminal and you get a
@@ -255,6 +259,63 @@ errors, `-L` follows redirects. This URL form
 once the file exists on that branch in a **public** repo — a private repo's
 raw URL returns 404 to an unauthenticated request, so the one-liner won't
 work there without extra auth setup.
+
+## Desktop app (GUI)
+
+`desktop/` is a native desktop app (React + [Tauri](https://tauri.app)) for
+everything above, for anyone who'd rather click than type. It's a real GUI,
+not a wrapper around the terminal: it drives the exact same session engine
+as the interactive CLI — it launches `localforge serve --stdio` as a child
+process and speaks a JSON-lines protocol over its stdin/stdout — so nothing
+about the orchestrator, delegation, or approvals is reimplemented for it.
+
+**Running it:**
+
+```bash
+cd desktop
+npm install
+npm run tauri dev      # dev mode, hot-reloads the UI
+npm run tauri build    # a real installable app (dmg/AppImage/msi/...)
+```
+
+You need the `localforge` CLI installed first (`./install.sh` from the repo
+root, or `uv tool install .`) — the app just spawns it. Building or running
+`npm run tauri *` also needs Node.js + npm and Rust + Cargo, plus Tauri's
+own OS-level prerequisites (WebKitGTK + friends on Linux, Xcode command line
+tools on macOS, the WebView2 runtime on Windows) — see [Tauri's
+prerequisites guide](https://v2.tauri.app/start/prerequisites/) if
+`npm run tauri dev` fails to build. `LOCALFORGE_BIN=/path/to/localforge npm
+run tauri dev` points the app at a dev checkout instead of whatever
+`localforge` resolves to on your `PATH`.
+
+**What it does:** open a project folder (the same one-time trust prompt as
+the CLI applies), pick or switch the orchestrator model at any time —
+including mid-task, matching `/model`'s behavior in a session — and type a
+task. You get the same live picture the terminal session shows: which local
+model is delegated to for each step, its output streaming in token by
+token, the running plan (todos) in a side panel, and a diff/command prompt
+for every write or command with the same **Approve / Always allow /
+Decline** choices as the CLI's (y)es/(n)o/(a)lways. A queue strip shows
+tasks typed while one is already running, a status bar mirrors the
+CLI's always-visible activity line, and side panels cover system hardware
+(CPU/RAM/GPU), session token usage and cost (frontier vs. open-weighted,
+kept apart), and this project's memory and scratchpad (view facts, forget
+one, clear either).
+
+The chat input doubles as a command line: typing `/` brings up every
+session command with a description (arrow keys / Tab to pick), and each one
+reuses the exact server-side handler the CLI's own slash commands use —
+`/memory`, `/scratch`, `/queue`, `/stop`, `/clear`, `/usage`, `/models`,
+`/installed`, `/catalog`, `/doctor`, `/scan`, `/model`, `/auto`, `/run`,
+`/help`, `/compact`, `/summary`, `/tell`, `/why`, and `/stream` all work
+from the box exactly as they do in a terminal session, with the reply shown
+as its own message in the conversation.
+
+**Not in the GUI yet:** first-time onboarding (`localforge setup`) and the
+`delete`/`uninstall` confirmation flows still need a terminal — run those
+once from the CLI, then the desktop app picks up whatever they configured.
+See [`docs/desktop_parity.md`](docs/desktop_parity.md) for the exact,
+up-to-date command-by-command coverage table.
 
 ## How it works
 

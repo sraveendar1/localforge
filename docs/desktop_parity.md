@@ -4,46 +4,61 @@ The localforge desktop app is native-first, with buttons, menus, and panels bein
 
 ## Recent Changes
 
+- **2026-09-26**: Fixed two real bugs found while closing out GUI/CLI parity: `/compact` from the desktop app always raised `NameError: _installed_model_names is not defined` (it referenced a cli.py-only helper; serve.py now has its own copy), and `/why` raised `KeyError` for any actually-pending approval because `approve()` populated `self._pending` but never `self._pending_info`, which `handle_why_command()` reads. Also fixed `/auto` with no argument forcing auto-approve off instead of toggling it (mismatched the CLI's own bare `/auto`). Separately, `run_command`'s timeout could hang indefinitely past the requested timeout when a delegated shell command (e.g. `git push`) spawned a grandchild process that outlived the shell `subprocess.run(shell=True, timeout=...)` itself kills on timeout — the grandchild keeps the output pipes open, so the read for EOF never returns; fixed by killing the whole process tree (via `psutil`) on timeout instead of just the immediate child. On the frontend: `state.ts` was missing event handlers for `command_help`, `model`, `models`, `installed`, `catalog`, and `doctor` — those protocol events existed on the backend but were silently dropped by the reducer, so `/help`, `/model`, `/models`, `/installed`, `/catalog`, and `/doctor` typed into the chat produced no visible output at all. `/why`, `/summary`, `/compacted`, and `/tell`'s reply were also being folded into whatever the *last* assistant message happened to be (via the same `addItem`-onto-last-assistant path used for delegation activity), which silently dropped the reply entirely if no assistant message existed yet (e.g. a command typed before the first run) and otherwise attached it to a possibly-unrelated, already-finished task; all of these now post as their own `system`-role message instead. Fixed `SystemPanel`'s GPU line rendering `[object Object]` (it `.join()`-ed a list of `{name, vram_gb, backend}` objects as if it were a list of strings). The model picker no longer disables itself while a task is running — the CLI's `/model` switches immediately even mid-task (see the main CLAUDE.md's "`/model` was fully blocked while any task was busy" note), so the GUI now matches. Added a slash-command autocomplete menu (`SlashMenu.tsx`) to the chat input, covering every command `StdioServer.handle_help_command()` knows about, with arrow-key/Tab navigation — closing the "Full Slash-Command Coverage" gap below.
 - **2026-09-25**: Updated the parity document to reflect the current state of the desktop app and backend. Added support for the `settings` event for both `set_auto` and `set_model` commands. Updated the `system_stats` request to return a nested `hardware` object plus live CPU, RAM usage stats. Invalid approval responses now surface as `error` events. Message queueing is implemented, with messages being queued rather than rejected while a run is in progress. The `queue` event carries the current items.
 
 ## CLI Subcommands -> Desktop
 
-| CLI Command | What it does | Proposed Native UI Control/Panel | Protocol Support Today |
+Every row marked ✅ is reachable two ways in the app: through a dedicated
+panel/control where one exists, and always through the chat input as the
+literal slash command (`/model claude-opus-5`, `/doctor`, ...) — the input
+autocompletes every one of these (`SlashMenu.tsx`) and the reply renders as
+its own message in the conversation.
+
+| CLI Command | What it does | Native UI Control/Panel | Status |
 |---|---|---|---|
-| scan | Detects hardware | System Info Panel | ✅ |
-| doctor | Diagnoses problems | Doctor Panel (embedded webview) | ✅ |
-| setup | Initial setup walkthrough | Setup Wizard | ❌ (Not done) |
-| models | Lists installed models | Model Selection Panel | ✅ |
-| catalog | Lists available models | Catalog Browser | ✅ |
-| run | Runs a session | Session Panel (embedded React app) | ✅ |
-| usage | Shows usage stats | Usage Sidebar | ✅ |
-| installed | Lists installed models | Model Selection Panel | ✅ |
-| delete | Deletes a model | Confirmation Dialog | ❌ (Not done) |
-| uninstall | Uninstalls localforge | Confirmation Dialog | ❌ (Not done) |
-| theme | Changes theme | Theme Selector | ✅ |
-| help | Shows help | Help Sidebar | ❌ (Not done) |
-| /clear | Clears the console | Clear Button | ✅ |
-| /compact | Makes the console compact | Toggle Button | ❌ (No GUI affordance yet) |
-| /auto | Toggles auto-approval | Toggle Button | ✅ |
-| /model | Sets the model | Model Selector | ✅ |
-| /memory | Shows memory facts, forget/clear | Memory Panel | ✅ |
-| /scratch | Shows scratchpad files, clear | Scratch section of Memory Panel | ✅ |
-| /summary | Shows session summary | Session Summary Panel | ❌ (Not done) |
-| /queue | Shows task queue | Queued-messages strip in App.tsx (queue_list / queue_clear) | ✅ |
-| /stop | Stops the current task | Stop Button | ✅ |
-| /tell | Streams model tokens | Model Token Stream | ❌ (Not done) |
-| /stream | Toggles streaming | Toggle Button | ❌ (Not done) |
-| /why | Explains why a model was chosen | Why Panel | ❌ (Not done) |
-| /usage | Shows usage stats | Usage Sidebar | ✅ |
+| scan | Detects hardware | System Info Panel (`SystemPanel.tsx`), auto-refreshes every 5s | ✅ |
+| doctor | Diagnoses problems | Chat reply (`/doctor`) | ✅ |
+| setup | Initial setup walkthrough | — | ❌ Not done — run `localforge setup` once from a terminal first |
+| models | Best-fit local model per modality | Chat reply (`/models`) | ✅ |
+| catalog | Lists the full model catalog | Chat reply (`/catalog`) | ✅ |
+| run | Runs a task | Chat input + Send, streamed live | ✅ |
+| usage | Shows usage stats | Usage Panel (`UsagePanel.tsx`), always visible | ✅ |
+| installed | Lists installed models | Chat reply (`/installed`) | ✅ |
+| delete | Deletes a model | — | ❌ Not done — use `localforge delete` from a terminal |
+| uninstall | Uninstalls localforge | — | ❌ Not done — use `localforge uninstall` from a terminal |
+| theme | Changes the CLI's color theme | — | ❌ Not done (the desktop app has its own fixed theme, unrelated to the CLI's `theme.py`) |
+| help | Lists every command | Chat reply (`/help`), plus the `/` autocomplete menu | ✅ |
+| /clear, /new | Starts a new session | Chat reply, resets panels via `session_reset` | ✅ |
+| /compact | Compacts conversation history | Chat reply (`/compact`) | ✅ |
+| /auto | Toggles auto-approval | Header checkbox, or `/auto [on\|off]` in chat (toggles when bare, matching the CLI) | ✅ |
+| /model | Shows or switches the orchestrator model | Header `ModelPicker`, switches even mid-task; or `/model <id>` in chat | ✅ |
+| /memory | Shows memory facts, forget/clear | `MemoryPanel.tsx` | ✅ |
+| /scratch | Shows scratchpad files, clear | Scratch section of `MemoryPanel.tsx` | ✅ |
+| /summary | Shows session summary | Chat reply (`/summary`) | ✅ |
+| /queue | Shows/clears the task queue | Queued-messages strip in `App.tsx` | ✅ |
+| /stop | Stops the running task | Stop/Cancel button (header input area + status bar) | ✅ |
+| /tell | Appends a note for the running task | Chat reply confirms it was queued; type `/tell <note>` while a task runs | ✅ |
+| /stream | Toggles streamed local-model output | `/stream [on\|off]` in chat (output already streams live regardless; this mirrors the CLI's own toggle) | ✅ |
+| /why | Explains a pending approval | Chat reply (`/why`), or ask a plain question at an approval prompt | ✅ |
+| y/n/a on file/command approvals | Approve / decline / always-allow a change | `ApprovalPanel.tsx` — Approve / Always allow / Decline buttons | ✅ |
 
 ## Protocol Gaps
 
-- **Full Slash-Command Coverage**: Not yet implemented in the GUI chat input.
-- **y/n/a Approval Affordances**: Not yet implemented in the UI (keyboard shortcuts and always-allow).
-- **Background Tasks and Status Line**: Not yet implemented.
-- **/tell (injecting a note mid-run)**: Not yet implemented.
-- **/why (explaining model choice)**: Not yet implemented.
-- **Message Queueing**: Done — the backend queues messages sent during a run and emits a `queue` event; `state.ts` tracks `chat.queue` and `App.tsx` renders the queued-message strip with a Clear action.
+- **Setup wizard, `/delete`, `/uninstall`, `/theme`**: none of these have a
+  server message type in `serve.py` yet (`handle()` has no case for
+  `/setup`, `/delete`, `/uninstall`, or `/theme` — typing them just gets
+  "Unknown command"). These need both new protocol messages and dedicated
+  UI (a setup flow, a delete/uninstall confirmation dialog), which is a
+  materially bigger feature than the rest of this table; run them from a
+  terminal in the meantime.
+- Everything else in the table above is done — this doc previously listed
+  `/compact`, `/summary`, `/tell`, `/why`, `/help`, `/models`, `/installed`,
+  `/catalog`, `/doctor`, `/model`, and y/n/a approvals as not done or not
+  implemented, but the frontend/backend code already supported all of them
+  by the time this was last accurate; see **Recent Changes** above for what
+  was actually still broken (mostly missing event handlers, not missing
+  features) and has now been fixed.
 
 ## Done
 
@@ -51,3 +66,4 @@ The localforge desktop app is native-first, with buttons, menus, and panels bein
 - **2026-09-24**: Created `MemoryPanel.tsx` to render Memory facts (per-fact `forget`, plus `clear`) and Scratch files (sizes, plus `clear`). Integrated it into `App.tsx` in the right-hand aside between `UsagePanel` and `TodoList`.
 - **2026-09-24**: Updated `serve.py` to emit a `system_stats` event with a nested `hardware` object plus live CPU, RAM usage stats, matching `SystemPanel.tsx`.
 - **2026-09-25**: Verified 596 Python tests pass, `npm run build` (tsc + vite) green, `cargo check` green.
+- **2026-09-26**: Verified 646 Python tests pass (5 new, covering the bugfixes above; the 2 pre-existing failures are environment-specific — a missing IANA timezone database and a console-width difference in the sandbox this was run in — and were already failing before this pass, unrelated to the desktop app). `npm run build` (tsc + vite) green. `cargo check` for `src-tauri` could not be run in this environment (missing WebKitGTK/GTK system libraries, and the sandbox has no route to the OS package mirrors to install them) — no Rust code was changed in this pass, so this is a pre-existing environment limitation, not a regression; run it locally to confirm before shipping a build.

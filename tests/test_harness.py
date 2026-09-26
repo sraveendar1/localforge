@@ -133,6 +133,34 @@ def test_commands_need_approval_and_run_in_the_project(project):
     assert out.startswith("exit code 0") and str(project.resolve()) in out and "done" in out
 
 
+def test_a_stuck_command_is_killed_on_timeout_instead_of_hanging(project):
+    """Reported: a delegated `git push` that got stuck (e.g. waiting on a
+    credential prompt, or a stalled connection) hung forever in the GUI
+    instead of coming back with a timeout. `subprocess.run(shell=True,
+    timeout=...)` only kills the shell on timeout, not whatever the shell
+    spawned -- and a grandchild that outlives it keeps the output pipes
+    open, so the read for EOF never returns. Simulate that shape (the shell
+    backgrounds a child and waits on it) and confirm both that run_command
+    actually returns close to `timeout`, not the full sleep duration, and
+    that the grandchild doesn't survive it."""
+    import subprocess
+    import time
+
+    start = time.monotonic()
+    out = Workspace(project, _yes).run_command("sleep 30 & wait", timeout=2)
+    elapsed = time.monotonic() - start
+    assert "timed out after 2s" in out
+    assert elapsed < 10, f"run_command should return close to the 2s timeout, took {elapsed}s"
+
+    # Give the OS a moment to reap, then confirm no `sleep 30` survived.
+    time.sleep(0.5)
+    try:
+        leftover = subprocess.run(["pgrep", "-f", "sleep 30"], capture_output=True, text=True).stdout.strip()
+    except FileNotFoundError:
+        return  # pgrep isn't installed here; the timing assertion above already caught a hang
+    assert leftover == "", f"leftover process(es) from the timed-out command: {leftover}"
+
+
 def test_no_approver_means_no_changes(project):
     assert "declined" in Workspace(project).write_file("new.txt", "x")
     assert not (project / "new.txt").exists()

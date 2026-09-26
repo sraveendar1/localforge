@@ -2,9 +2,10 @@ export type ToolItem = { kind: "tool"; name: string; summary: string; result?: s
 export type DelegateItem = { kind: "delegate"; modality: string; model: string; output: string; done: boolean; tokens?: number; seconds?: number };
 export type NoteItem = { kind: "note"; text: string };
 export type Item = ToolItem | DelegateItem | NoteItem;
-export type Message = { role: "user" | "assistant" | "error"; text: string; items: Item[]; round?: number };
+export type Message = { role: "user" | "assistant" | "error" | "system"; text: string; items: Item[]; round?: number };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
+export type Gpu = { name: string; vram_gb: number; backend: string };
 export type SystemStats = {
   hardware: {
     os: string;
@@ -12,7 +13,7 @@ export type SystemStats = {
     cpu_cores: number;
     ram_gb: number;
     free_disk_gb: number;
-    gpus: any[];
+    gpus: Gpu[];
   };
   cpuPercent: number;
   ramUsedGb: number;
@@ -186,16 +187,47 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
-      return addItem(state, { kind: "note", text: ev.message ?? `Compacted ${ev.before_messages} to ${ev.after_messages} (${ev.changed})` });
+      return addSystemMessage(state, String(ev.message ?? `Compacted ${ev.before_messages} to ${ev.after_messages} (${ev.changed})`));
     case "summary": {
       const summaryText = ev.memory ? `Memory: ${ev.memory}\nMessage count: ${ev.message_count ?? 0}\nChars: ${ev.chars ?? 0}\nModel: ${ev.model ?? ""}` : "Nothing summarised yet.";
-      return addItem(state, { kind: "note", text: summaryText });
+      return addSystemMessage(state, summaryText);
     }
     case "note_added":
-      return addItem(state, { kind: "note", text: `Note queued: ${String(ev.note ?? "")} (${Number(ev.count ?? 0)} queued)` });
+      return addSystemMessage(state, `Note queued for the running task: ${String(ev.note ?? "")}`);
     case "why": {
       const lines = Array.isArray(ev.lines) ? ev.lines.map(String) : [String(ev.lines ?? "Nothing pending.")];
-      return addItem(state, { kind: "note", text: lines.join("\n") });
+      return addSystemMessage(state, lines.length ? lines.join("\n") : "Nothing pending.");
+    }
+    case "command_help": {
+      const commands = Array.isArray(ev.commands) ? ev.commands : [];
+      const text = commands.map((c: any) => `${c.name} — ${c.description}`).join("\n") || "No commands available.";
+      return addSystemMessage(state, text);
+    }
+    case "model":
+      return { ...state, model: ev.model ?? state.model };
+    case "models": {
+      const models = Array.isArray(ev.models) ? ev.models : [];
+      const text = models.length
+        ? models.map((m: any) => `${m.modality}: ${m.model?.name ?? "?"} (${m.model?.runtime ?? "?"}, tier ${m.model?.quality_tier ?? "?"})`).join("\n")
+        : "No fitting model found for this machine.";
+      return addSystemMessage(state, `Best-fit local models:\n${text}`);
+    }
+    case "installed": {
+      const models = Array.isArray(ev.models) ? ev.models : [];
+      const text = models.length ? models.map((m: any) => `- ${m.model}`).join("\n") : "No models installed.";
+      return addSystemMessage(state, `Installed models:\n${text}`);
+    }
+    case "catalog": {
+      const items = Array.isArray(ev.items) ? ev.items : [];
+      const text = items
+        .map((c: any) => `${c.name} (${c.modality}, ${c.runtime}) — tier ${c.quality_tier}, ${c.disk_gb} GB`)
+        .join("\n");
+      return addSystemMessage(state, `Full model catalog:\n${text || "(empty)"}`);
+    }
+    case "doctor": {
+      const checks = Array.isArray(ev.checks) ? ev.checks : [];
+      const text = checks.map((c: any) => `${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`).join("\n");
+      return addSystemMessage(state, `Doctor:\n${text || "(nothing checked)"}`);
     }
     default:
       return state;
@@ -208,6 +240,16 @@ export function addUserMessage(state: ChatState, text: string): ChatState {
 
 export function addError(state: ChatState, text: string): ChatState {
   return { ...state, messages: [...state.messages, { role: "error", text, items: [] }] };
+}
+
+// Slash-command replies (help, /why, /summary, /model, /models, /installed,
+// /catalog, /doctor, ...) are their own message rather than being folded
+// into whatever the last assistant message happens to be -- that message
+// might belong to an unrelated, already-finished task, or there might not
+// be one yet at all (a command typed before the first run), in which case
+// the old addItem()-onto-last-assistant path silently dropped the reply.
+export function addSystemMessage(state: ChatState, text: string): ChatState {
+  return { ...state, messages: [...state.messages, { role: "system", text, items: [] }] };
 }
 
 export function removeApproval(state: ChatState, id: string): ChatState {

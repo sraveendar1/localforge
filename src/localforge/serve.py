@@ -49,6 +49,12 @@ def _installed():
         installed = []
     return [{'model': model['name'], 'status': 'installed'} for model in installed]
 
+def _installed_model_names(ollama: OllamaBackend) -> set[str]:
+    try:
+        return {m["name"] for m in ollama.list_installed()}
+    except Exception:
+        return set()
+
 def _catalog():
     catalog = load_catalog()
     return [{'name': entry.name, 'modality': entry.modality, 'runtime': entry.runtime, 'min_vram_gb': entry.min_vram_gb, 'min_ram_gb': entry.min_ram_gb, 'disk_gb': entry.disk_gb, 'quality_tier': entry.quality_tier} for entry in catalog]
@@ -132,10 +138,12 @@ class StdioServer:
         holder: list[str] = ["decline"]
         with self._pending_lock:
             self._pending[request_id] = (event, holder)
+            self._pending_info[request_id] = (kind, title, detail)
         self.emit("approval_request", id=request_id, kind=kind, title=title, detail=detail)
         event.wait()
         with self._pending_lock:
             self._pending.pop(request_id, None)
+            self._pending_info.pop(request_id, None)
         if self._cancel.is_set():
             return False
         if holder[0] == "always":
@@ -447,7 +455,15 @@ class StdioServer:
                 self.emit("model", model=self.frontier_model)
 
     def handle_auto_command(self, arg: str):
-        self.auto_approve = arg.lower() == "on"
+        arg = arg.strip().lower()
+        if arg == "on":
+            self.auto_approve = True
+        elif arg == "off":
+            self.auto_approve = False
+        else:
+            # Matches the CLI's `/auto` with no argument: toggle rather than
+            # force off, so a bare "/auto" from the GUI behaves the same way.
+            self.auto_approve = not self.auto_approve
         self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
 
     def handle_run_command(self, arg: str):

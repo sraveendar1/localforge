@@ -31,7 +31,7 @@ export function SystemPanel({ stats }: { stats: SystemStats | null }) {
       {stats.hardware.gpus && stats.hardware.gpus.length > 0 ? (
         <div className="flex justify-between gap-2">
           <span className="text-mx-mid">GPU</span>
-          <span className="text-mx-green tabular-nums">{stats.hardware.gpus.join(', ')}</span>
+          <span className="text-mx-green tabular-nums">{stats.hardware.gpus.map(g => `${g.name} (${g.vram_gb} GB)`).join(', ')}</span>
         </div>
       ) : (
         <div className="flex justify-between gap-2">

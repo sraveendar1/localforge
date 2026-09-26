@@ -21,6 +21,8 @@ import subprocess
 from pathlib import Path
 from collections.abc import Callable
 
+import psutil
+
 # (kind, title, detail) -> allowed? kind is "write", "delete", "command" or
 # "download"; detail is a diff, a listing or the command line. Without an
 # approver every change is refused.
@@ -47,6 +49,32 @@ class WorkspaceError(RuntimeError):
 
 def _deny_all(kind: str, title: str, detail: str) -> bool:
     return False
+
+
+def _kill_process_tree(pid: int) -> None:
+    """Kill a run_command process and every descendant it spawned.
+
+    `shell=True` means `pid` is the shell, not the actual command -- so on a
+    timeout the shell must go too, but so must whatever it started (a git
+    subprocess, a background server, ...), or that keeps running and keeps
+    the output pipes open, which is exactly what let the old bare
+    `proc.kill()` still hang.
+    """
+    try:
+        parent = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        return
+    children = parent.children(recursive=True)
+    for p in children:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
+    try:
+        parent.kill()
+    except psutil.NoSuchProcess:
+        pass
+    psutil.wait_procs(children + [parent], timeout=5)
 
 
 class Workspace:
@@ -288,19 +316,35 @@ class Workspace:
             raise WorkspaceError("a command is required")
         if not self.approver("command", "Run command", command):
             return f"The user declined to run: {command}"
+        timeout = max(1, min(int(timeout or COMMAND_TIMEOUT), 1800))
+        # subprocess.run(shell=True, timeout=...) only kills the shell itself
+        # on timeout -- a stuck grandchild (git push waiting on a credential
+        # prompt or a stalled network call) keeps holding the stdout/stderr
+        # pipes open, so the read for EOF never returns and the call hangs
+        # well past `timeout` anyway. Popen + a manual process-tree kill
+        # (via psutil, since a shell's children aren't visible any other
+        # cross-platform way) actually enforces it. Reported live: `git
+        # push` from a delegated command hung indefinitely instead of
+        # timing out.
+        proc = subprocess.Popen(
+            command,
+            shell=True,
+            cwd=self.root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            stdin=subprocess.DEVNULL,
+        )
         try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=self.root,
-                capture_output=True,
-                text=True,
-                timeout=max(1, min(int(timeout or COMMAND_TIMEOUT), 1800)),
-                stdin=subprocess.DEVNULL,
-            )
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
+            _kill_process_tree(proc.pid)
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
             return f"Command timed out after {timeout}s: {command}"
-        output = (proc.stdout or "") + (("\n" + proc.stderr) if proc.stderr else "")
+        output = (stdout or "") + (("\n" + stderr) if stderr else "")
         if len(output) > MAX_OUTPUT_CHARS:
             output = f"[... first {len(output) - MAX_OUTPUT_CHARS} chars cut ...]\n" + output[-MAX_OUTPUT_CHARS:]
         return f"exit code {proc.returncode}\n{output.strip()}"

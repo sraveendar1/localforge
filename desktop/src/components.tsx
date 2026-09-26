@@ -119,6 +119,10 @@ export function MessageView({ message, thinking }: { message: Message; thinking:
       return (
         <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red">{message.text}</div>
       );
+    case "system":
+      return (
+        <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid">{message.text}</div>
+      );
     case "assistant":
       return (
         <div className="my-2 max-w-[90%]">

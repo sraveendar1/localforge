@@ -9,6 +9,7 @@ import { ModelPicker } from "./ModelPicker";
 import { MemoryPanel } from "./MemoryPanel";
 import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
 import { SystemPanel } from "./SystemPanel";
+import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import type { ChatState } from "./state";
 import "./App.css";
 
@@ -17,7 +18,9 @@ function App() {
   const [folder, setFolder] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [modelDraft, setModelDraft] = useState("claude-opus-5");
+  const [slashActive, setSlashActive] = useState(0);
   const endRef = useRef<HTMLDivElement>(null);
+  const slashMatches = matchSlashCommands(input.trim());
 
   useEffect(() => {
     const ps = [
@@ -84,7 +87,7 @@ function App() {
         <span className="font-semibold glow">localforge</span>
         <span className={"h-2 w-2 rounded-full " + (chat.connected ? "bg-mx-bright" : "bg-mx-dim")} title={chat.connected ? "Connected" : "Not connected"} />
         <span className="min-w-0 flex-1 truncate text-sm text-mx-dim" title={folder ?? ""}>{folder ?? "No folder"}</span>
-        <ModelPicker value={modelDraft} disabled={chat.running} onChange={m => { setModelDraft(m); if (chat.connected && !chat.running && m && m !== chat.model) send({ type: "set_model", model: m }); }} />
+        <ModelPicker value={modelDraft} disabled={!chat.connected} onChange={m => { setModelDraft(m); if (chat.connected && m && m !== chat.model) send({ type: "set_model", model: m }); }} />
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
       </header>
@@ -114,8 +117,37 @@ function App() {
             </div>
           )}
           <ApprovalPanel approvals={chat.approvals} onDecide={decide} />
+          <SlashMenu matches={slashMatches} activeIndex={slashActive} onPick={name => { setInput(name + " "); setSlashActive(0); }} />
           <div className="flex gap-2 border-t border-mx-dim p-3">
-            <textarea rows={3} className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm" placeholder={chat.connected ? "Ask localforge…" : "Open a folder to start"} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } }} />
+            <textarea
+              rows={3}
+              className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"
+              placeholder={chat.connected ? "Ask localforge, or type / for commands…" : "Open a folder to start"}
+              value={input}
+              onChange={e => { setInput(e.target.value); setSlashActive(0); }}
+              onKeyDown={e => {
+                if (slashMatches.length > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+                  e.preventDefault();
+                  const dir = e.key === "ArrowDown" ? 1 : -1;
+                  setSlashActive(i => (i + dir + slashMatches.length) % slashMatches.length);
+                  return;
+                }
+                if (slashMatches.length > 0 && e.key === "Tab") {
+                  e.preventDefault();
+                  setInput(slashMatches[slashActive].name + " ");
+                  return;
+                }
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  const exact = slashMatches.some(m => m.name === input.trim());
+                  if (slashMatches.length > 0 && !exact) {
+                    setInput(slashMatches[slashActive].name + " ");
+                    return;
+                  }
+                  submit();
+                }
+              }}
+            />
             {chat.running && <button className="self-end rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "cancel" })}>Stop</button>}
             <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !input.trim()} onClick={submit}>Send</button>
           </div>
