@@ -108,7 +108,12 @@ export function MessageView({ message, thinking }: { message: Message; thinking:
     case "user":
       return (
         <div className="flex justify-end my-2">
-          <div className="max-w-[80%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-4 py-2 text-mx-bright">{message.text}</div>
+          <div className="max-w-[80%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-4 py-2 text-mx-bright">
+            {message.imageDataUrl && (
+              <img src={message.imageDataUrl} alt="attached" className="mb-2 max-h-48 rounded-sm border border-mx-dim" />
+            )}
+            {message.text}
+          </div>
         </div>
       );
     case "error":

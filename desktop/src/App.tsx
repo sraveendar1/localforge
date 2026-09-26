@@ -25,7 +25,9 @@ function App() {
   const [slashActive, setSlashActive] = useState(0);
   const [leftNavOpen, setLeftNavOpen] = useState(false);
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
+  const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const slashMatches = matchSlashCommands(input.trim());
 
   useEffect(() => {
@@ -83,12 +85,33 @@ function App() {
     await startSessionForFolder(dir);
   }
 
+  function pickImage() {
+    fileInputRef.current?.click();
+  }
+
+  function onImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow picking the same file again later
+    if (!file || !file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result ?? "");
+      // "data:image/png;base64,AAAA..." -> mime type + bare base64.
+      const match = dataUrl.match(/^data:([^;]+);base64,(.*)$/s);
+      if (!match) return;
+      setAttachedImage({ dataUrl, mimeType: match[1], data: match[2] });
+    };
+    reader.readAsDataURL(file);
+  }
+
   function submit() {
     const text = input.trim();
     if (!text || !chat.connected) return;
-    setChat(s => addUserMessage(s, text));
+    setChat(s => addUserMessage(s, text, attachedImage?.dataUrl));
+    const image = attachedImage ? { mime_type: attachedImage.mimeType, data: attachedImage.data } : undefined;
     setInput("");
-    send({ type: "user_message", text });
+    setAttachedImage(null);
+    send({ type: "user_message", text, ...(image ? { image } : {}) });
   }
 
   function decide(id: string, decision: "approve" | "decline" | "always") {
@@ -163,7 +186,30 @@ function App() {
           )}
           <ApprovalPanel approvals={chat.approvals} onDecide={decide} />
           <SlashMenu matches={slashMatches} activeIndex={slashActive} onPick={name => { setInput(name + " "); setSlashActive(0); }} />
+          {attachedImage && (
+            <div className="mx-3 mt-2 flex items-center gap-2 rounded-sm border border-mx-dim bg-mx-panel2 p-2">
+              <img src={attachedImage.dataUrl} alt="attached" className="h-14 w-14 rounded-sm border border-mx-dim object-cover" />
+              <span className="text-xs text-mx-dim">Image attached</span>
+              <button
+                type="button"
+                className="ml-auto rounded-sm border border-mx-red px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright"
+                onClick={() => setAttachedImage(null)}
+              >
+                Remove
+              </button>
+            </div>
+          )}
           <div className="flex gap-2 border-t border-mx-dim p-3">
+            <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onImageSelected} />
+            <button
+              type="button"
+              title="Attach an image (needs a vision-capable orchestrator)"
+              disabled={!chat.connected}
+              onClick={pickImage}
+              className="self-end rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+            >
+              📎
+            </button>
             <textarea
               rows={3}
               className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"

@@ -2,7 +2,7 @@ export type ToolItem = { kind: "tool"; name: string; summary: string; result?: s
 export type DelegateItem = { kind: "delegate"; modality: string; model: string; output: string; done: boolean; tokens?: number; seconds?: number };
 export type NoteItem = { kind: "note"; text: string };
 export type Item = ToolItem | DelegateItem | NoteItem;
-export type Message = { role: "user" | "assistant" | "error" | "system"; text: string; items: Item[]; round?: number };
+export type Message = { role: "user" | "assistant" | "error" | "system"; text: string; items: Item[]; round?: number; imageDataUrl?: string };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export type Gpu = { name: string; vram_gb: number; backend: string };
@@ -280,8 +280,8 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
   }
 }
 
-export function addUserMessage(state: ChatState, text: string): ChatState {
-  return { ...state, messages: [...state.messages, { role: "user", text, items: [] }] };
+export function addUserMessage(state: ChatState, text: string, imageDataUrl?: string): ChatState {
+  return { ...state, messages: [...state.messages, { role: "user", text, items: [], imageDataUrl }] };
 }
 
 export function addError(state: ChatState, text: string): ChatState {
