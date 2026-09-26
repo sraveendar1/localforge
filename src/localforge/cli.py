@@ -994,6 +994,42 @@ def run(
         _print_usage_panel(result.stats, frontier_model)
 
 
+def _augment_path_for_gui_launch() -> None:
+    """A double-clicked .app (or Tauri's sidecar spawn of it) gets macOS's
+    minimal default PATH -- launchd's, not the user's shell's -- so anything
+    added by a shell rc file (Homebrew, nvm, `claude`'s own installer, an
+    npm global bin dir) is invisible to `shutil.which()` here even though
+    the same binary resolves fine from a terminal. Reported live: the
+    packaged desktop app said `claude` wasn't installed right after
+    `npm run tauri dev` (launched from a terminal, so it inherited that
+    terminal's full PATH) had just used it successfully. Only the `serve
+    --stdio` entry point needs this -- every other command is always run
+    from an actual terminal, which already has the right PATH, and asking a
+    login shell to report its environment costs real startup time, so this
+    isn't paid by `localforge run`/`doctor`/etc.
+
+    Only applies on macOS/Linux: a login shell is the actual source of
+    truth on both (`echo $PATH` after profile/rc files run), and `-l`
+    is a no-op flag mistake to make on Windows, where PATH is set at the
+    OS/user level instead and this whole class of problem doesn't occur.
+    """
+    if platform.system() == "Windows":
+        return
+    shell = os.environ.get("SHELL", "/bin/zsh")
+    try:
+        result = subprocess.run(
+            [shell, "-ilc", "echo -n $PATH"], capture_output=True, text=True, timeout=5,
+        )
+        shell_path = result.stdout.strip()
+    except Exception:  # noqa: BLE001 - best-effort only; keep the existing PATH on any failure
+        return
+    if not shell_path:
+        return
+    current = os.environ.get("PATH", "").split(os.pathsep)
+    merged = list(dict.fromkeys(current + shell_path.split(os.pathsep)))  # de-dup, preserve order
+    os.environ["PATH"] = os.pathsep.join(p for p in merged if p)
+
+
 @app.command()
 def serve(
     stdio: bool = typer.Option(
@@ -1011,6 +1047,8 @@ def serve(
     import json
 
     from localforge.serve import serve_stdio
+
+    _augment_path_for_gui_launch()
 
     if not stdio:
         console.print("[error]Only --stdio is supported for now.[/error] Run `localforge serve --stdio`.")
