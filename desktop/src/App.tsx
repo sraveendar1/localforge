@@ -133,7 +133,7 @@ function App() {
       send({ type: "system_stats" });  // don't wait for the first 5s interval tick
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
-      send({ type: "local_model_request" });  // per-modality delegate target (auto, or a pinned override)
+      send({ type: "advanced_model_request" });  // per-modality delegate target (auto, or a pinned override)
     }
   }, [chat.connected, chat.trustRequired, send]);
 

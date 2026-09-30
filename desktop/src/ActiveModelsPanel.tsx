@@ -66,7 +66,7 @@ function DelegatePicker({
 // right now (the pulsing dot) plus this session's run/token counts per
 // model. A "Change" action per row opens a picker (local catalog models, or
 // a paid cloud model via an API key/CLI login you already have) that sends
-// set_delegate_target -- the same override /local-model sets from the chat
+// set_delegate_target -- the same override /advanced-model sets from the chat
 // input or the terminal REPL, kept in sync since both write the same place.
 export function ActiveModelsPanel({
   usage,

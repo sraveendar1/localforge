@@ -51,7 +51,7 @@ export type ChatState = {
   usage: Usage;
   usageHistory: { previousSession: UsageTotals | null; allTime: UsageTotals | null };
   configuredModels: ConfiguredModel[];
-  // Per-modality delegate target (see /local-model): auto by default, or a
+  // Per-modality delegate target (see /advanced-model): auto by default, or a
   // pinned local/cloud override. delegateOptions is fetched lazily, per
   // modality, only when the "Change" picker for that row is opened.
   localModelTargets: { [modality: string]: LocalModelTarget };
@@ -307,7 +307,7 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
         })),
       };
     }
-    case "local_model": {
+    case "advanced_model": {
       const targets = ev.targets && typeof ev.targets === "object" ? ev.targets : {};
       const localModelTargets: ChatState["localModelTargets"] = {};
       for (const [modality, t] of Object.entries<any>(targets)) {
@@ -369,7 +369,7 @@ export type Usage = {
   localTokensGenerated: number;
   frontierViaSubscription: boolean;
   localModels: { [key: string]: { runs: number; tokens: number; active: boolean } };
-  // An "advanced" per-modality delegate target (see /local-model) can send
+  // An "advanced" per-modality delegate target (see /advanced-model) can send
   // coding/docs/general to a paid cloud model -- neither free local compute
   // nor orchestrator spend, so it's tracked apart from both.
   delegateTokensGenerated: number;

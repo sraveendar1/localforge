@@ -1,4 +1,4 @@
-"""serve.py's protocol surface for delegate targets: /local-model typed in
+"""serve.py's protocol surface for delegate targets: /advanced-model typed in
 the chat box (parity with the terminal REPL's slash command, which serve.py
 doesn't get for free -- unlike repl.py, it dispatches an explicit elif
 chain, not "any Typer command"), plus delegate_options_request/
@@ -34,43 +34,43 @@ def last(out, event_type):
     return matches[-1]
 
 
-def test_bare_local_model_chat_command_lists_all_three(tmp_path):
+def test_bare_advanced_model_chat_command_lists_all_three(tmp_path):
     server, out = make_server(tmp_path)
-    server.handle({"type": "user_message", "text": "/local-model"})
-    ev = last(out, "local_model")
+    server.handle({"type": "user_message", "text": "/advanced-model"})
+    ev = last(out, "advanced_model")
     assert set(ev["targets"].keys()) == set(dt.MODALITIES)
     assert ev["targets"]["coding"]["target"] == "auto"
 
 
-def test_local_model_chat_command_pins_a_real_model(tmp_path):
+def test_advanced_model_chat_command_pins_a_real_model(tmp_path):
     from localforge.catalog import load_catalog
 
     a_coding_model = next(m.name for m in load_catalog() if m.modality == "coding")
     server, out = make_server(tmp_path)
-    server.handle({"type": "user_message", "text": f"/local-model coding {a_coding_model}"})
-    ev = last(out, "local_model")
+    server.handle({"type": "user_message", "text": f"/advanced-model coding {a_coding_model}"})
+    ev = last(out, "advanced_model")
     assert ev["targets"]["coding"]["target"] == f"ollama:{a_coding_model}"
     assert dt.get("coding") == dt.DelegateTarget(kind="ollama", model=a_coding_model)
 
 
-def test_local_model_chat_command_rejects_a_bad_model(tmp_path):
+def test_advanced_model_chat_command_rejects_a_bad_model(tmp_path):
     server, out = make_server(tmp_path)
-    server.handle({"type": "user_message", "text": "/local-model coding not-a-real-model"})
+    server.handle({"type": "user_message", "text": "/advanced-model coding not-a-real-model"})
     err = last(out, "error")
     assert "isn't a coding model in the catalog" in err["message"]
 
 
-def test_local_model_chat_command_rejects_unknown_modality(tmp_path):
+def test_advanced_model_chat_command_rejects_unknown_modality(tmp_path):
     server, out = make_server(tmp_path)
-    server.handle({"type": "user_message", "text": "/local-model nonsense x"})
+    server.handle({"type": "user_message", "text": "/advanced-model nonsense x"})
     err = last(out, "error")
     assert "Unknown task type" in err["message"]
 
 
-def test_local_model_request_message_type_also_works(tmp_path):
+def test_advanced_model_request_message_type_also_works(tmp_path):
     server, out = make_server(tmp_path)
-    server.handle({"type": "local_model_request"})
-    ev = last(out, "local_model")
+    server.handle({"type": "advanced_model_request"})
+    ev = last(out, "advanced_model")
     assert "coding" in ev["targets"]
 
 
@@ -119,7 +119,7 @@ def test_set_delegate_target_pins_a_local_model(tmp_path):
     a_docs_model = next(m.name for m in load_catalog() if m.modality == "docs")
     server, out = make_server(tmp_path)
     server.handle({"type": "set_delegate_target", "modality": "docs", "target": a_docs_model})
-    ev = last(out, "local_model")
+    ev = last(out, "advanced_model")
     assert ev["targets"]["docs"]["target"] == f"ollama:{a_docs_model}"
 
 
@@ -127,7 +127,7 @@ def test_set_delegate_target_pins_a_cloud_target(tmp_path, monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     server, out = make_server(tmp_path)
     server.handle({"type": "set_delegate_target", "modality": "coding", "target": "api:anthropic:claude-haiku-4-5"})
-    ev = last(out, "local_model")
+    ev = last(out, "advanced_model")
     assert ev["targets"]["coding"]["target"] == "api:anthropic:claude-haiku-4-5"
 
 
@@ -138,7 +138,7 @@ def test_set_delegate_target_clears_back_to_auto(tmp_path):
     server, out = make_server(tmp_path)
     server.handle({"type": "set_delegate_target", "modality": "coding", "target": a_coding_model})
     server.handle({"type": "set_delegate_target", "modality": "coding", "target": "auto"})
-    ev = last(out, "local_model")
+    ev = last(out, "advanced_model")
     assert ev["targets"]["coding"]["target"] == "auto"
 
 

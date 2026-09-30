@@ -70,13 +70,29 @@ def _installed_model_names(ollama: OllamaBackend) -> set[str]:
     except Exception:
         return set()
 
-def _local_model_snapshot() -> dict:
+def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> str:
+    """What's actually handling `modality` right now -- names the concrete
+    model even for "auto" rather than just saying the word "auto", which a
+    user reported as unhelpful (they can't tell what's actually running).
+    """
+    target = delegate_target.get(modality)
+    if target.kind != "auto":
+        return delegate_target.describe(target)
+    entry = recs.get(modality)
+    if entry is None:
+        return "auto -- no local model fits this machine"
+    on_disk = "installed" if entry.name in installed else "not installed"
+    return f"{entry.name} (auto, local, {on_disk})"
+
+def _advanced_model_snapshot() -> dict:
     """Current delegate target for every modality, for the Active LLMs
-    panel and the /local-model chat command alike."""
+    panel and the /advanced-model chat command alike."""
+    installed = _installed_model_names(OllamaBackend())
+    recs = recommendations(detect_hardware(), installed=installed)
     return {
         m: {
             "target": delegate_target.render(delegate_target.get(m)),
-            "description": delegate_target.describe(delegate_target.get(m)),
+            "description": _describe_active_target(m, recs, installed),
         }
         for m in delegate_target.MODALITIES
     }
@@ -88,7 +104,7 @@ def _delegate_options(modality: str) -> dict:
     each provider that's actually usable right now -- has an API key set,
     or its CLI is on PATH and logged in. A cloud entry's model is that
     provider's own default choice (config.FRONTIER_MODEL_CHOICES); the
-    chat/CLI `/local-model` command is still how you'd pick something more
+    chat/CLI `/advanced-model` command is still how you'd pick something more
     specific than the default.
     """
     installed = _installed_model_names(OllamaBackend())
@@ -367,8 +383,8 @@ class StdioServer:
                     self.handle_catalog_command(cmd)
                 elif cmd == "/model":
                     self.handle_model_command(arg)
-                elif cmd == "/local-model":
-                    self.handle_local_model_command(arg)
+                elif cmd == "/advanced-model":
+                    self.handle_advanced_model_command(arg)
                 elif cmd == "/auto":
                     self.handle_auto_command(arg)
                 elif cmd == "/run":
@@ -429,8 +445,8 @@ class StdioServer:
             if model:
                 self.frontier_model = model
                 self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
-        elif message_type == "local_model_request":
-            self.emit("local_model", targets=_local_model_snapshot())
+        elif message_type == "advanced_model_request":
+            self.emit("advanced_model", targets=_advanced_model_snapshot())
         elif message_type == "delegate_options_request":
             modality = str(message.get('modality', '')).strip().lower()
             if modality not in delegate_target.MODALITIES:
@@ -448,7 +464,7 @@ class StdioServer:
                 except delegate_target.InvalidTarget as exc:
                     self.emit("error", message=str(exc))
                 else:
-                    self.emit("local_model", targets=_local_model_snapshot())
+                    self.emit("advanced_model", targets=_advanced_model_snapshot())
         elif message_type == "set_auto":
             self.auto_approve = bool(message.get('enabled', False))
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
@@ -603,24 +619,24 @@ class StdioServer:
                 self.frontier_model = model
                 self.emit("model", model=self.frontier_model)
 
-    def handle_local_model_command(self, arg: str):
+    def handle_advanced_model_command(self, arg: str):
         parts = arg.strip().split(None, 1)
         if not parts:
-            self.emit("local_model", targets=_local_model_snapshot())
+            self.emit("advanced_model", targets=_advanced_model_snapshot())
             return
         modality = parts[0].lower()
         if len(parts) == 1:
             if modality not in delegate_target.MODALITIES:
                 self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, or general.")
                 return
-            self.emit("local_model", targets=_local_model_snapshot())
+            self.emit("advanced_model", targets=_advanced_model_snapshot())
             return
         try:
             delegate_target.apply(modality, parts[1])
         except delegate_target.InvalidTarget as exc:
             self.emit("error", message=str(exc))
             return
-        self.emit("local_model", targets=_local_model_snapshot())
+        self.emit("advanced_model", targets=_advanced_model_snapshot())
 
     def handle_auto_command(self, arg: str):
         arg = arg.strip().lower()

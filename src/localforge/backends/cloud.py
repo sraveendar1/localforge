@@ -44,7 +44,7 @@ class CloudApiBackend:
         if env_var and not os.environ.get(env_var):
             raise CloudProviderNotConfigured(
                 f"No {env_var} is set, so {provider} can't be used as a delegate. "
-                "Set it (e.g. via `localforge setup`) or pick a different target with `localforge local-model`."
+                "Set it (e.g. via `localforge setup`) or pick a different target with `localforge advanced-model`."
             )
 
     def generate(

@@ -45,7 +45,7 @@ export function UsagePanel({ usage, model, usageHistory }: { usage: Usage; model
       {usage.delegateTokensGenerated > 0 && (
         <section>
           <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Paid delegate</h3>
-          <p className="mb-1 text-xs text-mx-dim">A task type set to a cloud model via /local-model -- unlike a local model, this costs money per delegation.</p>
+          <p className="mb-1 text-xs text-mx-dim">A task type set to a cloud model via /advanced-model -- unlike a local model, this costs money per delegation.</p>
           <div className="flex justify-between gap-2">
             <span className="text-mx-mid">Tokens</span>
             <span className="text-mx-amber tabular-nums">{usage.delegateTokensGenerated.toLocaleString()}</span>

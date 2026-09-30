@@ -165,27 +165,45 @@ def scan() -> None:
 
 @app.command()
 def models() -> None:
-    """Show the best-fitting local model per task type for this machine,
-    preferring what's already installed over a fresh download."""
+    """Show what's actually handling coding/docs/general work right now:
+    automatic (the best-fitting installed local model, preferring what's
+    already on disk over a fresh download) unless overridden with
+    `localforge local-model`."""
     hw = detect_hardware()
     installed = _installed_model_names(OllamaBackend())
     recs = recommendations(hw, installed=installed)
 
-    table = Table(title="Recommended local models for this machine")
-    table.add_column("Modality")
+    table = Table(title="Models by task type")
+    table.add_column("Task type")
     table.add_column("Model")
-    table.add_column("Runtime")
+    table.add_column("Role")
     table.add_column("Quality tier")
     table.add_column("Installed")
 
-    for modality, entry in recs.items():
-        if entry is None:
-            table.add_row(modality, "[error]none fit this hardware[/error]", "-", "-", "-")
+    for modality in delegate_target.MODALITIES:
+        target = delegate_target.get(modality)
+        entry = recs.get(modality)
+        if target.kind == "auto":
+            if entry is None:
+                table.add_row(modality, "[error]none fit this hardware[/error]", "auto", "-", "-")
+            else:
+                on_disk = "[success]yes[/success]" if entry.name in installed else "no"
+                table.add_row(modality, entry.name, "auto (local)", str(entry.quality_tier), on_disk)
+        elif target.kind == "ollama":
+            pinned = next((m for m in load_catalog() if m.modality == modality and m.name == target.model), None)
+            on_disk = "[success]yes[/success]" if target.model in installed else "no"
+            table.add_row(
+                modality, target.model, "[accent]pinned (local)[/accent]",
+                str(pinned.quality_tier) if pinned else "[error]not in catalog[/error]", on_disk,
+            )
         else:
-            on_disk = "[success]yes[/success]" if entry.name in installed else "no"
-            table.add_row(modality, entry.name, entry.runtime, str(entry.quality_tier), on_disk)
+            via = "API key" if target.kind == "api" else "CLI login"
+            table.add_row(
+                modality, target.model, f"[warning]pinned (cloud, {target.provider}, via {via})[/warning]", "-", "-",
+            )
 
     console.print(table)
+    console.print("[dim]Change with: localforge advanced-model <coding|docs|general> <value>[/dim]")
 
 
 def _installed_model_names(ollama: OllamaBackend) -> set[str]:
@@ -241,6 +259,61 @@ def _print_model_plan(recs: dict, installed: set[str], hw) -> None:
         console.print("[success]✓[/success] Nothing to download — every task type is covered by what you have.")
     for note in notes:
         console.print(f"  [dim]note — {note}[/dim]")
+    console.print()
+
+
+def _walk_through_advanced_model_setup(recs: dict, installed: set[str]) -> None:
+    """Advanced setup: go through coding/docs/general one at a time,
+    showing the automatic recommendation and letting the user keep it,
+    pick a different local model, or send that task type to a paid cloud
+    model instead. Mutates `recs` in place so the caller's download list
+    reflects the final choice, not the original recommendation: a
+    different local pick replaces the entry, and a cloud pick clears it
+    (nothing to download for that task type).
+    """
+    console.print("[bold]Advanced: choose per task type[/bold]")
+    for modality in delegate_target.MODALITIES:
+        rec = recs.get(modality)
+        rec_label = f"{rec.name} (tier {rec.quality_tier})" if rec else "no local model fits this machine"
+        console.print(f"\n{modality} — recommended: [accent]{rec_label}[/accent]")
+        console.print("  1) Keep this")
+        console.print("  2) Pick a different local model")
+        console.print("  3) Use a paid cloud model instead")
+        pick = console.input("  Choice [1]: ").strip()
+
+        if pick == "2":
+            catalog_entries = sorted(
+                (m for m in load_catalog() if m.modality == modality), key=lambda m: -m.quality_tier,
+            )
+            if not catalog_entries:
+                console.print("  [warning]No catalog entries for this task type — staying automatic.[/warning]")
+                continue
+            for i, m in enumerate(catalog_entries, 1):
+                on_disk = "installed" if m.name in installed else f"~{m.disk_gb:g} GB"
+                console.print(f"    {i}) {m.name} — tier {m.quality_tier} ({on_disk})")
+            answer = console.input("  Number (Enter to keep the recommendation): ").strip()
+            if answer.isdigit() and 1 <= int(answer) <= len(catalog_entries):
+                chosen = catalog_entries[int(answer) - 1]
+                recs[modality] = chosen
+                console.print(f"  [success]✓[/success] {modality} will use {chosen.name}.")
+
+        elif pick == "3":
+            kind_answer = console.input("  (a)pi key or (c)li subscription login? [a]: ").strip().lower()
+            kind = "cli" if kind_answer.startswith("c") else "api"
+            provider = console.input("  Provider (anthropic, openai, gemini): ").strip().lower()
+            default_model = next(iter(config.FRONTIER_MODEL_CHOICES.get(provider, [])), "")
+            model = console.input(f"  Model id{f' [{default_model}]' if default_model else ''}: ").strip() or default_model
+            if not model:
+                console.print("  [error]No model given — staying automatic for this task type.[/error]")
+                continue
+            try:
+                target = delegate_target.apply(modality, f"{kind}:{provider}:{model}")
+            except delegate_target.InvalidTarget as exc:
+                console.print(f"  [error]{exc}[/error] Staying automatic for this task type.")
+                continue
+            recs[modality] = None  # a cloud target: nothing to download for this task type
+            via = "your API key (billed per call)" if kind == "api" else "your CLI subscription"
+            console.print(f"  [success]✓[/success] {modality} now delegates to {target.model} ({provider}, via {via}).")
     console.print()
 
 
@@ -640,6 +713,20 @@ def setup() -> None:
             os.environ[env_var] = api_key
             console.print(f"[success]✓[/success] Saved {env_var} to {config.CONFIG_FILE}\n")
 
+    # 2b. Auto vs Advanced -- asked right after the orchestrator is chosen:
+    # the very next decision is whether the free local models it delegates
+    # coding/docs/general to are picked automatically, or chosen per task
+    # type (including sending one to a paid cloud model instead).
+    advanced_setup = False
+    if sys.stdin.isatty():
+        console.print("How should localforge pick the models it delegates coding/docs/general work to?")
+        console.print("  1) Automatic (recommended) — best-fitting installed local model per task type")
+        console.print("  2) Advanced — choose per task type, including a paid cloud model")
+        _drain_buffered_input()
+        advanced_choice = console.input("Choice [1]: ").strip()
+        advanced_setup = advanced_choice == "2"
+        console.print()
+
     # 3. Hardware scan, then let the frontier model pick which local models
     # to download (constrained to catalog entries that already fit this
     # machine's RAM/VRAM/disk space -- see advisor.recommend_models).
@@ -668,6 +755,8 @@ def setup() -> None:
         recs = recommendations(hw, installed=installed)
 
     _print_model_plan(recs, installed, hw)
+    if advanced_setup:
+        _walk_through_advanced_model_setup(recs, installed)
     to_pull = {e.name for e in recs.values() if e is not None and e.runtime == "ollama" and e.name not in installed}
     failed: list[str] = []
     with Progress(
@@ -2215,8 +2304,23 @@ def model_command(
         console.print("[warning]Not a number from the list — nothing changed.[/warning]")
 
 
-@app.command(name="local-model")
-def local_model_command(
+def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> str:
+    """What's actually handling `modality` right now -- names the concrete
+    model even for "auto" rather than just saying the word "auto", which a
+    user reported as unhelpful (they can't tell what's actually running).
+    """
+    target = delegate_target.get(modality)
+    if target.kind != "auto":
+        return delegate_target.describe(target)
+    entry = recs.get(modality)
+    if entry is None:
+        return "auto -- no local model fits this machine"
+    on_disk = "installed" if entry.name in installed else "not installed"
+    return f"{entry.name} (auto, local, {on_disk})"
+
+
+@app.command(name="advanced-model")
+def advanced_model_command(
     modality: str = typer.Argument(None, help="coding, docs, or general. Omit to show all three."),
     value: str = typer.Argument(
         None,
@@ -2231,11 +2335,15 @@ def local_model_command(
     type to a paid cloud model instead -- via an API key or a CLI
     subscription login -- independently per task type.
     """
+    hw = detect_hardware()
+    installed = _installed_model_names(OllamaBackend())
+    recs = recommendations(hw, installed=installed)
+
     if modality is None:
         for m in delegate_target.MODALITIES:
-            console.print(f"{m}: [accent]{escape(delegate_target.describe(delegate_target.get(m)))}[/accent]")
+            console.print(f"{m}: [accent]{escape(_describe_active_target(m, recs, installed))}[/accent]")
         if value is None:
-            console.print("Change one with: local-model <coding|docs|general> <value>")
+            console.print("Change one with: advanced-model <coding|docs|general> <value>")
         return
 
     modality = modality.lower()
@@ -2244,7 +2352,7 @@ def local_model_command(
         raise typer.Exit(code=1)
 
     if value is None:
-        console.print(f"{modality}: [accent]{escape(delegate_target.describe(delegate_target.get(modality)))}[/accent]")
+        console.print(f"{modality}: [accent]{escape(_describe_active_target(modality, recs, installed))}[/accent]")
         return
 
     try:
@@ -2254,7 +2362,7 @@ def local_model_command(
         raise typer.Exit(code=1) from None
 
     if target is delegate_target.AUTO:
-        console.print(f"[success]✓[/success] {modality} is back to automatic (best-fitting installed local model).")
+        console.print(f"[success]✓[/success] {modality} is back to automatic: {escape(_describe_active_target(modality, recs, installed))}.")
     elif target.kind == "ollama":
         console.print(f"[success]✓[/success] {modality} now delegates to {escape(target.model)} (local, via Ollama).")
     else:
