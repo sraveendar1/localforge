@@ -282,6 +282,23 @@ isn't published yet — see the note in `.github/workflows/release.yml`.
 This is also what makes `/desktop`/`localforge desktop` (below) work: it
 looks for the app installed exactly this way.
 
+**macOS: "LocalForge Desktop is damaged and can't be opened."** The app isn't
+signed with a paid Apple Developer ID yet, and macOS blocks anything downloaded
+that isn't. The file isn't corrupt. Pick whichever applies:
+
+- **Builds from v0.1.3 on** are ad-hoc signed (free), so macOS shows the usual
+  *"can't be opened because Apple cannot check it for malicious software"*
+  message instead. Open **System Settings → Privacy & Security**, scroll to
+  *"LocalForge Desktop" was blocked*, and click **Open Anyway**. (On macOS 15
+  the older right-click → Open shortcut no longer works.)
+- **Any build**, one command in Terminal after dragging it to Applications:
+  `xattr -cr "/Applications/LocalForge Desktop.app"`, then open it normally.
+  If it complains before you can even copy it, run
+  `xattr -cr ~/Downloads/*.dmg` first.
+
+Removing the warning entirely takes an Apple Developer ID and notarization
+(a paid Apple account, plus signing secrets in the release workflow).
+
 Releases are built automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml) whenever
 a maintainer pushes a `v*` tag (`git tag v0.2.0 && git push origin v0.2.0`),
