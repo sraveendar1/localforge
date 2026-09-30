@@ -6,7 +6,6 @@ import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
 import { ForgingIndicator } from "./ForgingIndicator";
-import { ModelPicker } from "./ModelPicker";
 import { GoalPanel } from "./GoalPanel";
 import { ActiveModelsPanel } from "./ActiveModelsPanel";
 import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
@@ -22,9 +21,14 @@ function App() {
   const [chat, setChat] = useState<ChatState>(initialState);
   const [folder, setFolder] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  const [modelDraft, setModelDraft] = useState("claude-opus-5");
+  // The orchestrator to start the next folder's session with. Empty until the
+// backend reports the one really running, so a fresh app start uses whatever
+// `localforge setup` saved -- it used to default to "claude-opus-5" and
+// override that on every first folder open.
+  const [modelDraft, setModelDraft] = useState("");
   const [slashActive, setSlashActive] = useState(0);
   const [leftNavOpen, setLeftNavOpen] = useState(false);
+  const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -140,6 +144,10 @@ function App() {
   }, [chat.connected, chat.trustRequired, send]);
 
   useEffect(() => {
+    if (chat.model) setModelDraft(chat.model);
+  }, [chat.model]);
+
+  useEffect(() => {
     if (chat.connected) {
       const interval = setInterval(() => {
         send({ type: "system_stats" });
@@ -154,7 +162,16 @@ function App() {
         <span className="font-semibold glow">localforge</span>
         <span className={"h-2 w-2 rounded-full " + (chat.connected ? "bg-mx-bright" : "bg-mx-dim")} title={chat.connected ? "Connected" : "Not connected"} />
         <span className="min-w-0 flex-1 truncate text-sm text-mx-dim" title={folder ?? ""}>{folder ?? "No folder"}</span>
-        <ModelPicker value={chat.model || modelDraft} options={chat.orchestratorOptions} disabled={!chat.connected} onOpen={() => send({ type: "orchestrator_options_request" })} onChange={m => { setModelDraft(m); if (chat.connected && m && m !== chat.model) send({ type: "set_model", model: m }); }} />
+        <button
+          type="button"
+          disabled={!chat.connected}
+          title="Change models"
+          aria-label="Orchestrator model (click to change models)"
+          onClick={() => { setLeftNavOpen(true); setModelsSignal(n => n + 1); send({ type: "orchestrator_options_request" }); }}
+          className="max-w-xs truncate rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1 text-sm text-mx-bright hover:border-mx-mid disabled:opacity-50"
+        >
+          {chat.model || modelDraft || "model"}
+        </button>
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
       </header>
@@ -167,6 +184,13 @@ function App() {
           currentFolder={folder}
           onSelectFolder={startSessionForFolder}
           onOpenDialog={openFolder}
+          modelsSignal={modelsSignal}
+          frontier={chat.model || modelDraft}
+          frontierOptions={chat.orchestratorOptions}
+          targets={chat.localModelTargets}
+          delegateOptions={chat.delegateOptions}
+          connected={chat.connected}
+          send={send}
         />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -286,8 +310,6 @@ function App() {
               usage={chat.usage}
               configuredModels={chat.configuredModels}
               localModelTargets={chat.localModelTargets}
-              delegateOptions={chat.delegateOptions}
-              send={send}
             />
           </Curtain>
           <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} model={chat.model} usageHistory={chat.usageHistory} /></Curtain>

@@ -1,5 +1,7 @@
 import { SLASH_COMMANDS } from "./SlashMenu";
 import { Curtain } from "./Curtain";
+import { ModelsPanel } from "./ModelsPanel";
+import type { DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
 
 // A collapsible left rail (chevron-toggled): a static command reference so
 // new users don't have to type "/" to discover what's available, and a
@@ -12,6 +14,13 @@ export function LeftNav({
   currentFolder,
   onSelectFolder,
   onOpenDialog,
+  modelsSignal,
+  frontier,
+  frontierOptions,
+  targets,
+  delegateOptions,
+  connected,
+  send,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -19,6 +28,13 @@ export function LeftNav({
   currentFolder: string | null;
   onSelectFolder: (path: string) => void;
   onOpenDialog: () => void;
+  modelsSignal: number;  // bumped by the header's model chip to pull the Models section open
+  frontier: string;
+  frontierOptions: OrchestratorOption[];
+  targets: { [modality: string]: LocalModelTarget };
+  delegateOptions: { [modality: string]: DelegateOptions };
+  connected: boolean;
+  send: (obj: object) => void;
 }) {
   return (
     <div className="flex h-full shrink-0">
@@ -54,6 +70,16 @@ export function LeftNav({
               Open folder…
             </button>
           </Curtain>
+          <Curtain title="Models" openSignal={modelsSignal}>
+            <ModelsPanel
+              frontier={frontier}
+              frontierOptions={frontierOptions}
+              targets={targets}
+              delegateOptions={delegateOptions}
+              connected={connected}
+              send={send}
+            />
+          </Curtain>
           <Curtain title="Commands" defaultOpen={false}>
             <ul className="space-y-1.5">
               {SLASH_COMMANDS.map(c => (
@@ -68,7 +94,7 @@ export function LeftNav({
       )}
       <button
         type="button"
-        title={open ? "Hide sidebar" : "Show projects & commands"}
+        title={open ? "Hide sidebar" : "Show projects, models & commands"}
         onClick={onToggle}
         className="group flex w-6 shrink-0 items-center justify-center border-r border-mx-dim bg-mx-panel2 hover:bg-mx-dim"
       >

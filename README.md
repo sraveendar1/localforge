@@ -356,16 +356,36 @@ CLI's always-visible activity line.
 **Sidebar** (right side): five independently collapsible sections — click
 any title to expand/collapse it — in this order: **Overall goal** (this
 project's AGENTS.md summary, if it has one), **Plan** (the running task's
-todos), **Active LLMs** (which local model is configured/currently working
-for each modality — a "Change" action per row lets you pin a different
-local model or send that task type to a paid cloud model instead; see
-`localforge advanced-model` below), **Usage and cost** (frontier tokens/cost, plus this
+todos), **Active LLMs** (which model is handling each kind of work right
+now, with a pulsing dot on the one generating — status only; you choose
+models in the left **Models** section), **Usage and cost** (frontier tokens/cost, plus this
 project's usage history), and **System** (CPU/RAM/GPU, collapsed by
 default).
 
 **Left nav** (collapsible via the chevron tab on the left edge): a list of
 recently-opened project folders — click one to switch straight to it,
-skipping the file dialog — and a full reference of every session command.
+skipping the file dialog — the **Models** section, and a full reference of
+every session command.
+
+**Models** is where every model choice lives, so the whole setup is visible
+in one place. The **Frontier** row is the model that plans and reviews
+(clicking the model name in the header opens this section). It lists every
+model already in Ollama plus each provider you have an API key or CLI login
+for — the same list `/model` shows in the terminal — and a box for any other
+model id. Below it are the three kinds of work (coding, docs, general), with
+the toggle:
+
+- **Automatic** (default): localforge picks the best local model for each
+  kind of work. The rows are read-only but always name the real model, e.g.
+  `qwen2.5-coder:7b (auto, local, installed)`.
+- **Advanced**: each kind of work gets a **Change** button — Auto, a local
+  model (free; ones not yet installed say how big the download is), or a paid
+  cloud model through a key/login you already have (costs money per use; see
+  `localforge advanced-model` below). Advanced simply means "at least one is
+  pinned", so a pin made in the terminal or by typing `/advanced-model` shows
+  up here as Advanced, and switching back to Automatic clears the pins.
+
+The choices are global (the same as the terminal's), not per project.
 
 The chat input doubles as a command line: typing `/` brings up every
 session command with a description (arrow keys / Tab to pick), and each one
@@ -729,7 +749,7 @@ localforge desktop                               # hand this session off to the 
 
 **`localforge desktop`** (also `/desktop` in a session): launches the desktop app open to the current folder and ends this terminal session, so you can keep going in the GUI right where you left off — session memory is saved through the same path `/exit` already uses, and the GUI reads it back on start. Needs the desktop app installed already (`cd desktop && npm run tauri build`); `LOCALFORGE_DESKTOP_BIN` points it at a specific binary otherwise. Blocked while a task is running, same as `/clear`/`/uninstall`.
 
-**`localforge advanced-model`** (also `/advanced-model` in a session, and a "Change" action on the desktop app's Active LLMs panel): coding/docs/general each independently default to *automatic* — the best-fitting installed local model, same as always, and free. This lets you override one: pin a specific local model from the catalog, or send that task type to a paid cloud model instead — either metered (an API key) or via a CLI subscription login you're already using for the orchestrator. A cloud choice needs a usable key/login already configured (`localforge setup`) and shows up as its own line in `/usage`, kept apart from local (free) and orchestrator spend since it's neither. `localforge advanced-model <type>` alone shows the current choice; `auto` clears a pin.
+**`localforge advanced-model`** (also `/advanced-model` in a session, and the Advanced mode of the desktop app's Models section): coding/docs/general each independently default to *automatic* — the best-fitting installed local model, same as always, and free. This lets you override one: pin a specific local model from the catalog, or send that task type to a paid cloud model instead — either metered (an API key) or via a CLI subscription login you're already using for the orchestrator. A cloud choice needs a usable key/login already configured (`localforge setup`) and shows up as its own line in `/usage`, kept apart from local (free) and orchestrator spend since it's neither. `localforge advanced-model <type>` alone shows the current choice; `auto` clears a pin.
 
 ### Themes
 

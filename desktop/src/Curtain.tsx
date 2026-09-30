@@ -1,12 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 // A collapsible sidebar section ("curtain pull"): the title bar is always
 // visible and toggles the body open/closed, so the sidebar can stay compact
 // without losing any section entirely -- requested after the sidebar grew
 // to five stacked panels (goal, plan, active LLMs, usage, system).
-export function Curtain({ title, defaultOpen = true, children }: { title: string; defaultOpen?: boolean; children: ReactNode }) {
+// `openSignal` lets something outside (the header's model chip) pull this one
+// open: each time it changes to a new non-zero value the section opens.
+export function Curtain({ title, defaultOpen = true, openSignal = 0, children }: { title: string; defaultOpen?: boolean; openSignal?: number; children: ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    if (openSignal > 0) setOpen(true);
+  }, [openSignal]);
   return (
     <section className="w-full text-xs">
       <button
