@@ -115,3 +115,30 @@ details[open] summary::before {
   background: var(--color-mx-dim);
   border-radius: 4px;
 }
+
+/* The "forging" strip (ForgingIndicator.tsx): a hammer that swings down and
+   a spark that flashes on impact, so a working task is visibly alive. */
+.forge-hammer {
+  display: inline-block;
+  transform-origin: 85% 85%;
+  animation: forge-swing 0.7s ease-in infinite;
+}
+.forge-spark {
+  color: var(--color-mx-amber);
+  animation: forge-flash 0.7s ease-out infinite;
+}
+@keyframes forge-swing {
+  0%   { transform: rotate(-40deg); }
+  60%  { transform: rotate(15deg); }
+  70%  { transform: rotate(15deg); }
+  100% { transform: rotate(-40deg); }
+}
+@keyframes forge-flash {
+  0%, 55% { opacity: 0; transform: scale(0.4); }
+  65%     { opacity: 1; transform: scale(1.3); }
+  100%    { opacity: 0; transform: scale(1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .forge-hammer, .forge-spark { animation: none; }
+  .forge-spark { opacity: 1; }
+}

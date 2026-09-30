@@ -62,6 +62,23 @@ export type ChatState = {
   queue: string[];  // New queue field
   streamOutput: boolean;  // New ChatState field
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
+  // What the running task is doing right now, for the live "Forging with X…"
+  // strip (the desktop counterpart of the CLI's status line). null when idle.
+  activity: Activity | null;
+};
+
+// Times are epoch ms. tokens shown = finishedTokens + localTokens (the
+// delegation in flight, estimated from streamed characters until it
+// finishes and reports the exact count) + the orchestrator's answer so far.
+export type Activity = {
+  startedAt: number;
+  lastEventAt: number;
+  who: string;                     // whichever model is working right now
+  detail: string;                  // "planning (round 2)", "writing coding", "downloading x", ...
+  finishedTokens: number;
+  localTokens: number;
+  localStartedAt: number | null;   // when the current delegation began, for tok/s
+  answerChars: number;
 };
 export const initialState: ChatState = {
   messages: [],
@@ -92,7 +109,8 @@ export const initialState: ChatState = {
   scratchFiles: [],
   queue: [],  // Initialize queue to an empty array
   streamOutput: false,  // Initialize streamOutput to false
-  trustRequired: null
+  trustRequired: null,
+  activity: null
 };
 
 function toUsageTotals(raw: any): UsageTotals | null {
@@ -160,7 +178,71 @@ function withStats(state: ChatState, stats: any): ChatState {
   };
 }
 
+const CHARS_PER_TOKEN = 4;  // rough, for the live count only; delegate_finished carries the exact number
+
+function brief(text: string, max = 60): string {
+  const oneLine = text.replace(/\s+/g, " ").trim();
+  return oneLine.length > max ? oneLine.slice(0, max - 1) + "…" : oneLine;
+}
+
+// Keeps `activity` in step with the run: started on run_started, refreshed by
+// every event that means progress, cleared when the run ends. Layered over the
+// main reducer rather than woven into its cases, so the two stay independent.
+function trackActivity(next: ChatState, ev: any): ChatState {
+  const now = Date.now();
+  switch (ev.type) {
+    case "run_started":
+      return {
+        ...next,
+        activity: {
+          startedAt: now, lastEventAt: now, who: next.model, detail: "starting",
+          finishedTokens: 0, localTokens: 0, localStartedAt: null, answerChars: 0,
+        },
+      };
+    case "run_finished":
+    case "run_cancelled":
+    case "error":
+      return next.activity ? { ...next, activity: null } : next;
+  }
+  const a = next.activity;
+  if (!a) return next;
+  const set = (patch: Partial<Activity>): ChatState => ({ ...next, activity: { ...a, lastEventAt: now, ...patch } });
+  switch (ev.type) {
+    case "frontier_round":
+      return set({ who: next.model, detail: `planning (round ${ev.round ?? "?"})`, localStartedAt: null, localTokens: 0 });
+    case "text_delta":
+      return set({ who: next.model, detail: "writing the answer", answerChars: a.answerChars + String(ev.text ?? "").length });
+    case "tool_call_started":
+      return set({ who: next.model, detail: brief(`${ev.name ?? "tool"} ${ev.summary ?? ""}`) });
+    case "delegate_started":
+      return set({ who: String(ev.model ?? "a model"), detail: `writing ${ev.modality ?? "code"}`, localStartedAt: now, localTokens: 0 });
+    case "delegate_token":
+      return set({ localTokens: a.localTokens + Math.ceil(String(ev.text ?? "").length / CHARS_PER_TOKEN) });
+    case "delegate_finished":
+      return set({
+        who: next.model, detail: "reviewing the result", localStartedAt: null, localTokens: 0,
+        finishedTokens: a.finishedTokens + Number(ev.tokens ?? 0),
+      });
+    case "model_pull": {
+      const p = ev.progress;
+      const pct = p && p.total ? ` ${Math.round((Number(p.completed ?? 0) * 100) / Number(p.total))}%` : "";
+      return set({ who: String(ev.model ?? "a model"), detail: `downloading${pct}` });
+    }
+    case "tool_call_finished":
+    case "todos_updated":
+    case "approval_request":
+    case "approval_auto":
+      return set({});
+    default:
+      return next;
+  }
+}
+
 export function applyEvent(state: ChatState, ev: any): ChatState {
+  return trackActivity(applyEventBase(state, ev), ev);
+}
+
+function applyEventBase(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
       return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };

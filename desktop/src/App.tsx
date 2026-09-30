@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
+import { ForgingIndicator } from "./ForgingIndicator";
 import { ModelPicker } from "./ModelPicker";
 import { GoalPanel } from "./GoalPanel";
 import { ActiveModelsPanel } from "./ActiveModelsPanel";
@@ -202,6 +203,9 @@ function App() {
             ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} />)}
             <div ref={endRef} />
           </div>
+          {chat.running && (
+            <ForgingIndicator activity={chat.activity} waitingFor={chat.approvals[0]?.title} queued={chat.queue.length} />
+          )}
           {chat.queue.length > 0 && (
             <div className="border-b border-mx-dim px-3 py-1 bg-mx-panel2 text-xs">
               <div className="flex items-center justify-between">
