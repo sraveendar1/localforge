@@ -2337,6 +2337,8 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
     model even for "auto" rather than just saying the word "auto", which a
     user reported as unhelpful (they can't tell what's actually running).
     """
+    if modality in delegate_target.GENERATIVE:
+        return delegate_target.describe_modality(modality)
     target = delegate_target.get(modality)
     if target.kind != "auto":
         return delegate_target.describe(target)
@@ -2349,34 +2351,36 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
 
 @app.command(name="advanced-model")
 def advanced_model_command(
-    modality: str = typer.Argument(None, help="coding, docs, or general. Omit to show all three."),
+    modality: str = typer.Argument(None, help="coding, docs, general, image, or video. Omit to show all."),
     value: str = typer.Argument(
         None,
         help="'auto', a local catalog model name, or api:<provider>:<model> / cli:<provider>:<model> "
-        "for a paid cloud target. Omit to show the current one.",
+        "for a paid cloud target (image takes only api:<provider>:<image model>). Omit to show the current one.",
     ),
 ) -> None:
-    """Show or override which model actually does coding/docs/general work.
+    """Show or override which model actually does coding/docs/general/image work.
 
     Automatic by default: the best-fitting installed local model, same as
     always. This lets you pin a specific local model, or send that task
     type to a paid cloud model instead -- via an API key or a CLI
-    subscription login -- independently per task type.
+    subscription login -- independently per task type. Image generation is
+    off until you pick a paid image model (api:openai:gpt-image-1, ...);
+    video isn't available yet.
     """
     hw = detect_hardware()
     installed = _installed_model_names(OllamaBackend())
     recs = recommendations(hw, installed=installed)
 
     if modality is None:
-        for m in delegate_target.MODALITIES:
+        for m in delegate_target.ALL_MODALITIES:
             console.print(f"{m}: [accent]{escape(_describe_active_target(m, recs, installed))}[/accent]")
         if value is None:
-            console.print("Change one with: advanced-model <coding|docs|general> <value>")
+            console.print("Change one with: advanced-model <coding|docs|general|image> <value>")
         return
 
     modality = modality.lower()
-    if modality not in delegate_target.MODALITIES:
-        console.print(f"[error]Unknown task type {escape(modality)!r}.[/error] Use coding, docs, or general.")
+    if modality not in delegate_target.ALL_MODALITIES:
+        console.print(f"[error]Unknown task type {escape(modality)!r}.[/error] Use coding, docs, general, image, or video.")
         raise typer.Exit(code=1)
 
     if value is None:
@@ -2389,10 +2393,17 @@ def advanced_model_command(
         console.print(f"[error]{escape(str(exc))}[/error]")
         raise typer.Exit(code=1) from None
 
-    if target is delegate_target.AUTO:
+    if target is delegate_target.AUTO and modality in delegate_target.GENERATIVE:
+        console.print(f"[success]✓[/success] {modality}: {escape(_describe_active_target(modality, recs, installed))}.")
+    elif target is delegate_target.AUTO:
         console.print(f"[success]✓[/success] {modality} is back to automatic: {escape(_describe_active_target(modality, recs, installed))}.")
     elif target.kind == "ollama":
         console.print(f"[success]✓[/success] {modality} now delegates to {escape(target.model)} (local, via Ollama).")
+    elif modality == "image":
+        console.print(
+            f"[success]✓[/success] image generation now uses {escape(target.model)} ({escape(target.provider)}, via your API key). "
+            "Each image costs money -- see /usage. The orchestrator can now call generate_image."
+        )
     else:
         via = "your API key (billed per call)" if target.kind == "api" else "your CLI subscription"
         console.print(

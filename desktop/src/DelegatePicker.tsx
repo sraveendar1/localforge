@@ -4,10 +4,12 @@ import type { DelegateOptions } from "./state";
 // paid cloud model through a key/login you already have. Sends nothing
 // itself -- the caller turns a pick into set_delegate_target.
 export function DelegatePicker({
+  modality,
   options,
   onPick,
   onClose,
 }: {
+  modality?: string;
   options: DelegateOptions | undefined;
   onPick: (target: string) => void;
   onClose: () => void;
@@ -15,14 +17,21 @@ export function DelegatePicker({
   if (!options) {
     return <div className="mt-1 px-2 py-1 text-mx-dim italic">Loading options…</div>;
   }
+  // Image generation has no local model: it is off, or a paid cloud image model.
+  const isImage = modality === "image";
   return (
     <div className="mt-1 rounded-sm border border-mx-dim bg-mx-panel2 p-2">
       <button
         className={"block w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (options.current === "auto" ? "text-mx-green" : "text-mx-mid")}
         onClick={() => { onPick("auto"); onClose(); }}
       >
-        Auto (best-fitting installed local model)
+        {isImage ? "Off (no image generation)" : "Auto (best-fitting installed local model)"}
       </button>
+      {isImage && options.cloud.length === 0 && (
+        <p className="mt-1 border-t border-mx-dim px-1.5 pt-1 text-mx-dim">
+          No image provider is set up. Image generation needs an OpenAI or Gemini API key: run <span className="font-mono">localforge setup</span> in a terminal.
+        </p>
+      )}
       {options.local.length > 0 && (
         <div className="mt-1 border-t border-mx-dim pt-1">
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Local (free)</div>
@@ -39,7 +48,7 @@ export function DelegatePicker({
       )}
       {options.cloud.length > 0 && (
         <div className="mt-1 border-t border-mx-dim pt-1">
-          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Cloud (costs money)</div>
+          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{isImage ? "Image models (costs money per image)" : "Cloud (costs money)"}</div>
           {options.cloud.map(c => {
             const value = `${c.kind}:${c.provider}:${c.model}`;
             return (

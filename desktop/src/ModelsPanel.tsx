@@ -3,7 +3,10 @@ import { DelegatePicker } from "./DelegatePicker";
 import { FrontierPicker } from "./FrontierPicker";
 import type { DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
 
-const MODALITIES = ["coding", "docs", "general"];
+// Video has a row so its choice has somewhere to live, but there's no video
+// generation yet: it can't be changed.
+const MODALITIES = ["coding", "docs", "general", "image", "video"];
+const NOT_CHANGEABLE = new Set(["video"]);
 
 // Every model choice in one place: the frontier model that plans and
 // reviews, and the model that writes each kind of work (coding / docs /
@@ -15,7 +18,8 @@ const MODALITIES = ["coding", "docs", "general"];
 //              are read-only, but always name the real model). The frontier is
 //              still yours to choose: it has no "auto".
 //   Advanced   every row can be changed: a local model, or a paid cloud model
-//              through a key/login you already have.
+//              through a key/login you already have. Image is off unless a paid
+//              image model is chosen; Video isn't available yet.
 //
 // Advanced is simply "at least one task type is pinned, or you asked for it":
 // there is no separate saved mode to fall out of sync with `/advanced-model`
@@ -90,7 +94,7 @@ export function ModelsPanel({
       </div>
       <p className="text-mx-dim">
         {advanced
-          ? "Choose the model for each kind of work. Paid models cost money per use."
+          ? "Choose the model for each kind of work. Paid models cost money per use. Image generation is off until you pick a paid image model."
           : "localforge picks the best local model for each kind of work. Switch to Advanced to choose."}
       </p>
 
@@ -117,11 +121,12 @@ export function ModelsPanel({
           <div key={modality}>
             <div className="flex items-center justify-between gap-2">
               <span className="text-mx-mid">{modality}</span>
-              {advanced && changeButton(modality, `Change ${modality} model`)}
+              {advanced && !NOT_CHANGEABLE.has(modality) && changeButton(modality, `Change ${modality} model`)}
             </div>
-            <div className="break-words text-mx-bright">{targets[modality].description}</div>
+            <div className={"break-words " + (NOT_CHANGEABLE.has(modality) || (modality === "image" && targets[modality].target === "auto") ? "text-mx-dim italic" : "text-mx-bright")}>{targets[modality].description}</div>
             {advanced && open === modality && (
               <DelegatePicker
+                modality={modality}
                 options={delegateOptions[modality]}
                 onPick={target => send({ type: "set_delegate_target", modality, target })}
                 onClose={() => setOpen(null)}

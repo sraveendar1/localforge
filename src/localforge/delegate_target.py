@@ -23,12 +23,21 @@ from dataclasses import dataclass
 
 from localforge import config
 
+# Text work: written by a local model by default, or a pinned/cloud one.
 MODALITIES = ("coding", "docs", "general")
+# Generated media. Image works only through a paid cloud image model (there is
+# no local image backend yet, so "auto" means off: the orchestrator is simply
+# not offered the tool). Video isn't built at all -- it has a row so the
+# choice will have somewhere to live, and can't be set yet.
+GENERATIVE = ("image", "video")
+ALL_MODALITIES = MODALITIES + GENERATIVE
 
 TARGET_ENV_VARS = {
     "coding": "LOCALFORGE_CODING_TARGET",
     "docs": "LOCALFORGE_DOCS_TARGET",
     "general": "LOCALFORGE_GENERAL_TARGET",
+    "image": "LOCALFORGE_IMAGE_TARGET",
+    "video": "LOCALFORGE_VIDEO_TARGET",
 }
 
 
@@ -102,12 +111,19 @@ def apply(modality: str, value: str) -> DelegateTarget:
     local catalog model name, or api:<provider>:<model> / cli:<provider>:
     <model> for a cloud target. Raises InvalidTarget rather than silently
     accepting something that would break the next delegation."""
-    if modality not in MODALITIES:
-        raise InvalidTarget(f"Unknown task type {modality!r}. Use coding, docs, or general.")
+    if modality not in ALL_MODALITIES:
+        raise InvalidTarget(f"Unknown task type {modality!r}. Use coding, docs, general, image, or video.")
     value = value.strip()
+    if modality == "video":
+        if value.lower() == "auto":
+            clear(modality)
+            return AUTO
+        raise InvalidTarget("Video generation isn't available yet, so there's nothing to choose for it.")
     if value.lower() == "auto":
         clear(modality)
         return AUTO
+    if modality == "image":
+        return _apply_image(value)
     if value.startswith("api:") or value.startswith("cli:"):
         target = parse(value)
         if target is AUTO:
@@ -140,6 +156,42 @@ def apply(modality: str, value: str) -> DelegateTarget:
     target = DelegateTarget(kind="ollama", model=value)
     set_target(modality, target)
     return target
+
+
+def _apply_image(value: str) -> DelegateTarget:
+    """An image target is a paid cloud image model through an API key: a
+    local model has no image backend yet, and the CLI logins can't generate
+    images."""
+    target = parse(value)
+    if target.kind != "api":
+        raise InvalidTarget(
+            f"{value!r} can't generate images. Use api:<provider>:<model> with an image model, e.g. "
+            "api:openai:gpt-image-1, or 'auto' to turn image generation off."
+        )
+    models = config.IMAGE_MODEL_CHOICES.get(target.provider)
+    if models is None:
+        raise InvalidTarget(
+            f"{target.provider} has no image generation here. Providers with image models: "
+            + ", ".join(sorted(config.IMAGE_MODEL_CHOICES)) + "."
+        )
+    if target.model not in models:
+        raise InvalidTarget(f"{target.model!r} isn't a known {target.provider} image model. Choose one of: " + ", ".join(models) + ".")
+    env_var = config.FRONTIER_PROVIDERS.get(target.provider)
+    if not env_var or not os.environ.get(env_var):
+        raise InvalidTarget(f"No API key set for {target.provider}. Run `localforge setup` to add one.")
+    set_target("image", target)
+    return target
+
+
+def describe_modality(modality: str, target: DelegateTarget | None = None) -> str:
+    """describe() for any task type, with the two generated ones worded for
+    what "auto" really means for them."""
+    target = target if target is not None else get(modality)
+    if modality == "video":
+        return "not available yet"
+    if modality == "image" and target.kind == "auto":
+        return "off -- no image model chosen (pick a paid one in Advanced)"
+    return describe(target)
 
 
 def describe(target: DelegateTarget) -> str:

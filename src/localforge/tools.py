@@ -9,11 +9,13 @@ import threading
 import time
 from dataclasses import dataclass
 from collections.abc import Callable
+from pathlib import Path
 
 from localforge import brief, delegate_target, verify, web
 from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
+from localforge.backends.cloud import CloudImageBackend, CloudProviderNotConfigured
 from localforge.backends.ollama import (
     MAX_OUTPUT_TOKENS,
     MIN_NUM_CTX,
@@ -90,6 +92,21 @@ TASK_MODALITIES = {
         "description": "Have a local model do a general text task. Give `path` to write the result to a file.",
     },
 }
+
+
+# Not a text delegation: the image model (a paid cloud one the user chose in
+# advanced mode -- there's no local image backend yet) returns a picture, not
+# text, and it's saved as a binary file. Offered to the orchestrator only when
+# such a model is chosen (build_tool_schemas), so it never calls a tool that
+# can't run.
+IMAGE_TOOL = "generate_image"
+IMAGE_TOOL_DESCRIPTION = (
+    "Generate an image with the paid image model the user chose, and save it to `path` "
+    "(e.g. assets/hero.png). Describe the picture in `instructions`. This costs money per image, "
+    "so only generate what the task needs."
+)
+_image_backend = CloudImageBackend()  # module-level so tests can stand in for the provider
+_IMAGE_SUFFIXES = {"image/png": (".png",), "image/jpeg": (".jpg", ".jpeg"), "image/webp": (".webp",)}
 
 
 def _params(required: list[str], **props: tuple[str, str]) -> dict:
@@ -328,6 +345,18 @@ def build_tool_schemas(
                     },
                     "required": ["instructions"],
                 },
+            )
+        )
+    if delegate_target.get("image").kind == "api":
+        schemas.append(
+            _schema(
+                IMAGE_TOOL,
+                IMAGE_TOOL_DESCRIPTION,
+                _params(
+                    ["instructions", "path"],
+                    instructions=("string", "What the image should show: subject, style, colours, composition."),
+                    path=("string", "Where to save it, relative to the project, e.g. assets/hero.png."),
+                ),
             )
         )
     for name, meta in DIRECT_TOOLS.items():
@@ -786,6 +815,8 @@ class Dispatcher:
             args = {"instructions": args}
         if tool_name in DIRECT_TOOLS:
             return self._direct(tool_name, args)
+        if tool_name == IMAGE_TOOL:
+            return self._generate_image(args, on_delegate)
         modality = self._tool_name_to_modality(tool_name)
         try:
             return self._dispatch_delegate(modality, args, on_delegate)
@@ -810,6 +841,61 @@ class Dispatcher:
             except LocalModelOutOfMemory as again:
                 raise LocalModelOutOfMemory(f"{again}. It still didn't fit with half the context window ({smaller:,} tokens), {short}") from None
             return _with_notes(result, [f"{entry.name} ran with a {smaller:,}-token context window because memory was short ({exc})"])
+
+    def _generate_image(self, args: dict, on_delegate: DelegateCallback | None) -> str:
+        """Generate one image with the chosen cloud image model and save it
+        (after approval) where the orchestrator said. Failures that the
+        orchestrator can act on come back as text; a failed provider call
+        raises, like any delegation, and is counted as a failed step."""
+        target = delegate_target.get("image")
+        if target.kind != "api":
+            return (
+                f"{IMAGE_TOOL} failed: no image model is chosen, so nothing was generated. Tell the user they can pick "
+                "one (a paid cloud model) with `localforge advanced-model image <value>`, or in Advanced mode of the "
+                "app's Models section."
+            )
+        instructions = str(args.get("instructions") or "").strip()
+        path = str(args.get("path") or "").strip()
+        if not instructions or not path:
+            return f"{IMAGE_TOOL} failed: it needs `instructions` (describe the image) and `path` (where to save it, e.g. assets/hero.png)."
+        if self.workspace is None:
+            return f"{IMAGE_TOOL} needs a project folder, and none is open."
+        try:
+            self.workspace.resolve(path)
+        except WorkspaceError as exc:
+            return f"Cannot write {path}: {exc}"
+
+        entry = ModelEntry(
+            name=target.model, modality="image", runtime="api", provider=target.provider,
+            min_vram_gb=0, min_ram_gb=0, disk_gb=0, quality_tier=0,
+        )
+        self._last_delegate_model = entry.name
+        announce = on_delegate or self.hooks.on_delegate
+        if announce is not None:
+            announce("image", entry)
+        started = time.monotonic()
+        try:
+            image = _image_backend.generate(target.model, instructions, provider=target.provider)
+        except CloudProviderNotConfigured as exc:
+            return f"{IMAGE_TOOL} failed: {exc}"
+        except Exception as exc:  # noqa: BLE001 - reported to the orchestrator as a failed step
+            raise RuntimeError(f"the {target.model} image request failed: {exc}") from exc
+        self.delegate_cost_usd += image.cost_usd  # real, billed money: kept with the other paid delegates
+        if self.hooks.on_done is not None:
+            self.hooks.on_done("image", entry, 0, time.monotonic() - started)
+
+        suffixes = _IMAGE_SUFFIXES[image.mime_type]
+        note = ""
+        if not path.lower().endswith(suffixes):
+            path = str(Path(path).with_suffix(suffixes[0]))
+            note = f" (saved as {path}: the image is {image.mime_type.split('/')[1].upper()})"
+        result = self.workspace.write_bytes(path, image.data, image.mime_type)
+        if self.hooks.on_tool_result is not None:
+            self.hooks.on_tool_result("write", result.splitlines()[0])
+        if not result.startswith(("Created ", "Updated ")):
+            return result + f"\nThe image was generated (and billed) by {entry.name} but not saved."
+        cost = f" Cost: ${image.cost_usd:.3f}." if image.cost_usd else ""
+        return f"{result.rstrip()}{note}\nGenerated by {entry.name}.{cost} The image itself isn't shown to you; describe it from your instructions."
 
     def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:
         instructions = str(args.get("instructions") or "")

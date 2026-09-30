@@ -75,6 +75,8 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
     model even for "auto" rather than just saying the word "auto", which a
     user reported as unhelpful (they can't tell what's actually running).
     """
+    if modality in delegate_target.GENERATIVE:
+        return delegate_target.describe_modality(modality)
     target = delegate_target.get(modality)
     if target.kind != "auto":
         return delegate_target.describe(target)
@@ -113,7 +115,7 @@ def _advanced_model_snapshot() -> dict:
             "target": delegate_target.render(delegate_target.get(m)),
             "description": _describe_active_target(m, recs, installed),
         }
-        for m in delegate_target.MODALITIES
+        for m in delegate_target.ALL_MODALITIES
     }
 
 def _delegate_options(modality: str) -> dict:
@@ -126,6 +128,16 @@ def _delegate_options(modality: str) -> dict:
     chat/CLI `/advanced-model` command is still how you'd pick something more
     specific than the default.
     """
+    if modality in delegate_target.GENERATIVE:
+        # Image: every image model of each provider that has an API key (no
+        # local image backend and no CLI-login route yet). Video: nothing.
+        images = [
+            {"kind": "api", "provider": provider, "model": model}
+            for provider, models in config.IMAGE_MODEL_CHOICES.items()
+            if modality == "image" and os.environ.get(config.FRONTIER_PROVIDERS.get(provider) or "")
+            for model in models
+        ]
+        return {"local": [], "cloud": images, "current": delegate_target.render(delegate_target.get(modality))}
     installed = _installed_model_names(OllamaBackend())
     local = [
         {"name": m.name, "quality_tier": m.quality_tier, "disk_gb": m.disk_gb, "installed": m.name in installed}
@@ -488,14 +500,14 @@ class StdioServer:
             self.emit("advanced_model", targets=_advanced_model_snapshot())
         elif message_type == "delegate_options_request":
             modality = str(message.get('modality', '')).strip().lower()
-            if modality not in delegate_target.MODALITIES:
+            if modality not in delegate_target.ALL_MODALITIES:
                 self.emit("error", message=f"Unknown task type: {modality}")
             else:
                 self.emit("delegate_options", modality=modality, **_delegate_options(modality))
         elif message_type == "set_delegate_target":
             modality = str(message.get('modality', '')).strip().lower()
             target = str(message.get('target', '')).strip()
-            if modality not in delegate_target.MODALITIES:
+            if modality not in delegate_target.ALL_MODALITIES:
                 self.emit("error", message=f"Unknown task type: {modality}")
             else:
                 try:
@@ -689,8 +701,8 @@ class StdioServer:
             return
         modality = parts[0].lower()
         if len(parts) == 1:
-            if modality not in delegate_target.MODALITIES:
-                self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, or general.")
+            if modality not in delegate_target.ALL_MODALITIES:
+                self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, general, image, or video.")
                 return
             self.emit("advanced_model", targets=_advanced_model_snapshot())
             return

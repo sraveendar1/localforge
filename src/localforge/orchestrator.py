@@ -237,6 +237,8 @@ class _Progress:
         text = (result or "").strip()
         if name == "update_todos":
             self.todos = [t for t in args.get("todos") or [] if isinstance(t, dict)]
+        elif name == "generate_image" and text.startswith(_CHANGED):
+            pass  # a picture can't be run or read back, so it isn't an unchecked change the orchestrator must go verify
         elif text.startswith(_CHANGED):
             self.changed_at = step
             self.changed.add(str(args.get("path") or args.get("destination") or args.get("source") or ""))
@@ -362,6 +364,7 @@ How to work:
 - Do only what the user asked. If the message is a greeting, a question, or a chat, just answer it -- don't create, change or run anything unless they asked for that.
 - Investigate before changing anything: list_files, search and read_file show you the project. Never guess at code you haven't read.
 - To create a file or change code, call delegate_coding_task (or delegate_docs_task) with a `path`. The local model writes that file's complete new contents; localforge shows the user a diff and asks before saving. The local model sees only your instructions, the current file, and any `context_files` -- no conversation, no internet -- so give it what it needs through those (and any facts you looked up), not by pasting.
+- generate_image (present only when the user has chosen a paid image model) makes a picture and saves it to a path. It costs money per image, so use it only for images the task actually needs, and describe the picture; you never see it.
 - edit_file is only for small fix-ups (a few lines), e.g. correcting a local model's mistake. Don't write whole files or features yourself.
 - make_dir, move_path and delete_path create folders, move/rename, and delete. The user has trusted this folder, and still approves each change; only delete what the task needs.
 - run_command runs shell commands in the project (git clone, tests, installs, builds); the user approves each one. Run the tests after changes when the project has them. Don't use it to look at files (cat, ls, grep, find): read_file, list_files and search do that without an approval prompt. Paths are relative to the project folder; don't cd elsewhere.
@@ -745,7 +748,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                         _log_target(name, args if isinstance(args, dict) else {}),
                         task_summary.outcome_of(result, error),
                         error or result or "",
-                        model=getattr(dispatcher, "_last_delegate_model", None) if name.startswith("delegate_") else None,
+                        model=getattr(dispatcher, "_last_delegate_model", None) if name.startswith("delegate_") or name == "generate_image" else None,
                     )
                 if error is None:
                     if name in EXPLORE_TOOLS:
@@ -817,7 +820,7 @@ _UNLOGGED_TOOLS = {"update_todos", "remember", "forget"}
 
 def _log_target(name: str, args: dict) -> str:
     """A short label of what a step was about, for the task summary."""
-    if name.startswith("delegate_"):
+    if name.startswith("delegate_") or name == "generate_image":
         return str(args.get("path") or "")
     return _summarize(name, args)[:200]
 

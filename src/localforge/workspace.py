@@ -231,6 +231,23 @@ class Workspace:
         removed = sum(1 for d in diff.splitlines() if d.startswith("-") and not d.startswith("---"))
         return f"{verb}d {self.rel(target)} (+{added} -{removed}, {len(content.splitlines())} lines).\n{diff}"
 
+    def write_bytes(self, path: str, data: bytes, what: str) -> str:
+        """Save a binary file (a generated image) after the user approves it.
+        `what` describes it for the prompt, e.g. "image/png, 1024x1024". The
+        approval shows what it is and how big -- there's no diff for a binary
+        -- and a file that already exists is said to be replaced."""
+        target = self.resolve(path)
+        if target.is_dir():
+            raise WorkspaceError(f"{path} is a directory")
+        verb = "Update" if target.exists() else "Create"
+        size = f"{len(data) / 1_000_000:.1f} MB" if len(data) >= 1_000_000 else f"{max(1, len(data) // 1000)} KB"
+        detail = f"{what}, {size}" + (" -- replaces the existing file" if target.exists() else "")
+        if not self._allowed("write", f"{verb} {self.rel(target)}", detail, target):
+            return f"The user declined the change to {self.rel(target)}; it was not written."
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return f"{verb}d {self.rel(target)} ({what}, {size})."
+
     def edit_file(self, path: str, old_string: str, new_string: str) -> str:
         target = self.resolve(path)
         if not target.is_file():

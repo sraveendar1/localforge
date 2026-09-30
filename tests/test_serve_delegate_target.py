@@ -34,11 +34,11 @@ def last(out, event_type):
     return matches[-1]
 
 
-def test_bare_advanced_model_chat_command_lists_all_three(tmp_path):
+def test_bare_advanced_model_chat_command_lists_every_task_type(tmp_path):
     server, out = make_server(tmp_path)
     server.handle({"type": "user_message", "text": "/advanced-model"})
     ev = last(out, "advanced_model")
-    assert set(ev["targets"].keys()) == set(dt.MODALITIES)
+    assert set(ev["targets"].keys()) == set(dt.ALL_MODALITIES)
     assert ev["targets"]["coding"]["target"] == "auto"
 
 

@@ -58,7 +58,7 @@ def _first_line(text: str) -> str:
 
 
 def _kind(tool: str) -> str:
-    if tool.startswith("delegate_"):
+    if tool.startswith("delegate_") or tool == "generate_image":
         return "delegate"
     if tool == "run_command":
         return "command"

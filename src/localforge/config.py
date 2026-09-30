@@ -43,6 +43,16 @@ THEME_ENV_VAR = "LOCALFORGE_THEME"
 # reasonably well -- the orchestrator role delegates via tool calls, which
 # most small open-weight models handle unreliably; "Other" lets a user try
 # a different one anyway.
+# Image-generation models by provider, for the "image" task type (see
+# delegate_target.py). Only providers with an image API appear: Anthropic has
+# none. Every id below is one LiteLLM's own model list marks as an image
+# generation model. LiteLLM routes a bare OpenAI id to OpenAI, and needs the
+# gemini/ prefix for Google AI Studio (same rule as the Gemini text models).
+IMAGE_MODEL_CHOICES: dict[str, list[str]] = {
+    "openai": ["gpt-image-1", "gpt-image-1-mini"],
+    "gemini": ["gemini/imagen-3.0-generate-001", "gemini/gemini-2.5-flash-image"],
+}
+
 FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
     "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1"],
     "openai": ["gpt-5"],

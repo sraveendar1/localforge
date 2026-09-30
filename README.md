@@ -388,6 +388,11 @@ the toggle:
 
 The choices are global (the same as the terminal's), not per project.
 
+**Image and video rows.** Below coding/docs/general the Models section has an **image** row and a **video** row:
+
+- **Image generation** is off until you pick a paid image model in Advanced mode (or `localforge advanced-model image api:<provider>:<model>`). Providers with an image API: OpenAI (`gpt-image-1`, `gpt-image-1-mini`) and Google AI Studio (`gemini/imagen-3.0-generate-001`, `gemini/gemini-2.5-flash-image`), each needing that provider's API key. Once one is chosen the orchestrator is offered a `generate_image` tool: it describes the picture and a path, the image model draws it, and you approve saving it (the prompt says what it is and how big, since a picture has no diff). Each image costs money and is counted with the other paid delegates in `/usage`. There is no local image backend yet, and the provider CLI logins can't generate images, so this is API-key only.
+- **Video** has a row so the choice has somewhere to live, but video generation isn't built, so it can't be chosen yet.
+
 The chat input doubles as a command line: typing `/` brings up every
 session command with a description (arrow keys / Tab to pick), and each one
 reuses the exact server-side handler the CLI's own slash commands use —
@@ -735,6 +740,7 @@ localforge models                                # what will run well on it?
 localforge advanced-model                        # show what's handling coding/docs/general (auto by default)
 localforge advanced-model coding qwen2.5-coder:14b            # pin a specific local model for one task type
 localforge advanced-model coding api:anthropic:claude-haiku-4-5  # or send it to a paid cloud model instead
+localforge advanced-model image api:openai:gpt-image-1        # turn on image generation (a paid image model)
 localforge run "Build a todo REST API with docs" # do the thing
 localforge run "..." --model gpt-5               # use a different orchestrator model
 localforge run "..." --usage                     # also print token usage (in a session: /usage)
