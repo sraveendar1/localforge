@@ -364,8 +364,9 @@ default).
 
 **Left nav** (collapsible via the chevron tab on the left edge): a list of
 recently-opened project folders — click one to switch straight to it,
-skipping the file dialog — the **Models** section, and a full reference of
-every session command.
+skipping the file dialog — and the **Models** section. (There is no command
+list here: type `/` in the message box to see every command with its
+description, and Tab or Enter to complete one.)
 
 **Models** is where every model choice lives, so the whole setup is visible
 in one place. The **Frontier** row is the model that plans and reviews

@@ -1,12 +1,12 @@
-import { SLASH_COMMANDS } from "./SlashMenu";
 import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
 import type { DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
 
-// A collapsible left rail (chevron-toggled): a static command reference so
-// new users don't have to type "/" to discover what's available, and a
-// list of recently-opened project folders so switching projects doesn't
-// mean going through the native file dialog every time.
+// A collapsible left rail (chevron-toggled): recently-opened project folders
+// (so switching projects doesn't mean the native file dialog every time) and
+// the Models section. It used to end with a static command reference, removed
+// to give the models the room: typing "/" in the message box already lists
+// every command, with descriptions, and completes them.
 export function LeftNav({
   open,
   onToggle,
@@ -80,21 +80,11 @@ export function LeftNav({
               send={send}
             />
           </Curtain>
-          <Curtain title="Commands" defaultOpen={false}>
-            <ul className="space-y-1.5">
-              {SLASH_COMMANDS.map(c => (
-                <li key={c.name}>
-                  <div className="font-mono font-semibold text-mx-green">{c.name}</div>
-                  <div className="text-mx-dim">{c.description}</div>
-                </li>
-              ))}
-            </ul>
-          </Curtain>
         </nav>
       )}
       <button
         type="button"
-        title={open ? "Hide sidebar" : "Show projects, models & commands"}
+        title={open ? "Hide sidebar" : "Show projects & models"}
         onClick={onToggle}
         className="group flex w-6 shrink-0 items-center justify-center border-r border-mx-dim bg-mx-panel2 hover:bg-mx-dim"
       >
