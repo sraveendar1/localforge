@@ -84,6 +84,25 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
     on_disk = "installed" if entry.name in installed else "not installed"
     return f"{entry.name} (auto, local, {on_disk})"
 
+def _orchestrator_options() -> list[dict]:
+    """Every orchestrator usable on this machine, for the header dropdown:
+    the models already in Ollama plus each cloud provider whose API key or
+    CLI login exists -- the same list `/model` shows in the terminal, so the
+    two can't drift. (The dropdown used to be a fixed list that ignored both.)
+    """
+    from localforge import cli  # local: cli imports this module lazily too
+
+    options = []
+    for model, label, auth in cli._model_choices():
+        if model.startswith("ollama/"):
+            group = "Local (Ollama, free)"
+        else:
+            provider = auth.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
+            via = "login" if auth.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN else "API key"
+            group = f"{provider.title()} ({via})"
+        options.append({"id": model, "label": label, "group": group, "auth": auth})
+    return options
+
 def _advanced_model_snapshot() -> dict:
     """Current delegate target for every modality, for the Active LLMs
     panel and the /advanced-model chat command alike."""
@@ -440,10 +459,13 @@ class StdioServer:
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
             self.emit('todos_updated', todos=self._todos)
             self._emit_queue()
+        elif message_type == "orchestrator_options_request":
+            # Off the reader thread: a Gemini key makes the list fetch hit the network.
+            threading.Thread(target=self._emit_orchestrator_options, daemon=True).start()
         elif message_type == "set_model":
             model = str(message.get('model', '')).strip()
             if model:
-                self.frontier_model = model
+                self._switch_orchestrator(model)
                 self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
         elif message_type == "advanced_model_request":
             self.emit("advanced_model", targets=_advanced_model_snapshot())
@@ -608,6 +630,30 @@ class StdioServer:
         elif cmd == "/scan":
             self.emit("system_stats", hardware=_hardware(), cpu_percent=psutil.cpu_percent(interval=0.01), ram_used_gb=round(psutil.virtual_memory().used / (1024 ** 3), 1), ram_total_gb=round(psutil.virtual_memory().total / (1024 ** 3), 1))
 
+    def _emit_orchestrator_options(self):
+        try:
+            options = _orchestrator_options()
+        except Exception:  # noqa: BLE001 - a nicer dropdown, never a reason to fail
+            options = []
+        self.emit("orchestrator_options", options=options, current=self.frontier_model)
+
+    def _switch_orchestrator(self, model: str):
+        """Make `model` the orchestrator, the way `/model` does in the terminal:
+        a pick from the list saves its auth method + provider together (a model
+        from a different provider than the last one must not keep routing
+        through the old provider's CLI login), and the run path follows.
+        """
+        from localforge import cli
+
+        try:
+            match = next((auth for m, _label, auth in cli._model_choices() if m == model), None)
+        except Exception:  # noqa: BLE001
+            match = None
+        if match:
+            config.save({config.FRONTIER_MODEL_ENV_VAR: model, **match})
+        self.frontier_model = model
+        self.cli_provider = cli._cli_provider_for(model, explicit=match is None)
+
     def handle_model_command(self, arg: str):
         if not arg:
             self.emit("model", model=self.frontier_model)
@@ -616,7 +662,7 @@ class StdioServer:
             if not model:
                 self.emit("error", message="Model cannot be empty.")
             else:
-                self.frontier_model = model
+                self._switch_orchestrator(model)
                 self.emit("model", model=self.frontier_model)
 
     def handle_advanced_model_command(self, arg: str):

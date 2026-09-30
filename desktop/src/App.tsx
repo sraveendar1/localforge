@@ -134,6 +134,7 @@ function App() {
       send({ type: "system_stats" });  // don't wait for the first 5s interval tick
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
+      send({ type: "orchestrator_options_request" });  // the header dropdown: installed + keyed/logged-in models
       send({ type: "advanced_model_request" });  // per-modality delegate target (auto, or a pinned override)
     }
   }, [chat.connected, chat.trustRequired, send]);
@@ -153,7 +154,7 @@ function App() {
         <span className="font-semibold glow">localforge</span>
         <span className={"h-2 w-2 rounded-full " + (chat.connected ? "bg-mx-bright" : "bg-mx-dim")} title={chat.connected ? "Connected" : "Not connected"} />
         <span className="min-w-0 flex-1 truncate text-sm text-mx-dim" title={folder ?? ""}>{folder ?? "No folder"}</span>
-        <ModelPicker value={modelDraft} disabled={!chat.connected} onChange={m => { setModelDraft(m); if (chat.connected && m && m !== chat.model) send({ type: "set_model", model: m }); }} />
+        <ModelPicker value={chat.model || modelDraft} options={chat.orchestratorOptions} disabled={!chat.connected} onOpen={() => send({ type: "orchestrator_options_request" })} onChange={m => { setModelDraft(m); if (chat.connected && m && m !== chat.model) send({ type: "set_model", model: m }); }} />
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
       </header>

@@ -39,6 +39,7 @@ export type LocalModelTarget = { target: string; description: string };
 export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string };
 export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean };
 export type DelegateOptions = { local: DelegateLocalOption[]; cloud: DelegateCloudOption[]; current: string };
+export type OrchestratorOption = { id: string; label: string; group: string };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -51,6 +52,9 @@ export type ChatState = {
   usage: Usage;
   usageHistory: { previousSession: UsageTotals | null; allTime: UsageTotals | null };
   configuredModels: ConfiguredModel[];
+  // Every orchestrator usable here (installed Ollama models + cloud providers
+  // with a key or CLI login), for the header dropdown. Empty until fetched.
+  orchestratorOptions: OrchestratorOption[];
   // Per-modality delegate target (see /advanced-model): auto by default, or a
   // pinned local/cloud override. delegateOptions is fetched lazily, per
   // modality, only when the "Change" picker for that row is opened.
@@ -102,6 +106,7 @@ export const initialState: ChatState = {
   },
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
+  orchestratorOptions: [],
   localModelTargets: {},
   delegateOptions: {},
   systemStats: null,
@@ -326,7 +331,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels };
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -387,6 +392,14 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
           runtime: String(m.model?.runtime ?? ""),
           qualityTier: Number(m.model?.quality_tier ?? 0),
         })),
+      };
+    }
+    case "orchestrator_options": {
+      const options = Array.isArray(ev.options) ? ev.options : [];
+      return {
+        ...state,
+        orchestratorOptions: options.map((o: any) => ({ id: String(o.id ?? ""), label: String(o.label ?? o.id ?? ""), group: String(o.group ?? "Other") })).filter((o: OrchestratorOption) => o.id),
+        model: ev.current ? String(ev.current) : state.model,
       };
     }
     case "advanced_model": {
