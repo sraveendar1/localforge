@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, config, delegate_target, memory, task_summary, trust
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -86,6 +86,26 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
     on_disk = "installed" if entry.name in installed else "not installed"
     return f"{entry.name} (auto, local, {on_disk})"
 
+def _auth_for_typed_model(model: str) -> dict | None:
+    """The auth settings to save with a model id typed in by hand (not one of
+    the listed choices): local for an Ollama model, else whichever way this
+    machine can reach that model's provider. None when it can't be told --
+    then only the model is saved and the run treats it as explicit."""
+    from localforge import cli
+
+    if model.startswith(local_transport.PREFIXES):
+        return {config.AUTH_METHOD_ENV_VAR: config.AUTH_LOCAL, config.FRONTIER_PROVIDER_ENV_VAR: "local"}
+    provider = cli._cloud_provider(model)
+    if provider is None:
+        return None
+    env_var = config.FRONTIER_PROVIDERS.get(provider)
+    if env_var and os.environ.get(env_var):
+        return {config.AUTH_METHOD_ENV_VAR: config.AUTH_API_KEY, config.FRONTIER_PROVIDER_ENV_VAR: provider}
+    if config.FRONTIER_CLI_AUTH.get(provider) and cli_transport.available(provider):
+        return {config.AUTH_METHOD_ENV_VAR: config.AUTH_CLI_LOGIN, config.FRONTIER_PROVIDER_ENV_VAR: provider}
+    return None
+
+
 def _orchestrator_options() -> list[dict]:
     """Every orchestrator usable on this machine, for the header dropdown:
     the models already in Ollama plus each cloud provider whose API key or
@@ -95,14 +115,17 @@ def _orchestrator_options() -> list[dict]:
     from localforge import cli  # local: cli imports this module lazily too
 
     options = []
+    hardware, sizes = detect_hardware(), model_fit.installed_sizes()
     for model, label, auth in cli._model_choices():
+        problem = None
         if model.startswith("ollama/"):
             group = "Local (Ollama, free)"
+            problem = model_fit.selection_problem(local_transport.model_name(model), hardware, sizes, fetch_sizes=False)
         else:
             provider = auth.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
             via = "login" if auth.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN else "API key"
             group = f"{provider.title()} ({via})"
-        options.append({"id": model, "label": label, "group": group, "auth": auth})
+        options.append({"id": model, "label": label, "group": group, "auth": auth, "problem": problem})
     return options
 
 def _advanced_model_snapshot() -> dict:
@@ -139,8 +162,13 @@ def _delegate_options(modality: str) -> dict:
         ]
         return {"local": [], "cloud": images, "current": delegate_target.render(delegate_target.get(modality))}
     installed = _installed_model_names(OllamaBackend())
+    hardware, sizes = detect_hardware(), model_fit.installed_sizes()
     local = [
-        {"name": m.name, "quality_tier": m.quality_tier, "disk_gb": m.disk_gb, "installed": m.name in installed}
+        {
+            "name": m.name, "quality_tier": m.quality_tier, "disk_gb": m.disk_gb, "installed": m.name in installed,
+            # Why it can't run here (too big for memory, or a download that won't fit the disk); None if it can.
+            "problem": model_fit.selection_problem(m.name, hardware, sizes, fetch_sizes=False),
+        }
         for m in load_catalog() if m.modality == modality
     ]
     cloud = []
@@ -197,9 +225,12 @@ class StdioServer:
                  out: IO[str] | None = None, inp: IO[str] | None = None,
                  run_fn: Callable = run_orchestrator, auto_approve: bool = False,
                  conversation: Conversation | None = None, scratch_root: Path | None = None,
-                 stream_output: bool = False):
+                 stream_output: bool = False, model_explicit: bool = False):
         self.root = Path(root).resolve()
         self.frontier_model = frontier_model
+        # An orchestrator named on the command line (--model) beats the
+        # project's saved one, which otherwise applies once the folder is trusted.
+        self._model_explicit = model_explicit
         self.cli_provider = cli_provider
         self.out = out or sys.stdout
         self.inp = inp or sys.stdin
@@ -226,6 +257,8 @@ class StdioServer:
         # frontend once at startup, handle() answers it, and everything
         # else is a no-op until it's settled.
         self.trusted = trust.is_trusted(self.root)
+        if self.trusted:
+            self._adopt_project_models()
         self._write_lock = threading.Lock()
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
@@ -402,6 +435,11 @@ class StdioServer:
             decision = "yes" if message.get("trust") else "no"
             self.trusted = trust.apply_choice(self.root, decision)
             self.emit("trust_result", trusted=self.trusted, folder=str(self.root))
+            if self.trusted:
+                # Only now may this folder's saved models apply (see project_models.py).
+                self._adopt_project_models()
+                self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+                self._emit_advanced_model()
             # "No" ends the session, same as the terminal prompt.
             return self.trusted
         if not self.trusted:
@@ -494,10 +532,11 @@ class StdioServer:
         elif message_type == "set_model":
             model = str(message.get('model', '')).strip()
             if model:
-                self._switch_orchestrator(model)
+                if problem := self._switch_orchestrator(model):
+                    self.emit("error", message=problem)
                 self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
         elif message_type == "advanced_model_request":
-            self.emit("advanced_model", targets=_advanced_model_snapshot())
+            self._emit_advanced_model()
         elif message_type == "delegate_options_request":
             modality = str(message.get('modality', '')).strip().lower()
             if modality not in delegate_target.ALL_MODALITIES:
@@ -515,7 +554,7 @@ class StdioServer:
                 except delegate_target.InvalidTarget as exc:
                     self.emit("error", message=str(exc))
                 else:
-                    self.emit("advanced_model", targets=_advanced_model_snapshot())
+                    self._emit_advanced_model()
         elif message_type == "set_auto":
             self.auto_approve = bool(message.get('enabled', False))
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
@@ -666,22 +705,44 @@ class StdioServer:
             options = []
         self.emit("orchestrator_options", options=options, current=self.frontier_model)
 
-    def _switch_orchestrator(self, model: str):
-        """Make `model` the orchestrator, the way `/model` does in the terminal:
-        a pick from the list saves its auth method + provider together (a model
-        from a different provider than the last one must not keep routing
-        through the old provider's CLI login), and the run path follows.
-        """
+    def _adopt_project_models(self) -> None:
+        """Apply this folder's saved models (.localforge/models.json) and send
+        later changes to it. The orchestrator it names becomes this session's
+        unless one was given on the command line."""
         from localforge import cli
 
+        if project_models.activate(self.root) and not self._model_explicit:
+            model = os.environ.get(config.FRONTIER_MODEL_ENV_VAR)
+            if model:
+                self.frontier_model = model
+                self.cli_provider = cli._cli_provider_for(model, explicit=False)
+
+    def _emit_advanced_model(self) -> None:
+        self.emit("advanced_model", targets=_advanced_model_snapshot(), source=project_models.source())
+
+    def _switch_orchestrator(self, model: str) -> str | None:
+        """Make `model` this project's orchestrator, the way `/model` does in
+        the terminal: a pick from the list saves its auth method + provider
+        with it (a model from a different provider than the last one must not
+        keep routing through the old provider's CLI login), the choice goes
+        into the project's models file, and the run path follows. Returns why
+        it was refused (a local model too big for this machine's memory or
+        disk) with nothing changed, or None."""
+        from localforge import cli
+
+        if model.startswith(local_transport.PREFIXES):
+            name = local_transport.model_name(model)
+            if why := model_fit.selection_problem(name):
+                return f"Can't use {name} as the orchestrator: {why}. Nothing was changed."
         try:
             match = next((auth for m, _label, auth in cli._model_choices() if m == model), None)
         except Exception:  # noqa: BLE001
             match = None
-        if match:
-            config.save({config.FRONTIER_MODEL_ENV_VAR: model, **match})
+        auth = match if match is not None else _auth_for_typed_model(model)
+        project_models.save({config.FRONTIER_MODEL_ENV_VAR: model, **(auth or {})})
         self.frontier_model = model
-        self.cli_provider = cli._cli_provider_for(model, explicit=match is None)
+        self.cli_provider = cli._cli_provider_for(model, explicit=auth is None)
+        return None
 
     def handle_model_command(self, arg: str):
         if not arg:
@@ -691,27 +752,28 @@ class StdioServer:
             if not model:
                 self.emit("error", message="Model cannot be empty.")
             else:
-                self._switch_orchestrator(model)
+                if problem := self._switch_orchestrator(model):
+                    self.emit("error", message=problem)
                 self.emit("model", model=self.frontier_model)
 
     def handle_advanced_model_command(self, arg: str):
         parts = arg.strip().split(None, 1)
         if not parts:
-            self.emit("advanced_model", targets=_advanced_model_snapshot())
+            self._emit_advanced_model()
             return
         modality = parts[0].lower()
         if len(parts) == 1:
             if modality not in delegate_target.ALL_MODALITIES:
                 self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, general, image, or video.")
                 return
-            self.emit("advanced_model", targets=_advanced_model_snapshot())
+            self._emit_advanced_model()
             return
         try:
             delegate_target.apply(modality, parts[1])
         except delegate_target.InvalidTarget as exc:
             self.emit("error", message=str(exc))
             return
-        self.emit("advanced_model", targets=_advanced_model_snapshot())
+        self._emit_advanced_model()
 
     def handle_auto_command(self, arg: str):
         arg = arg.strip().lower()
@@ -861,11 +923,11 @@ class StdioServer:
         except Exception:  # noqa: BLE001 - best-effort only; never block shutdown over this
             pass
 
-def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False, stream_output: bool = False) -> None:
+def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False, stream_output: bool = False, model_explicit: bool = False) -> None:
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
     try:
-        server = StdioServer(root, frontier_model, cli_provider, out=real_stdout, inp=sys.stdin, auto_approve=auto_approve, stream_output=stream_output)
+        server = StdioServer(root, frontier_model, cli_provider, out=real_stdout, inp=sys.stdin, auto_approve=auto_approve, stream_output=stream_output, model_explicit=model_explicit)
         server.serve_forever()
     finally:
         sys.stdout = real_stdout

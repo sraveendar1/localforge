@@ -46,14 +46,17 @@ export function FrontierPicker({
         <div key={group} className={i > 0 ? "mt-1 border-t border-mx-dim pt-1" : ""}>
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{group}</div>
           {items.map(o => (
-            <button
-              key={o.id}
-              title={o.label}
-              className={"block w-full truncate rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (o.id === current ? "text-mx-green" : "text-mx-mid")}
-              onClick={() => pick(o.id)}
-            >
-              {o.id}
-            </button>
+            <div key={o.id}>
+              <button
+                title={o.problem ?? o.label}
+                disabled={!!o.problem}
+                className={"block w-full truncate rounded-sm px-1.5 py-0.5 text-left " + (o.problem ? "cursor-not-allowed text-mx-dim line-through" : "hover:bg-mx-dim/50 " + (o.id === current ? "text-mx-green" : "text-mx-mid"))}
+                onClick={() => pick(o.id)}
+              >
+                {o.id}
+              </button>
+              {o.problem && <p className="px-1.5 pb-1 text-[10px] text-mx-red">Can't run here: {o.problem}.</p>}
+            </div>
           ))}
         </div>
       ))}

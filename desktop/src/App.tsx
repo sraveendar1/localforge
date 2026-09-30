@@ -21,11 +21,6 @@ function App() {
   const [chat, setChat] = useState<ChatState>(initialState);
   const [folder, setFolder] = useState<string | null>(null);
   const [input, setInput] = useState("");
-  // The orchestrator to start the next folder's session with. Empty until the
-// backend reports the one really running, so a fresh app start uses whatever
-// `localforge setup` saved -- it used to default to "claude-opus-5" and
-// override that on every first folder open.
-  const [modelDraft, setModelDraft] = useState("");
   const [slashActive, setSlashActive] = useState(0);
   const [leftNavOpen, setLeftNavOpen] = useState(false);
   const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
@@ -47,7 +42,6 @@ function App() {
     return () => { ps.forEach(p => p.then(f => f())); };
   }, []);
 
-  useEffect(() => { if (chat.model) setModelDraft(chat.model); }, [chat.model]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chat.messages]);
 
@@ -69,7 +63,10 @@ function App() {
     setFolder(dir);
     setChat(initialState);
     setRecentFolders(r => addRecentFolder(dir, r));
-    try { await invoke("start_session", { folder: dir, model: modelDraft.trim() || null }); } catch (err) { setChat(s => addError(s, String(err))); }
+    try { // No model is passed: the backend uses this project's saved models
+      // (.localforge/models.json), else the user's defaults. Carrying the
+      // last folder's model over would override the next folder's own.
+      await invoke("start_session", { folder: dir, model: null }); } catch (err) { setChat(s => addError(s, String(err))); }
   }
 
   // Set when the app is launched with a folder to open directly (e.g.
@@ -144,10 +141,6 @@ function App() {
   }, [chat.connected, chat.trustRequired, send]);
 
   useEffect(() => {
-    if (chat.model) setModelDraft(chat.model);
-  }, [chat.model]);
-
-  useEffect(() => {
     if (chat.connected) {
       const interval = setInterval(() => {
         send({ type: "system_stats" });
@@ -170,7 +163,7 @@ function App() {
           onClick={() => { setLeftNavOpen(true); setModelsSignal(n => n + 1); send({ type: "orchestrator_options_request" }); }}
           className="max-w-xs truncate rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1 text-sm text-mx-bright hover:border-mx-mid disabled:opacity-50"
         >
-          {chat.model || modelDraft || "model"}
+          {chat.model || "model"}
         </button>
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
@@ -185,11 +178,12 @@ function App() {
           onSelectFolder={startSessionForFolder}
           onOpenDialog={openFolder}
           modelsSignal={modelsSignal}
-          frontier={chat.model || modelDraft}
+          frontier={chat.model}
           frontierOptions={chat.orchestratorOptions}
           targets={chat.localModelTargets}
           delegateOptions={chat.delegateOptions}
           connected={chat.connected}
+          source={chat.modelsSource}
           send={send}
         />
         <main className="flex min-w-0 flex-1 flex-col">

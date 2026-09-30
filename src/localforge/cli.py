@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, repl, task_summary, theme, trust, upgrades, usage_store
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, repl, task_summary, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -48,6 +48,14 @@ console = Console()
 @app.callback(invoke_without_command=True)
 def _main(ctx: typer.Context) -> None:
     config.load()
+    # This folder's saved models (.localforge/models.json) apply over the
+    # defaults -- but only once the folder is trusted: a cloned repo could
+    # otherwise pick a paid model to be billed to the user's keys.
+    folder = Path.cwd().resolve()
+    if trust.is_trusted(folder):
+        project_models.activate(folder)
+    else:
+        project_models.deactivate()
     console.push_theme(theme.get_theme(os.environ.get(config.THEME_ENV_VAR, theme.DEFAULT_THEME)))
     if ctx.invoked_subcommand is None:
         # A real interactive terminal gets the Claude-Code-style session
@@ -307,7 +315,7 @@ def _walk_through_advanced_model_setup(recs: dict, installed: set[str]) -> None:
                 console.print("  [error]No model given — staying automatic for this task type.[/error]")
                 continue
             try:
-                target = delegate_target.apply(modality, f"{kind}:{provider}:{model}")
+                target = delegate_target.apply(modality, f"{kind}:{provider}:{model}", scope="global")  # setup sets your defaults
             except delegate_target.InvalidTarget as exc:
                 console.print(f"  [error]{exc}[/error] Staying automatic for this task type.")
                 continue
@@ -795,6 +803,11 @@ def setup() -> None:
     else:
         console.print("[success]✓[/success] Local models ready\n")
 
+    if project_models.source() == "project":
+        console.print(
+            "[warning]This folder has its own model settings (.localforge/models.json), which take precedence here. "
+            "Change them with /model and /advanced-model, or delete that file to use the defaults you just set.[/warning]"
+        )
     console.print(f"[bold success]Setup complete.[/bold success] {START_SESSION_HINT}", highlight=False)
 
 
@@ -1190,7 +1203,7 @@ def serve(
     # new folder. serve_stdio()'s StdioServer now asks over the protocol
     # itself (trust_required / trust_response), same as the terminal REPL's
     # prompt but rendered by the GUI instead of blocking on stdin.
-    serve_stdio(folder, frontier_model, cli_provider, auto_approve=yes)
+    serve_stdio(folder, frontier_model, cli_provider, auto_approve=yes, model_explicit=bool(explicit_model))
 
 
 LIMIT_POLL_SECONDS = 5.0
@@ -1808,10 +1821,22 @@ def _provider_models(provider: str) -> list[str]:
     return curated
 
 
-def _set_orchestrator(model: str, auth: dict) -> None:
-    config.save({config.FRONTIER_MODEL_ENV_VAR: model, **auth})
+def _set_orchestrator(model: str, auth: dict) -> bool:
+    """Make `model` the orchestrator for this project. Refused, with the
+    reason and nothing saved, when it's a local model too big for this
+    machine's memory or disk. True if it was set."""
+    if _is_local_model(model):
+        name = local_transport.model_name(model)
+        if why := model_fit.selection_problem(name):
+            console.print(
+                f"[error]Can't use {escape(name)} as the orchestrator: {escape(why)}.[/error] "
+                "Nothing was changed. Pick a smaller model with /model."
+            )
+            return False
+    project_models.save({config.FRONTIER_MODEL_ENV_VAR: model, **auth})
     _session.announced = False
     console.print(f"[success]✓[/success] Orchestrator is now {escape(_orchestrator_label(model, _cli_provider_for(model, explicit=False)))}")
+    return True
 
 
 def _ask_trust(folder: Path) -> bool:
@@ -2273,11 +2298,13 @@ def _choose_orchestrator_at_start() -> bool:
     for i, (model_id, label, _) in enumerate(choices, 1):
         last = "  [dim](last used)[/dim]" if model_id == current else ""
         console.print(f"  {i}) {escape(label)}{last}", highlight=False)
-    answer = _ask_number("Choose", len(choices))
-    if answer is None:
-        return False
-    model_id, _, auth = choices[answer - 1]
-    _set_orchestrator(model_id, auth)
+    while True:
+        answer = _ask_number("Choose", len(choices))
+        if answer is None:
+            return False
+        model_id, _, auth = choices[answer - 1]
+        if _set_orchestrator(model_id, auth):  # refused (too big for this machine): choose again
+            break
     _session.conversation_for(Path.cwd().resolve())
     console.print()
     return True
@@ -2295,7 +2322,8 @@ def model_command(
         model = config.litellm_model_id(model)
         for model_id, _, auth in choices:
             if model_id == model:
-                _set_orchestrator(model_id, auth)
+                if not _set_orchestrator(model_id, auth):
+                    raise typer.Exit(code=1)
                 return
         if _is_local_model(model):
             console.print(
@@ -2349,6 +2377,15 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
     return f"{entry.name} (auto, local, {on_disk})"
 
 
+def _models_source_line() -> str:
+    """Where this folder's model choices come from and where a change goes."""
+    if project_models.active_root() is None:
+        return "Changes are saved as your defaults (this folder isn't trusted yet, so it has no settings of its own)."
+    if project_models.source() == "project":
+        return f"Saved for this project in {memory.LOCAL_DIR}/{project_models.FILE_NAME}; a change updates that file."
+    return f"Using your defaults; a change is saved for this project in {memory.LOCAL_DIR}/{project_models.FILE_NAME}."
+
+
 @app.command(name="advanced-model")
 def advanced_model_command(
     modality: str = typer.Argument(None, help="coding, docs, general, image, or video. Omit to show all."),
@@ -2374,6 +2411,7 @@ def advanced_model_command(
     if modality is None:
         for m in delegate_target.ALL_MODALITIES:
             console.print(f"{m}: [accent]{escape(_describe_active_target(m, recs, installed))}[/accent]")
+        console.print(f"[dim]{escape(_models_source_line())}[/dim]")
         if value is None:
             console.print("Change one with: advanced-model <coding|docs|general|image> <value>")
         return
@@ -2410,6 +2448,7 @@ def advanced_model_command(
             f"[success]✓[/success] {modality} now delegates to {escape(target.model)} ({escape(target.provider)}, via {via}). "
             "Unlike a local model, this costs money per delegation -- see /usage."
         )
+    console.print(f"[dim]{escape(_models_source_line())}[/dim]")
 
 
 def _memory_dispatcher(hooks=None) -> Dispatcher:

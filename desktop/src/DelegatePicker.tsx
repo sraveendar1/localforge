@@ -36,13 +36,17 @@ export function DelegatePicker({
         <div className="mt-1 border-t border-mx-dim pt-1">
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Local (free)</div>
           {options.local.map(m => (
-            <button
-              key={m.name}
-              className={"block w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (options.current === `ollama:${m.name}` ? "text-mx-green" : "text-mx-mid")}
-              onClick={() => { onPick(m.name); onClose(); }}
-            >
-              {m.name} {m.installed ? "" : `(will download, ~${m.disk_gb}GB)`}
-            </button>
+            <div key={m.name}>
+              <button
+                disabled={!!m.problem}
+                title={m.problem ?? undefined}
+                className={"block w-full rounded-sm px-1.5 py-0.5 text-left " + (m.problem ? "cursor-not-allowed text-mx-dim line-through" : "hover:bg-mx-dim/50 " + (options.current === `ollama:${m.name}` ? "text-mx-green" : "text-mx-mid"))}
+                onClick={() => { onPick(m.name); onClose(); }}
+              >
+                {m.name} {m.problem ? "" : m.installed ? "" : `(will download, ~${m.disk_gb}GB)`}
+              </button>
+              {m.problem && <p className="px-1.5 pb-1 text-[10px] text-mx-red">Can't run here: {m.problem}.</p>}
+            </div>
           ))}
         </div>
       )}

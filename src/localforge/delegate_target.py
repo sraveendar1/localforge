@@ -11,9 +11,12 @@ existing subprocess/JSON-protocol machinery). See `backends/cloud.py` for
 where a cloud target actually runs, and `tools.Dispatcher.resolve()` for how
 a target is turned into something `dispatch()` can call.
 
-Stored globally (one set of choices for the whole machine, like the
-orchestrator model itself) rather than per-project: which local models are
-installed, and which API keys/CLI logins exist, don't vary by folder.
+Kept per project (see project_models.py: `<project>/.localforge/models.json`),
+falling back to your global defaults (`localforge setup`) for a project that
+hasn't saved its own. Which local models are installed and which API keys or
+CLI logins exist don't vary by folder, but which of them a project should use
+does -- and a model too big for the machine is refused when chosen (see
+model_fit.py).
 """
 
 from __future__ import annotations
@@ -89,12 +92,17 @@ def get_all() -> dict[str, DelegateTarget]:
     return {modality: get(modality) for modality in MODALITIES}
 
 
-def set_target(modality: str, target: DelegateTarget) -> None:
-    config.save({TARGET_ENV_VARS[modality]: render(target)})
+def set_target(modality: str, target: DelegateTarget, scope: str = "project") -> None:
+    """Save a choice: to the active project's models file (see
+    project_models.py) by default, or -- scope="global" -- to the defaults
+    every project starts from (what `localforge setup` sets)."""
+    from localforge import project_models
+
+    project_models.save({TARGET_ENV_VARS[modality]: render(target)}, scope)
 
 
-def clear(modality: str) -> None:
-    set_target(modality, AUTO)
+def clear(modality: str, scope: str = "project") -> None:
+    set_target(modality, AUTO, scope)
 
 
 class InvalidTarget(ValueError):
@@ -106,24 +114,26 @@ class InvalidTarget(ValueError):
     duplicating this validation."""
 
 
-def apply(modality: str, value: str) -> DelegateTarget:
+def apply(modality: str, value: str, scope: str = "project") -> DelegateTarget:
     """Parse, validate, and persist a target from a raw string: 'auto', a
     local catalog model name, or api:<provider>:<model> / cli:<provider>:
     <model> for a cloud target. Raises InvalidTarget rather than silently
-    accepting something that would break the next delegation."""
+    accepting something that would break the next delegation -- including a local
+    model too big for this machine's memory or disk. `scope` is where it is
+    saved: the active project (default) or the global defaults (setup)."""
     if modality not in ALL_MODALITIES:
         raise InvalidTarget(f"Unknown task type {modality!r}. Use coding, docs, general, image, or video.")
     value = value.strip()
     if modality == "video":
         if value.lower() == "auto":
-            clear(modality)
+            clear(modality, scope)
             return AUTO
         raise InvalidTarget("Video generation isn't available yet, so there's nothing to choose for it.")
     if value.lower() == "auto":
-        clear(modality)
+        clear(modality, scope)
         return AUTO
     if modality == "image":
-        return _apply_image(value)
+        return _apply_image(value, scope)
     if value.startswith("api:") or value.startswith("cli:"):
         target = parse(value)
         if target is AUTO:
@@ -143,7 +153,7 @@ def apply(modality: str, value: str) -> DelegateTarget:
 
             if not cli_transport.available(target.provider):
                 raise InvalidTarget(cli_transport.requirements_message(target.provider))
-        set_target(modality, target)
+        set_target(modality, target, scope)
         return target
     from localforge.catalog import load_catalog  # local: avoids a module-load-order dependency
 
@@ -153,12 +163,19 @@ def apply(modality: str, value: str) -> DelegateTarget:
             f"{value!r} isn't a {modality} model in the catalog. "
             "Run `localforge catalog` to see options, or pass 'auto'/an api:.../cli:... target."
         )
+    from localforge import model_fit  # local: model_fit imports this module
+
+    if why := model_fit.selection_problem(value):
+        raise InvalidTarget(
+            f"{value} can't run on this machine for {modality}: {why}. Nothing was changed. "
+            "Pick a smaller model, or 'auto' to let localforge choose one that fits."
+        )
     target = DelegateTarget(kind="ollama", model=value)
-    set_target(modality, target)
+    set_target(modality, target, scope)
     return target
 
 
-def _apply_image(value: str) -> DelegateTarget:
+def _apply_image(value: str, scope: str = "project") -> DelegateTarget:
     """An image target is a paid cloud image model through an API key: a
     local model has no image backend yet, and the CLI logins can't generate
     images."""
@@ -179,7 +196,7 @@ def _apply_image(value: str) -> DelegateTarget:
     env_var = config.FRONTIER_PROVIDERS.get(target.provider)
     if not env_var or not os.environ.get(env_var):
         raise InvalidTarget(f"No API key set for {target.provider}. Run `localforge setup` to add one.")
-    set_target("image", target)
+    set_target("image", target, scope)
     return target
 
 

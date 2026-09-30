@@ -12,6 +12,8 @@ import json
 from unittest.mock import patch
 
 import httpx
+from pathlib import Path
+
 import pytest
 from typer.testing import CliRunner
 
@@ -182,8 +184,12 @@ def test_model_lists_installed_local_models_and_switches(monkeypatch):
 
     assert "ollama/gemma3:4b  (open-weighted model — no account, no billing)" in listing
     assert "Orchestrator is now gemma3:4b (open-weighted model" in switched
-    saved = config.CONFIG_FILE.read_text()
-    assert "LOCALFORGE_FRONTIER_MODEL=ollama/gemma3:4b" in saved and "LOCALFORGE_AUTH_METHOD=local" in saved
+    # Switching is saved for this project (its models file), not as a global default.
+    from localforge import project_models
+
+    saved = project_models.load(Path.cwd())["orchestrator"]
+    assert saved == {"model": "ollama/gemma3:4b", "auth_method": "local", "provider": "local"}
+    assert not config.CONFIG_FILE.exists() or "ollama/gemma3:4b" not in config.CONFIG_FILE.read_text()
 
 
 def test_model_refuses_a_local_model_that_isnt_downloaded():

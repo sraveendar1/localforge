@@ -51,9 +51,9 @@ export type UsageTotals = {
 export type ConfiguredModel = { modality: string; name: string; runtime: string; qualityTier: number };
 export type LocalModelTarget = { target: string; description: string };
 export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string };
-export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean };
+export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean; problem?: string | null };
 export type DelegateOptions = { local: DelegateLocalOption[]; cloud: DelegateCloudOption[]; current: string };
-export type OrchestratorOption = { id: string; label: string; group: string };
+export type OrchestratorOption = { id: string; label: string; group: string; problem?: string | null };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -72,6 +72,9 @@ export type ChatState = {
   // Per-modality delegate target (see /advanced-model): auto by default, or a
   // pinned local/cloud override. delegateOptions is fetched lazily, per
   // modality, only when the "Change" picker for that row is opened.
+  // Where the model choices come from: this project's own file
+  // (.localforge/models.json) or the user's defaults (none saved for it yet).
+  modelsSource: "project" | "defaults" | null;
   localModelTargets: { [modality: string]: LocalModelTarget };
   delegateOptions: { [modality: string]: DelegateOptions };
   systemStats: SystemStats | null;
@@ -121,6 +124,7 @@ export const initialState: ChatState = {
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
   orchestratorOptions: [],
+  modelsSource: null,
   localModelTargets: {},
   delegateOptions: {},
   systemStats: null,
@@ -345,7 +349,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions };
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -429,7 +433,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       const options = Array.isArray(ev.options) ? ev.options : [];
       return {
         ...state,
-        orchestratorOptions: options.map((o: any) => ({ id: String(o.id ?? ""), label: String(o.label ?? o.id ?? ""), group: String(o.group ?? "Other") })).filter((o: OrchestratorOption) => o.id),
+        orchestratorOptions: options.map((o: any) => ({ id: String(o.id ?? ""), label: String(o.label ?? o.id ?? ""), group: String(o.group ?? "Other"), problem: o.problem ? String(o.problem) : null })).filter((o: OrchestratorOption) => o.id),
         model: ev.current ? String(ev.current) : state.model,
       };
     }
@@ -439,7 +443,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       for (const [modality, t] of Object.entries<any>(targets)) {
         localModelTargets[modality] = { target: String(t?.target ?? "auto"), description: String(t?.description ?? "auto") };
       }
-      return { ...state, localModelTargets };
+      return { ...state, localModelTargets, modelsSource: ev.source === "project" || ev.source === "defaults" ? ev.source : state.modelsSource };
     }
     case "delegate_options": {
       const modality = String(ev.modality ?? "");
@@ -454,6 +458,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
             local: local.map((m: any) => ({
               name: String(m.name ?? ""), quality_tier: Number(m.quality_tier ?? 0),
               disk_gb: Number(m.disk_gb ?? 0), installed: Boolean(m.installed),
+              problem: m.problem ? String(m.problem) : null,
             })),
             cloud: cloud.map((c: any) => ({ kind: c.kind === "cli" ? "cli" : "api", provider: String(c.provider ?? ""), model: String(c.model ?? "") })),
             current: String(ev.current ?? "auto"),

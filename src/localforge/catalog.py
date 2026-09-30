@@ -167,6 +167,43 @@ def _fits(entry: ModelEntry, hw: HardwareProfile, installed: set[str] | None = N
     return _placement(entry, hw) is not None
 
 
+def fit_problem(entry: ModelEntry, hw: HardwareProfile, installed: set[str] | None = None) -> str | None:
+    """Why `entry` can't be used on this machine, in plain words, or None if
+    it can. The same limits as _fits(), but saying which one is the problem
+    (memory, or disk for a download) so a choice can be refused with a
+    reason instead of failing later or swapping the machine to a crawl.
+
+    `installed` (Ollama tags on disk) decides whether disk matters: an
+    installed model needs none. When it isn't known (None), disk isn't judged
+    -- wrongly refusing a model that's already there is worse than not
+    warning about a download.
+    """
+    if entry.runtime != "ollama":
+        return None  # cloud and image/video runtimes aren't sized against this machine
+    problems = []
+    need = running_gb(entry)
+    if hw.ram_gb < entry.min_ram_gb or _placement(entry, hw) is None:
+        if any(g.backend == "metal" for g in hw.gpus):
+            room = min(hw.total_vram_gb * GPU_USABLE_FRACTION, ram_budget_gb(hw))
+            what = f"{hw.ram_gb:g} GB of memory (shared with the GPU)"
+        elif hw.gpus:
+            room = hw.total_vram_gb * GPU_USABLE_FRACTION + ram_budget_gb(hw)
+            what = f"{hw.total_vram_gb:g} GB of GPU memory and {hw.ram_gb:g} GB of RAM"
+        else:
+            room = ram_budget_gb(hw)
+            what = f"{hw.ram_gb:g} GB of RAM"
+        problems.append(
+            f"it needs about {need:.1f} GB of memory to run (even with the smallest context window), but this machine "
+            f"has {what}, and a model can use about {room:.1f} GB of that while leaving room for the system and your apps"
+        )
+    on_disk = installed is not None and entry.name in installed
+    if installed is not None and not on_disk and hw.free_disk_gb < entry.disk_gb:
+        problems.append(
+            f"it isn't downloaded, and the download is about {entry.disk_gb:g} GB but only {hw.free_disk_gb:g} GB of disk is free"
+        )
+    return "; and ".join(problems) if problems else None
+
+
 def candidates(
     modality: str,
     hardware: HardwareProfile,

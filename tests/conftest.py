@@ -6,6 +6,7 @@ import pytest
 def pytest_configure(config):
     config.addinivalue_line("markers", "real_local_menu: use the real local-orchestrator menu builder")
     config.addinivalue_line("markers", "untrusted: start the test with no trusted folders")
+    config.addinivalue_line("markers", "real_model_fit: use the real hardware/disk lookup for the fit check")
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,34 @@ def _fixed_local_orchestrator_menu(request, monkeypatch):
         return
 
     monkeypatch.setattr(local_transport, "orchestrator_choices", lambda hardware, installed: ["ollama/llama3.1:70b", "ollama/qwen2.5:72b"])
+
+
+@pytest.fixture(autouse=True)
+def _roomy_machine_for_model_fit(request, monkeypatch):
+    """Choosing a local model is refused if it can't run on this machine
+    (model_fit.py). Tests pick catalog models without caring which, so they
+    get a big machine with nothing on disk to look up, instead of whatever the
+    developer's laptop or CI happens to be -- except tests marked
+    `real_model_fit`, which test the check against hardware they build."""
+    import localforge.model_fit as model_fit
+    from localforge.hardware import HardwareProfile
+
+    if request.node.get_closest_marker("real_model_fit"):
+        return
+    big = HardwareProfile(os="Linux", arch="x86_64", cpu_cores=32, ram_gb=256, free_disk_gb=4000, gpus=[])
+    monkeypatch.setattr(model_fit, "detect_hardware", lambda: big)
+    monkeypatch.setattr(model_fit, "installed_sizes", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_active_project():
+    """The project whose models file applies is module state (project_models.py);
+    don't let one test's project leak into the next."""
+    import localforge.project_models as project_models
+
+    project_models.deactivate()
+    yield
+    project_models.deactivate()
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +93,16 @@ def _fresh_session(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _trusted_cwd(request, _isolated_config_dir):
+def _own_cwd(monkeypatch, tmp_path_factory):
+    """Run every test from a folder of its own. A command run with the repo as
+    the working directory writes that project's `.localforge/` (usage history,
+    the saved models) into the real checkout, and one test's saved models then
+    applied to the next."""
+    monkeypatch.chdir(tmp_path_factory.mktemp("project"))
+
+
+@pytest.fixture(autouse=True)
+def _trusted_cwd(request, _isolated_config_dir, _own_cwd):
     """Most tests call `run` and aren't about folder trust, so trust the
     current folder in this test's own (throwaway) config. Tests marked
     `untrusted` start with nothing trusted."""

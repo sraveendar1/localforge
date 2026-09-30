@@ -30,6 +30,7 @@ export function ModelsPanel({
   targets,
   delegateOptions,
   connected,
+  source,
   send,
 }: {
   frontier: string;
@@ -37,6 +38,7 @@ export function ModelsPanel({
   targets: { [modality: string]: LocalModelTarget };
   delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
+  source: "project" | "defaults" | null;
   send: (obj: object) => void;
 }) {
   const [wantAdvanced, setWantAdvanced] = useState(false);
@@ -97,6 +99,14 @@ export function ModelsPanel({
           ? "Choose the model for each kind of work. Paid models cost money per use. Image generation is off until you pick a paid image model."
           : "localforge picks the best local model for each kind of work. Switch to Advanced to choose."}
       </p>
+
+      {source && (
+        <p className="text-mx-dim" data-testid="models-source">
+          {source === "project"
+            ? "Saved for this project (.localforge/models.json). Changes update it."
+            : "Using your defaults. The first change is saved for this project."}
+        </p>
+      )}
 
       <div>
         <div className="flex items-center justify-between gap-2">

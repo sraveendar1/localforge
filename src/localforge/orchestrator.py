@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import brief, cli_transport, content_blocks, local_transport, memory, task_summary
+from localforge import brief, cli_transport, content_blocks, local_transport, memory, model_fit, task_summary
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import CHECK_COMMAND as _CHECK_COMMAND
@@ -478,6 +478,11 @@ def run(
     if image is not None:
         _check_image_support(frontier_model, cli_provider)
     hardware = hardware if hardware is not None else detect_hardware()
+    # A model chosen for this project that can't run on this machine (its
+    # settings copied from a bigger one, a disk that has since filled) is
+    # refused up front, with the reason, before anything is spent or changed.
+    if problems := model_fit.preflight(frontier_model, hardware):
+        raise model_fit.ModelNotUsable("\n".join(problems) + "\nNothing was run.")
     hooks = hooks or ActivityHooks()
     conversation = conversation if conversation is not None else Conversation()
     installed = _installed_models()

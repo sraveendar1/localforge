@@ -20,6 +20,7 @@ export function LeftNav({
   targets,
   delegateOptions,
   connected,
+  source,
   send,
 }: {
   open: boolean;
@@ -34,6 +35,7 @@ export function LeftNav({
   targets: { [modality: string]: LocalModelTarget };
   delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
+  source: "project" | "defaults" | null;
   send: (obj: object) => void;
 }) {
   return (
@@ -77,6 +79,7 @@ export function LeftNav({
               targets={targets}
               delegateOptions={delegateOptions}
               connected={connected}
+              source={source}
               send={send}
             />
           </Curtain>
