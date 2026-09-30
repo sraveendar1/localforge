@@ -119,7 +119,8 @@ export const initialState: ChatState = {
     localModels: {},
     delegateTokensGenerated: 0,
     delegateCostUsd: 0,
-    delegateNotionalCostUsd: 0
+    delegateNotionalCostUsd: 0,
+    paidModels: {}
   },
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
@@ -186,17 +187,58 @@ function addItem(state: ChatState, item: Item): ChatState {
 // local_tokens_generated is ignored here: it is already counted on delegate_finished.
 function withStats(state: ChatState, stats: any): ChatState {
   if (!stats || typeof stats !== "object") return state;
+  // Per paid model: the orchestrator (under the model it ran as), plus each
+  // paid delegate the run reported by name.
+  const paid = { ...state.usage.paidModels };
+  const bump = (name: string, add: Partial<PaidUsage> & { role: string }) => {
+    const cur = paid[name] ?? { roles: [], promptTokens: 0, completionTokens: 0, costUsd: 0, notionalCostUsd: 0, viaSubscription: false, runs: 0 };
+    paid[name] = {
+      roles: cur.roles.includes(add.role) ? cur.roles : [...cur.roles, add.role],
+      promptTokens: cur.promptTokens + (add.promptTokens ?? 0),
+      completionTokens: cur.completionTokens + (add.completionTokens ?? 0),
+      costUsd: cur.costUsd + (add.costUsd ?? 0),
+      notionalCostUsd: cur.notionalCostUsd + (add.notionalCostUsd ?? 0),
+      viaSubscription: cur.viaSubscription || !!add.viaSubscription,
+      runs: cur.runs + (add.runs ?? 0),
+    };
+  };
+  const promptTokens = Number(stats.frontier_prompt_tokens ?? 0);
+  const completionTokens = Number(stats.frontier_completion_tokens ?? 0);
+  if (state.model && (promptTokens || completionTokens || Number(stats.frontier_cost_usd ?? 0))) {
+    const subscription = Boolean(stats.frontier_via_subscription);
+    bump(state.model, {
+      role: "orchestrator", promptTokens, completionTokens,
+      costUsd: subscription ? 0 : Number(stats.frontier_cost_usd ?? 0),
+      notionalCostUsd: subscription ? Number(stats.frontier_cost_usd ?? 0) : 0,
+      viaSubscription: subscription, runs: 1,
+    });
+  }
+  for (const [name, m] of Object.entries<any>(stats.delegate_models && typeof stats.delegate_models === "object" ? stats.delegate_models : {})) {
+    const roles: string[] = Array.isArray(m?.roles) && m.roles.length ? m.roles.map(String) : ["delegate"];
+    roles.forEach((role, i) =>
+      bump(name, {
+        role,
+        // counted once, under the first role: the numbers are per model, not per role
+        completionTokens: i === 0 ? Number(m?.tokens ?? 0) : 0,
+        costUsd: i === 0 ? Number(m?.cost_usd ?? 0) : 0,
+        notionalCostUsd: i === 0 ? Number(m?.notional_cost_usd ?? 0) : 0,
+        viaSubscription: m?.kind === "cli",
+        runs: i === 0 ? Number(m?.runs ?? 0) : 0,
+      }),
+    );
+  }
   return {
     ...state,
     usage: {
       ...state.usage,
-      frontierPromptTokens: state.usage.frontierPromptTokens + Number(stats.frontier_prompt_tokens ?? 0),
-      frontierCompletionTokens: state.usage.frontierCompletionTokens + Number(stats.frontier_completion_tokens ?? 0),
+      frontierPromptTokens: state.usage.frontierPromptTokens + promptTokens,
+      frontierCompletionTokens: state.usage.frontierCompletionTokens + completionTokens,
       frontierCostUsd: state.usage.frontierCostUsd + Number(stats.frontier_cost_usd ?? 0),
       frontierViaSubscription: Boolean(stats.frontier_via_subscription),
       delegateTokensGenerated: state.usage.delegateTokensGenerated + Number(stats.delegate_tokens_generated ?? 0),
       delegateCostUsd: state.usage.delegateCostUsd + Number(stats.delegate_cost_usd ?? 0),
       delegateNotionalCostUsd: state.usage.delegateNotionalCostUsd + Number(stats.delegate_notional_cost_usd ?? 0),
+      paidModels: paid,
     }
   };
 }
@@ -493,6 +535,17 @@ export function removeApproval(state: ChatState, id: string): ChatState {
   return { ...state, approvals: state.approvals.filter(a => a.id !== id) };
 }
 
+// What one paid (cloud) model has used this session: the orchestrator, and any
+// task type sent to a paid model (image generation always is).
+export type PaidUsage = {
+  roles: string[];
+  promptTokens: number;
+  completionTokens: number;
+  costUsd: number;
+  notionalCostUsd: number;  // what a subscription's usage would have cost; never shown as billed money
+  viaSubscription: boolean;
+  runs: number;
+};
 export type Usage = {
   frontierPromptTokens: number;
   frontierCompletionTokens: number;
@@ -506,4 +559,7 @@ export type Usage = {
   delegateTokensGenerated: number;
   delegateCostUsd: number;
   delegateNotionalCostUsd: number;
+  // The same, split by paid model name (the orchestrator included), for the
+  // "Paid models" list.
+  paidModels: { [name: string]: PaidUsage };
 };

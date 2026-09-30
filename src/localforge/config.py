@@ -53,6 +53,15 @@ IMAGE_MODEL_CHOICES: dict[str, list[str]] = {
     "gemini": ["gemini/imagen-3.0-generate-001", "gemini/gemini-2.5-flash-image"],
 }
 
+# Image generation through a provider's own CLI login (a subscription, no API
+# key), which needs the provider's CLI to have an image tool of its own.
+# Only OpenAI's Codex does (a built-in `image_gen` tool on a ChatGPT login).
+# Claude has no image model at all, and Gemini's CLI only gets one from an
+# extension. The "model" is a label: the CLI picks the actual image model.
+IMAGE_CLI_CHOICES: dict[str, list[str]] = {
+    "openai": ["codex-image"],
+}
+
 FRONTIER_MODEL_CHOICES: dict[str, list[str]] = {
     "anthropic": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001", "claude-fable-5-1"],
     "openai": ["gpt-5"],

@@ -55,6 +55,8 @@ class RunStats:
     delegate_tokens_generated: int = 0
     delegate_cost_usd: float = 0.0
     delegate_notional_cost_usd: float = 0.0
+    # The same, split by paid model name (see Dispatcher._note_paid_model).
+    delegate_models: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         # What this task did, step by step, for the summary shown after every
@@ -657,6 +659,7 @@ def _copy_dispatch_stats(stats: RunStats, dispatcher) -> None:
     stats.delegate_tokens_generated = getattr(dispatcher, "delegate_tokens_generated", 0)
     stats.delegate_cost_usd = getattr(dispatcher, "delegate_cost_usd", 0.0)
     stats.delegate_notional_cost_usd = getattr(dispatcher, "delegate_notional_cost_usd", 0.0)
+    stats.delegate_models = dict(getattr(dispatcher, "delegate_models", {}) or {})
 
 
 class TaskCancelled(Exception):

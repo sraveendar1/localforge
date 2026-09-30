@@ -20,7 +20,12 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
+import subprocess
+import tempfile
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
 import httpx
@@ -175,3 +180,92 @@ class CloudImageBackend:
                     raise RuntimeError("the generated image is larger than the limit and wasn't saved")
                 chunks.append(chunk)
         return b"".join(chunks)
+
+
+IMAGE_CLI_TIMEOUT_SECONDS = 600.0
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+_MAX_SCANNED = 5000  # files looked at under the CLI's own folder; it can hold a lot of history
+
+
+class CloudImageCliBackend:
+    """Generates an image through a provider's own logged-in CLI -- OpenAI's
+    Codex, whose built-in `image_gen` tool runs on a ChatGPT login with no API
+    key -- so it draws on the subscription instead of per-image billing.
+
+    EXPERIMENTAL, and not verified live (no Codex login was available when this
+    was written): it runs the official `codex exec` in an empty scratch folder,
+    asks it to generate the image and leave it in that folder, and takes
+    whatever image file appears -- there, or (Codex saves under $CODEX_HOME by
+    default) newly written under it. It does *not* call the ChatGPT backend
+    directly with the login token, as some third-party tools do: that endpoint is
+    undocumented and outside what the login is offered for. If the CLI produces
+    no image the error says what it printed. Claude has no image generation and
+    Gemini's CLI only has one through an extension, so neither is offered.
+    """
+
+    def ensure_available(self, model_name: str, provider: str | None = None) -> None:
+        if provider not in config.IMAGE_CLI_CHOICES:
+            raise CloudProviderNotConfigured(f"{provider}'s CLI login can't generate images.")
+        if not cli_transport.available(provider):
+            raise CloudProviderNotConfigured(cli_transport.requirements_message(provider))
+
+    def generate(self, model_name: str, prompt: str, provider: str | None = None) -> GeneratedImage:
+        self.ensure_available(model_name, provider)
+        spec = config.FRONTIER_CLI_AUTH[provider]
+        work = Path(tempfile.mkdtemp(prefix="localforge-image-"))
+        started = time.time()
+        instruction = (
+            "Use your built-in image generation tool to create exactly one image for this request:\n\n"
+            f"{prompt}\n\n"
+            "Save the final image as ./image.png in the current folder (copy or move it there if it was saved "
+            "somewhere else). Do nothing else: no other files, no commands beyond that. Reply 'done' once the file exists."
+        )
+        cmd = [spec["command"], *spec["headless_args"], "--sandbox", "workspace-write", "--skip-git-repo-check", instruction]
+        try:
+            try:
+                proc = subprocess.run(
+                    cmd, cwd=work, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=IMAGE_CLI_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(f"{spec['command']} took longer than {int(IMAGE_CLI_TIMEOUT_SECONDS)}s to make the image") from None
+            found = self._find_image(work, started)
+            if found is None:
+                tail = (proc.stdout + proc.stderr).strip()[-400:] or "(no output)"
+                raise RuntimeError(
+                    f"{spec['command']} produced no image file (exit {proc.returncode}). It said: {tail}. "
+                    f"Check that you're signed in ({spec['login_hint']}) and that your plan includes image generation."
+                )
+            data = found.read_bytes()
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+        mime = sniff_image_type(data)
+        if mime is None:
+            raise RuntimeError(f"{spec['command']} left a file that isn't a PNG, JPEG or WebP image")
+        if len(data) > MAX_IMAGE_BYTES:
+            raise RuntimeError("the generated image is larger than the limit and wasn't saved")
+        return GeneratedImage(data=data, mime_type=mime, cost_usd=0.0)  # a subscription: nothing billed per image
+
+    @staticmethod
+    def _find_image(work: Path, started: float) -> Path | None:
+        """The image the CLI made: in the scratch folder if it put it there,
+        else the newest image written under its own folder during this call."""
+        here = [p for p in work.rglob("*") if p.suffix.lower() in _IMAGE_SUFFIXES and p.is_file()]
+        if here:
+            return max(here, key=lambda p: p.stat().st_mtime)
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        newest: tuple[float, Path] | None = None
+        scanned = 0
+        for root, _dirs, files in os.walk(home):
+            for name in files:
+                scanned += 1
+                if scanned > _MAX_SCANNED:
+                    return newest[1] if newest else None
+                path = Path(root) / name
+                if path.suffix.lower() in _IMAGE_SUFFIXES:
+                    try:
+                        mtime = path.stat().st_mtime
+                    except OSError:
+                        continue
+                    if mtime >= started - 1 and (newest is None or mtime > newest[0]):
+                        newest = (mtime, path)
+        return newest[1] if newest else None

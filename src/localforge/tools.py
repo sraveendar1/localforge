@@ -15,7 +15,7 @@ from localforge import brief, delegate_target, verify, web
 from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
-from localforge.backends.cloud import CloudImageBackend, CloudProviderNotConfigured
+from localforge.backends.cloud import CloudImageBackend, CloudImageCliBackend, CloudProviderNotConfigured
 from localforge.backends.ollama import (
     MAX_OUTPUT_TOKENS,
     MIN_NUM_CTX,
@@ -101,11 +101,12 @@ TASK_MODALITIES = {
 # can't run.
 IMAGE_TOOL = "generate_image"
 IMAGE_TOOL_DESCRIPTION = (
-    "Generate an image with the paid image model the user chose, and save it to `path` "
-    "(e.g. assets/hero.png). Describe the picture in `instructions`. This costs money per image, "
-    "so only generate what the task needs."
+    "Generate an image with the image model the user chose, and save it to `path` "
+    "(e.g. assets/hero.png). Describe the picture in `instructions`. Each image costs money or uses "
+    "the user's plan allowance, so only generate what the task needs."
 )
 _image_backend = CloudImageBackend()  # module-level so tests can stand in for the provider
+_image_cli_backend = CloudImageCliBackend()  # ...and for the CLI login route
 _IMAGE_SUFFIXES = {"image/png": (".png",), "image/jpeg": (".jpg", ".jpeg"), "image/webp": (".webp",)}
 
 
@@ -347,7 +348,7 @@ def build_tool_schemas(
                 },
             )
         )
-    if delegate_target.get("image").kind == "api":
+    if delegate_target.get("image").is_cloud:
         schemas.append(
             _schema(
                 IMAGE_TOOL,
@@ -552,6 +553,9 @@ class Dispatcher:
         self.delegate_tokens_generated = 0
         self.delegate_cost_usd = 0.0
         self.delegate_notional_cost_usd = 0.0
+        # The same, per paid model (name -> what it did), so usage can show
+        # "claude for evaluation, gemini for images" instead of one lump.
+        self.delegate_models: dict[str, dict] = {}
 
     def _tool_name_to_modality(self, tool_name: str) -> str:
         for modality, meta in TASK_MODALITIES.items():
@@ -801,6 +805,7 @@ class Dispatcher:
             self.delegate_tokens_generated += tokens
             self.delegate_cost_usd += result.get("cost_usd", 0.0)
             self.delegate_notional_cost_usd += result.get("notional_cost_usd", 0.0)
+            self._note_paid_model(entry, modality, tokens, result.get("cost_usd", 0.0), result.get("notional_cost_usd", 0.0))
         else:
             self.local_tokens_generated += tokens  # every attempt costs local compute, retries included
         if hooks.on_done is not None:
@@ -842,13 +847,27 @@ class Dispatcher:
                 raise LocalModelOutOfMemory(f"{again}. It still didn't fit with half the context window ({smaller:,} tokens), {short}") from None
             return _with_notes(result, [f"{entry.name} ran with a {smaller:,}-token context window because memory was short ({exc})"])
 
+    def _note_paid_model(self, entry: ModelEntry, modality: str, tokens: int, cost: float, notional: float) -> None:
+        """Count one call to a paid (cloud) model under its own name."""
+        slot = self.delegate_models.setdefault(
+            entry.name,
+            {"provider": entry.provider or "", "kind": entry.runtime, "roles": [], "runs": 0, "tokens": 0,
+             "cost_usd": 0.0, "notional_cost_usd": 0.0},
+        )
+        if modality not in slot["roles"]:
+            slot["roles"].append(modality)
+        slot["runs"] += 1
+        slot["tokens"] += tokens
+        slot["cost_usd"] += cost
+        slot["notional_cost_usd"] += notional
+
     def _generate_image(self, args: dict, on_delegate: DelegateCallback | None) -> str:
         """Generate one image with the chosen cloud image model and save it
         (after approval) where the orchestrator said. Failures that the
         orchestrator can act on come back as text; a failed provider call
         raises, like any delegation, and is counted as a failed step."""
         target = delegate_target.get("image")
-        if target.kind != "api":
+        if not target.is_cloud:
             return (
                 f"{IMAGE_TOOL} failed: no image model is chosen, so nothing was generated. Tell the user they can pick "
                 "one (a paid cloud model) with `localforge advanced-model image <value>`, or in Advanced mode of the "
@@ -866,21 +885,23 @@ class Dispatcher:
             return f"Cannot write {path}: {exc}"
 
         entry = ModelEntry(
-            name=target.model, modality="image", runtime="api", provider=target.provider,
+            name=target.model, modality="image", runtime=target.kind, provider=target.provider,
             min_vram_gb=0, min_ram_gb=0, disk_gb=0, quality_tier=0,
         )
+        backend = _image_backend if target.kind == "api" else _image_cli_backend
         self._last_delegate_model = entry.name
         announce = on_delegate or self.hooks.on_delegate
         if announce is not None:
             announce("image", entry)
         started = time.monotonic()
         try:
-            image = _image_backend.generate(target.model, instructions, provider=target.provider)
+            image = backend.generate(target.model, instructions, provider=target.provider)
         except CloudProviderNotConfigured as exc:
             return f"{IMAGE_TOOL} failed: {exc}"
         except Exception as exc:  # noqa: BLE001 - reported to the orchestrator as a failed step
             raise RuntimeError(f"the {target.model} image request failed: {exc}") from exc
         self.delegate_cost_usd += image.cost_usd  # real, billed money: kept with the other paid delegates
+        self._note_paid_model(entry, "image", 0, image.cost_usd, 0.0)
         if self.hooks.on_done is not None:
             self.hooks.on_done("image", entry, 0, time.monotonic() - started)
 
@@ -894,7 +915,10 @@ class Dispatcher:
             self.hooks.on_tool_result("write", result.splitlines()[0])
         if not result.startswith(("Created ", "Updated ")):
             return result + f"\nThe image was generated (and billed) by {entry.name} but not saved."
-        cost = f" Cost: ${image.cost_usd:.3f}." if image.cost_usd else ""
+        cost = (
+            f" Cost: ${image.cost_usd:.3f}." if image.cost_usd
+            else " Included in the user's plan (it counts toward its image allowance)." if target.kind == "cli" else ""
+        )
         return f"{result.rstrip()}{note}\nGenerated by {entry.name}.{cost} The image itself isn't shown to you; describe it from your instructions."
 
     def _dispatch_delegate(self, modality: str, args: dict, on_delegate: DelegateCallback | None) -> str:

@@ -2392,7 +2392,7 @@ def advanced_model_command(
     value: str = typer.Argument(
         None,
         help="'auto', a local catalog model name, or api:<provider>:<model> / cli:<provider>:<model> "
-        "for a paid cloud target (image takes only api:<provider>:<image model>). Omit to show the current one.",
+        "for a paid cloud target (image takes api:<provider>:<image model>, or cli:openai:codex-image). Omit to show the current one.",
     ),
 ) -> None:
     """Show or override which model actually does coding/docs/general/image work.
@@ -2437,6 +2437,12 @@ def advanced_model_command(
         console.print(f"[success]✓[/success] {modality} is back to automatic: {escape(_describe_active_target(modality, recs, installed))}.")
     elif target.kind == "ollama":
         console.print(f"[success]✓[/success] {modality} now delegates to {escape(target.model)} (local, via Ollama).")
+    elif modality == "image" and target.kind == "cli":
+        console.print(
+            f"[success]✓[/success] image generation now uses {escape(target.provider)}'s CLI login ({escape(target.model)}). "
+            "It draws on your plan's image allowance instead of billing per image. [warning]Experimental:[/warning] "
+            "it isn't verified against a real login yet, so if an image doesn't appear the error says what the CLI printed."
+        )
     elif modality == "image":
         console.print(
             f"[success]✓[/success] image generation now uses {escape(target.model)} ({escape(target.provider)}, via your API key). "

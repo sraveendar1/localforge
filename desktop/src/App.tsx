@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { configuredPaidModels } from "./paidModels";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
@@ -120,6 +121,9 @@ function App() {
     send({ type: "approval_response", id, decision });
     setChat(s => removeApproval(s, id));
   }
+
+  // Every paid model in play and its role(s): the right-hand panels list these.
+  const configuredPaid = configuredPaidModels(chat.model, chat.orchestratorOptions, chat.localModelTargets);
 
   const lastAssistant = chat.messages.map(m => m.role).lastIndexOf("assistant");
 
@@ -304,9 +308,11 @@ function App() {
               usage={chat.usage}
               configuredModels={chat.configuredModels}
               localModelTargets={chat.localModelTargets}
+              configuredPaid={configuredPaid}
+              orchestrator={chat.model}
             />
           </Curtain>
-          <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} model={chat.model} usageHistory={chat.usageHistory} /></Curtain>
+          <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} configuredPaid={configuredPaid} usageHistory={chat.usageHistory} /></Curtain>
           <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
         </aside>
       </div>

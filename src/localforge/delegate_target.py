@@ -28,9 +28,9 @@ from localforge import config
 
 # Text work: written by a local model by default, or a pinned/cloud one.
 MODALITIES = ("coding", "docs", "general")
-# Generated media. Image works only through a paid cloud image model (there is
-# no local image backend yet, so "auto" means off: the orchestrator is simply
-# not offered the tool). Video isn't built at all -- it has a row so the
+# Generated media. Image works only through a paid cloud image model -- an API
+# key, or OpenAI's Codex CLI login -- (there is no local image backend yet, so
+# "auto" means off: the orchestrator is simply not offered the tool). Video isn't built at all -- it has a row so the
 # choice will have somewhere to live, and can't be set yet.
 GENERATIVE = ("image", "video")
 ALL_MODALITIES = MODALITIES + GENERATIVE
@@ -176,15 +176,33 @@ def apply(modality: str, value: str, scope: str = "project") -> DelegateTarget:
 
 
 def _apply_image(value: str, scope: str = "project") -> DelegateTarget:
-    """An image target is a paid cloud image model through an API key: a
-    local model has no image backend yet, and the CLI logins can't generate
-    images."""
+    """An image target is a paid cloud image model through an API key
+    (api:openai:gpt-image-1), or an image tool inside a provider's own CLI
+    login -- only OpenAI's Codex has one (cli:openai:codex-image). A local
+    model has no image backend yet."""
     target = parse(value)
-    if target.kind != "api":
+    if target.kind not in ("api", "cli"):
         raise InvalidTarget(
             f"{value!r} can't generate images. Use api:<provider>:<model> with an image model, e.g. "
-            "api:openai:gpt-image-1, or 'auto' to turn image generation off."
+            "api:openai:gpt-image-1, cli:openai:codex-image to use your ChatGPT login through Codex, "
+            "or 'auto' to turn image generation off."
         )
+    if target.kind == "cli":
+        models = config.IMAGE_CLI_CHOICES.get(target.provider)
+        if models is None:
+            raise InvalidTarget(
+                f"{target.provider}'s CLI login can't generate images"
+                + (" (Claude has no image model)" if target.provider == "anthropic" else "")
+                + ". Only OpenAI's Codex login can: cli:openai:codex-image. Or use an API key with an image model."
+            )
+        if target.model not in models:
+            raise InvalidTarget(f"{target.model!r} isn't a known {target.provider} CLI image option. Use: " + ", ".join(models) + ".")
+        from localforge import cli_transport  # local: avoids a module-load-order dependency
+
+        if not cli_transport.available(target.provider):
+            raise InvalidTarget(cli_transport.requirements_message(target.provider))
+        set_target("image", target, scope)
+        return target
     models = config.IMAGE_MODEL_CHOICES.get(target.provider)
     if models is None:
         raise InvalidTarget(

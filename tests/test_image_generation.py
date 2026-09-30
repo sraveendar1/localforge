@@ -383,3 +383,198 @@ def test_a_generated_image_is_not_an_unchecked_change():
     assert orch._completion_gaps(progress, "done", "") is None
     progress.note("delegate_coding_task", {"path": "a.py"}, "Created a.py (+3 -0)", step=2)
     assert orch._completion_gaps(progress, "done", "") is not None  # code still is
+
+
+# --- image through a provider's CLI login (Codex on a ChatGPT login) -----------------
+
+
+@pytest.fixture
+def codex_present(monkeypatch):
+    monkeypatch.setattr(cloud.cli_transport, "available", lambda provider: provider == "openai")
+    monkeypatch.setattr("localforge.cli_transport.available", lambda provider: provider == "openai")
+
+
+def test_a_codex_login_can_be_chosen_for_images(codex_present):
+    target = dt.apply("image", "cli:openai:codex-image")
+    assert target == dt.DelegateTarget(kind="cli", provider="openai", model="codex-image")
+    assert "your CLI login" in dt.describe_modality("image")
+
+
+def test_claudes_login_cannot_generate_images_and_the_message_says_why(monkeypatch):
+    monkeypatch.setattr("localforge.cli_transport.available", lambda provider: True)
+    with pytest.raises(dt.InvalidTarget, match="Claude has no image model"):
+        dt.apply("image", "cli:anthropic:claude-opus-5")
+    with pytest.raises(dt.InvalidTarget, match="Only OpenAI's Codex login can"):
+        dt.apply("image", "cli:gemini:gemini-2.5-pro")
+
+
+def test_a_codex_target_needs_the_codex_cli_installed(monkeypatch):
+    monkeypatch.setattr("localforge.cli_transport.available", lambda provider: False)
+    with pytest.raises(dt.InvalidTarget):
+        dt.apply("image", "cli:openai:codex-image")
+    assert dt.get("image") == dt.AUTO
+
+
+def _fake_codex(monkeypatch, write=None, returncode=0, stdout="done", codex_home=None, timeout=False):
+    """Stands in for `codex exec`: runs in the scratch cwd, may write an image there."""
+    calls = []
+
+    def run(cmd, cwd=None, **kw):
+        calls.append({"cmd": cmd, "cwd": cwd, **kw})
+        if timeout:
+            raise cloud.subprocess.TimeoutExpired(cmd, 1)
+        if write is not None:
+            (cwd / "image.png").write_bytes(write) if hasattr(cwd, "joinpath") else None
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(cloud.subprocess, "run", run)
+    if codex_home is not None:
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    return calls
+
+
+def test_the_cli_backend_runs_codex_exec_in_a_scratch_folder_and_returns_the_image(monkeypatch, codex_present, tmp_path):
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "home"))
+    calls = _fake_codex(monkeypatch, write=_png())
+    image = cloud.CloudImageCliBackend().generate("codex-image", "a red square", provider="openai")
+    assert image.data == _png() and image.mime_type == "image/png" and image.cost_usd == 0.0
+    cmd = calls[0]["cmd"]
+    assert cmd[:2] == ["codex", "exec"] and "workspace-write" in cmd and "a red square" in cmd[-1]
+    assert calls[0]["stdin"] == cloud.subprocess.DEVNULL  # never waits on the terminal
+    assert not calls[0]["cwd"].exists()  # the scratch folder is cleaned up
+
+
+def test_the_cli_backend_finds_an_image_codex_saved_under_its_own_folder(monkeypatch, codex_present, tmp_path):
+    home = tmp_path / "codexhome"
+    calls = _fake_codex(monkeypatch, codex_home=home)
+
+    def run(cmd, cwd=None, **kw):  # saved under $CODEX_HOME rather than in the cwd
+        (home / "generated").mkdir(parents=True)
+        (home / "generated" / "abc.png").write_bytes(_png())
+        return SimpleNamespace(returncode=0, stdout="done", stderr="")
+
+    monkeypatch.setattr(cloud.subprocess, "run", run)
+    assert cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai").data == _png()
+
+
+def test_an_older_image_in_codexs_folder_is_not_mistaken_for_the_new_one(monkeypatch, codex_present, tmp_path):
+    import os
+
+    home = tmp_path / "codexhome"
+    (home / "old").mkdir(parents=True)
+    old = home / "old" / "previous.png"
+    old.write_bytes(_png())
+    os.utime(old, (1_000_000, 1_000_000))  # long ago
+    _fake_codex(monkeypatch, codex_home=home, stdout="I couldn't do that")
+    with pytest.raises(RuntimeError, match="produced no image file"):
+        cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai")
+
+
+def test_no_image_means_an_error_that_says_what_codex_printed_and_how_to_log_in(monkeypatch, codex_present, tmp_path):
+    _fake_codex(monkeypatch, codex_home=tmp_path / "h", returncode=1, stdout="Error: not signed in")
+    with pytest.raises(RuntimeError) as info:
+        cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai")
+    assert "exit 1" in str(info.value) and "not signed in" in str(info.value) and "codex login" in str(info.value)
+
+
+def test_a_file_that_isnt_an_image_is_refused(monkeypatch, codex_present, tmp_path):
+    _fake_codex(monkeypatch, write=b"<html>oops</html>", codex_home=tmp_path / "h")
+    with pytest.raises(RuntimeError, match="isn't a PNG, JPEG or WebP"):
+        cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai")
+
+
+def test_a_hung_codex_is_stopped(monkeypatch, codex_present, tmp_path):
+    _fake_codex(monkeypatch, timeout=True, codex_home=tmp_path / "h")
+    with pytest.raises(RuntimeError, match="took longer than"):
+        cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai")
+
+
+def test_the_cli_backend_needs_the_cli(monkeypatch):
+    monkeypatch.setattr(cloud.cli_transport, "available", lambda p: False)
+    with pytest.raises(cloud.CloudProviderNotConfigured):
+        cloud.CloudImageCliBackend().generate("codex-image", "x", provider="openai")
+    with pytest.raises(cloud.CloudProviderNotConfigured, match="can't generate images"):
+        cloud.CloudImageCliBackend().generate("m", "x", provider="anthropic")
+
+
+def test_a_codex_target_routes_to_the_cli_backend_and_bills_nothing(tmp_path, codex_present, monkeypatch):
+    dt.apply("image", "cli:openai:codex-image")
+
+    class Cli:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, model, prompt, provider=None):
+            self.calls.append((model, prompt, provider))
+            return cloud.GeneratedImage(data=_png(), mime_type="image/png", cost_usd=0.0)
+
+    cli_backend, api_backend = Cli(), FakeImages()
+    monkeypatch.setattr(tools, "_image_cli_backend", cli_backend)
+    monkeypatch.setattr(tools, "_image_backend", api_backend)
+    assert "generate_image" in {t["function"]["name"] for t in build_tool_schemas(_hw(), [], set())}
+    d, _ = _dispatcher(tmp_path)
+    out = d.dispatch("generate_image", {"instructions": "a cat", "path": "cat.png"})
+    assert cli_backend.calls == [("codex-image", "a cat", "openai")] and api_backend.calls == []
+    assert (tmp_path / "cat.png").read_bytes() == _png()
+    assert "Included in the user's plan" in out and d.delegate_cost_usd == 0.0
+    assert d.delegate_models["codex-image"]["kind"] == "cli" and d.delegate_models["codex-image"]["roles"] == ["image"]
+
+
+def test_the_desktop_offers_codex_for_images_when_the_cli_is_installed(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setattr("localforge.serve.cli_transport.available", lambda p: p == "openai")
+    server, out = _server(tmp_path)
+    server.handle({"type": "delegate_options_request", "modality": "image"})
+    cloud_opts = _last(out, "delegate_options")["cloud"]
+    assert cloud_opts == [{"kind": "cli", "provider": "openai", "model": "codex-image"}]
+
+
+def test_cli_says_the_codex_route_is_experimental(codex_present, monkeypatch):
+    monkeypatch.setattr(cli_module, "detect_hardware", _hw)
+    monkeypatch.setattr(cli_module, "_installed_model_names", lambda ollama: set())
+    out = runner.invoke(cli_module.app, ["advanced-model", "image", "cli:openai:codex-image"])
+    assert out.exit_code == 0 and "Experimental" in out.output and "plan's image allowance" in out.output
+
+
+# --- paid usage is tracked per model ----------------------------------------------
+
+
+def test_each_paid_model_is_counted_under_its_own_name(tmp_path, openai_key, monkeypatch):
+    dt.apply("image", "api:openai:gpt-image-1")
+    monkeypatch.setattr(tools, "_image_backend", FakeImages(cost=0.04))
+    d, _ = _dispatcher(tmp_path)
+    d.dispatch("generate_image", {"instructions": "a", "path": "a.png"})
+    d.dispatch("generate_image", {"instructions": "b", "path": "b.png"})
+    slot = d.delegate_models["gpt-image-1"]
+    assert slot["runs"] == 2 and slot["cost_usd"] == pytest.approx(0.08) and slot["roles"] == ["image"] and slot["provider"] == "openai"
+
+
+def test_paid_text_delegates_are_tracked_by_model_and_reach_the_run_stats(tmp_path, monkeypatch):
+    import localforge.orchestrator as orch
+    from localforge.backends import BACKENDS
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+    dt.apply("coding", "api:anthropic:claude-haiku-4-5")
+    dt.apply("docs", "api:anthropic:claude-haiku-4-5")
+
+    class Stub:
+        def ensure_available(self, *a, **k):
+            pass
+
+        def generate(self, name, prompt, **k):
+            return {"type": "text", "content": "```python\nprint(1)\n```\nNOTES: none", "tokens": 50, "cost_usd": 0.01, "notional_cost_usd": 0.0}
+
+    monkeypatch.setitem(BACKENDS, "api", Stub())
+    d = Dispatcher(_hw(), installed=set(), workspace=Workspace(tmp_path, approver=lambda *a: True))
+    d.dispatch("delegate_coding_task", {"instructions": "x", "path": "a.py"})
+    d.dispatch("delegate_docs_task", {"instructions": "y"})
+    slot = d.delegate_models["claude-haiku-4-5"]
+    assert slot["roles"] == ["coding", "docs"] and slot["runs"] == 2 and slot["tokens"] == 100 and slot["cost_usd"] == pytest.approx(0.02)
+    stats = orch.RunStats()
+    orch._copy_dispatch_stats(stats, d)
+    assert stats.delegate_models["claude-haiku-4-5"]["runs"] == 2
+    import dataclasses
+
+    assert dataclasses.asdict(stats)["delegate_models"]["claude-haiku-4-5"]["tokens"] == 100  # reaches the desktop as-is

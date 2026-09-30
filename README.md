@@ -392,7 +392,11 @@ the toggle:
 
 **Image and video rows.** Below coding/docs/general the Models section has an **image** row and a **video** row:
 
-- **Image generation** is off until you pick a paid image model in Advanced mode (or `localforge advanced-model image api:<provider>:<model>`). Providers with an image API: OpenAI (`gpt-image-1`, `gpt-image-1-mini`) and Google AI Studio (`gemini/imagen-3.0-generate-001`, `gemini/gemini-2.5-flash-image`), each needing that provider's API key. Once one is chosen the orchestrator is offered a `generate_image` tool: it describes the picture and a path, the image model draws it, and you approve saving it (the prompt says what it is and how big, since a picture has no diff). Each image costs money and is counted with the other paid delegates in `/usage`. There is no local image backend yet, and the provider CLI logins can't generate images, so this is API-key only.
+- **Image generation** is off until you pick an image model in Advanced mode (or `localforge advanced-model image <value>`). Two ways:
+  - **An API key** (`api:<provider>:<model>`): OpenAI (`gpt-image-1`, `gpt-image-1-mini`) or Google AI Studio (`gemini/imagen-3.0-generate-001`, `gemini/gemini-2.5-flash-image`), each needing that provider's key. Each image is billed to the key and counted in `/usage`.
+  - **Your ChatGPT login through Codex** (`cli:openai:codex-image`), *experimental*: no API key, it uses your plan's image allowance instead of per-image billing. It runs the official `codex exec` in a scratch folder, asks Codex to use its built-in image tool, and takes the image file it produces. It is **not verified against a real login yet** (Codex documents the tool but not its use in scripted `codex exec`), so if no image appears the error says what Codex printed. localforge does not call ChatGPT's private endpoint with your login token, as some third-party tools do. It appears in the picker only when the `codex` CLI is installed. **Claude's login can't do this: Claude has no image model.** Gemini's CLI only gets image generation from an extension, so it isn't offered.
+
+  Once one is chosen the orchestrator is offered a `generate_image` tool: it describes the picture and a path, the image model draws it, and you approve saving it (the prompt says what it is and how big, since a picture has no diff). There is no local image backend yet.
 - **Video** has a row so the choice has somewhere to live, but video generation isn't built, so it can't be chosen yet.
 
 The chat input doubles as a command line: typing `/` brings up every

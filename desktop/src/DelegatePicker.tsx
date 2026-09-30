@@ -61,7 +61,7 @@ export function DelegatePicker({
                 className={"block w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (options.current === value ? "text-mx-amber" : "text-mx-mid")}
                 onClick={() => { onPick(value); onClose(); }}
               >
-                {c.model} ({c.provider}, via {c.kind === "api" ? "API key" : "CLI login"})
+                {c.model} ({c.provider}, via {c.kind === "api" ? "API key" : "CLI login"}){isImage && c.kind === "cli" ? " – experimental, uses your plan's image allowance" : ""}
               </button>
             );
           })}

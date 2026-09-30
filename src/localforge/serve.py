@@ -160,6 +160,13 @@ def _delegate_options(modality: str) -> dict:
             if modality == "image" and os.environ.get(config.FRONTIER_PROVIDERS.get(provider) or "")
             for model in models
         ]
+        if modality == "image":  # plus a provider's own CLI login where its CLI has an image tool (Codex)
+            images += [
+                {"kind": "cli", "provider": provider, "model": model}
+                for provider, models in config.IMAGE_CLI_CHOICES.items()
+                if cli_transport.available(provider)
+                for model in models
+            ]
         return {"local": [], "cloud": images, "current": delegate_target.render(delegate_target.get(modality))}
     installed = _installed_model_names(OllamaBackend())
     hardware, sizes = detect_hardware(), model_fit.installed_sizes()
