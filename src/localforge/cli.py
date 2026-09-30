@@ -176,7 +176,7 @@ def models() -> None:
     """Show what's actually handling coding/docs/general work right now:
     automatic (the best-fitting installed local model, preferring what's
     already on disk over a fresh download) unless overridden with
-    `localforge local-model`."""
+    `localforge advanced-model`."""
     hw = detect_hardware()
     installed = _installed_model_names(OllamaBackend())
     recs = recommendations(hw, installed=installed)

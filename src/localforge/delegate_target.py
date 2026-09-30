@@ -109,8 +109,8 @@ class InvalidTarget(ValueError):
     """A target string that would fail on first actual use -- an unknown
     modality, a local model not in the catalog, or a cloud provider with no
     usable API key/CLI login. Carries a human-readable reason so both the
-    CLI (localforge local-model) and the desktop app (its "Change" picker
-    and its /local-model chat command) can show the same message without
+    CLI (localforge advanced-model) and the desktop app (its "Change" picker
+    and its /advanced-model chat command) can show the same message without
     duplicating this validation."""
 
 
@@ -230,7 +230,7 @@ def describe_modality(modality: str, target: DelegateTarget | None = None) -> st
 
 
 def describe(target: DelegateTarget) -> str:
-    """One line for a human, e.g. in `localforge local-model` or the GUI."""
+    """One line for a human, e.g. in `localforge advanced-model` or the GUI."""
     if target.kind == "auto":
         return "auto (best-fitting installed local model)"
     if target.kind == "ollama":
