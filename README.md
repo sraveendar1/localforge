@@ -286,7 +286,7 @@ looks for the app installed exactly this way.
 signed with a paid Apple Developer ID yet, and macOS blocks anything downloaded
 that isn't. The file isn't corrupt. Pick whichever applies:
 
-- **Builds from v0.1.3 on** are ad-hoc signed (free), so macOS shows the usual
+- **Builds from v0.1.4 on** are ad-hoc signed (free), so macOS shows the usual
   *"can't be opened because Apple cannot check it for malicious software"*
   message instead. Open **System Settings → Privacy & Security**, scroll to
   *"LocalForge Desktop" was blocked*, and click **Open Anyway**. (On macOS 15
@@ -298,6 +298,15 @@ that isn't. The file isn't corrupt. Pick whichever applies:
 
 Removing the warning entirely takes an Apple Developer ID and notarization
 (a paid Apple account, plus signing secrets in the release workflow).
+
+**The app opens but nothing happens (no trust prompt, no setup screen).** The
+part of the app that does the work is a separate program bundled inside it. If
+that program can't start, the app now says so ("localforge didn't start") and
+shows what it printed, with **Try again** and **Copy details**; send those
+details. v0.1.3 had exactly this problem on macOS: signing the app also signed
+that program with the "hardened runtime", which stops it loading its own
+libraries. v0.1.4 turns that off, and the release workflow now launches the
+program from inside the signed app so a broken one fails the build.
 
 Releases are built automatically by
 [`.github/workflows/release.yml`](.github/workflows/release.yml) whenever

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
+import { BackendStatus } from "./BackendStatus";
 import { SetupScreen } from "./SetupScreen";
 import { RightPanel } from "./RightPanel";
 import { defaultRightOpen, loadPanelOpen, savePanelOpen } from "./panelPrefs";
@@ -12,7 +13,7 @@ import { StatusBar } from "./StatusBar";
 import { ForgingIndicator } from "./ForgingIndicator";
 import { GoalPanel } from "./GoalPanel";
 import { ActiveModelsPanel } from "./ActiveModelsPanel";
-import { addError, addUserMessage, applyEvent, initialState, removeApproval } from "./state";
+import { addError, addUserMessage, applyEvent, initialState, removeApproval, appendBackendLog, backendExited } from "./state";
 import { SystemPanel } from "./SystemPanel";
 import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import { Curtain } from "./Curtain";
@@ -45,7 +46,10 @@ function App() {
         try { ev = JSON.parse(e.payload); } catch { return; }
         setChat(s => applyEvent(s, ev));
       }),
-      listen("localforge-exit", () => setChat(s => ({ ...s, connected: false, running: false }))),
+      listen("localforge-exit", () => setChat(s => backendExited(s))),
+      // Whatever the backend prints to stderr: normally nothing, but a start that
+      // fails says why here (a crash, a dyld error) and is shown by BackendStatus.
+      listen<string>("localforge-stderr", e => setChat(s => appendBackendLog(s, String(e.payload ?? "")))),
     ];
     return () => { ps.forEach(p => p.then(f => f())); };
   }, []);
@@ -69,7 +73,7 @@ function App() {
 
   async function startSessionForFolder(dir: string) {
     setFolder(dir);
-    setChat(initialState);
+    setChat({ ...initialState, backendStartedAt: Date.now() });
     setRecentFolders(r => addRecentFolder(dir, r));
     try { // No model is passed: the backend uses this project's saved models
       // (.localforge/models.json), else the user's defaults. Carrying the
@@ -200,6 +204,12 @@ function App() {
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
       </header>
       {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-dim">{chat.status}</div>}
+      {folder && !chat.connected && chat.backendExited && !chat.trustDeclined && chat.messages.length > 0 && (
+        <div className="flex items-center gap-3 border-b border-mx-red bg-mx-panel px-4 py-1 text-xs text-mx-red" role="alert" data-testid="backend-lost">
+          <span>The localforge backend stopped, so nothing more will run.{chat.backendLog.length ? ` Last message: ${chat.backendLog[chat.backendLog.length - 1].slice(0, 160)}` : ""}</span>
+          <button type="button" className="rounded-sm border border-mx-red px-2 py-0.5 hover:text-mx-bright" onClick={() => startSessionForFolder(folder)}>Restart</button>
+        </div>
+      )}
       {folder && needsSetup && !inlineSetup && !overlaySetup && !chat.trustRequired && (
         <div className="flex items-center gap-3 border-b border-mx-amber bg-mx-panel px-4 py-1 text-xs text-mx-amber" role="alert" data-testid="setup-banner">
           <span>No model is set up yet, so tasks will fail{chat.setup?.orchestrator.reason ? `: ${chat.setup.orchestrator.reason}` : ""}.</span>
@@ -228,7 +238,16 @@ function App() {
         />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
-            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : chat.trustRequired ? (
+            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
+              <BackendStatus
+                folder={folder}
+                log={chat.backendLog}
+                exited={chat.backendExited}
+                startedAt={chat.backendStartedAt}
+                trustDeclined={chat.trustDeclined}
+                onRetry={() => startSessionForFolder(folder)}
+              />
+            ) : chat.trustRequired ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
                 <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-amber glow">Trust this folder?</h1>
                 <p className="max-w-md font-mono text-xs text-mx-dim">{chat.trustRequired}</p>
@@ -307,7 +326,7 @@ function App() {
             <textarea
               rows={3}
               className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"
-              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands…" : "Open a folder to start"}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
               onKeyDown={e => {

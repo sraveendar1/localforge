@@ -109,3 +109,22 @@ jobs:
           releaseBody: "See the [README](https://github.com/${{ github.repository }}/blob/main/README.md#installing-the-desktop-app) for what's new and how to install."
           releaseDraft: true
           prerelease: false
+
+      # The app is only useful if the bundled localforge backend starts. Signing
+      # the bundle (bundle.macOS.signingIdentity) re-signs that backend too, and
+      # with the hardened runtime on it aborts at launch ("mapping process and
+      # mapped file have different Team IDs"): the app then opens but never
+      # connects, so no trust prompt and no setup. That reached a real release
+      # (v0.1.3), so launch it from inside the signed .app here; a red job is
+      # better than a release nobody can use.
+      - name: Smoke-test the backend inside the signed app (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          APP="$(ls -d desktop/src-tauri/target/release/bundle/macos/*.app | head -1)"
+          echo "App bundle: $APP"
+          codesign -dv --verbose=2 "$APP" 2>&1 | grep -E "Identifier|Signature|flags|TeamIdentifier" || true
+          SIDECAR="$(find "$APP/Contents/MacOS" -maxdepth 1 -type f -name 'localforge*' ! -name '*desktop*' | head -1)"
+          echo "Backend: $SIDECAR"
+          test -x "$SIDECAR"
+          env -i HOME="$HOME" PATH=/usr/bin:/bin "$SIDECAR" --help > /dev/null
+          echo "OK: the backend starts from inside the signed app."

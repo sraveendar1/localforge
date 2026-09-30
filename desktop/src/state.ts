@@ -88,6 +88,13 @@ export type ChatState = {
   // Every orchestrator usable here (installed Ollama models + cloud providers
   // with a key or CLI login), for the header dropdown. Empty until fetched.
   orchestratorOptions: OrchestratorOption[];
+  // The backend process, for a start that goes wrong: what it printed, whether it
+  // has exited, and when we began waiting for it. Without these a backend that
+  // fails to start looked like an empty, dead app.
+  backendLog: string[];
+  backendExited: boolean;
+  backendStartedAt: number | null;
+  trustDeclined: boolean;
   budgets: BudgetRow[];
   setup: SetupStatus | null;
   setupResult: SetupResult | null;
@@ -147,6 +154,10 @@ export const initialState: ChatState = {
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
   orchestratorOptions: [],
+  backendLog: [],
+  backendExited: false,
+  backendStartedAt: null,
+  trustDeclined: false,
   budgets: [],
   setup: null,
   setupResult: null,
@@ -342,7 +353,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       // A "no" ends the session -- the backend closes and localforge-exit
       // (App.tsx) sets connected: false, so there's nothing to clear here
       // beyond the prompt itself.
-      return { ...state, trustRequired: ev.trusted ? null : state.trustRequired };
+      return { ...state, trustRequired: null, trustDeclined: !ev.trusted };
     case "run_started":
       return { ...state, running: true, status: "", messages: [...state.messages, { role: "assistant", text: "", items: [] }] };
     case "frontier_round":
@@ -416,7 +427,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -620,3 +631,17 @@ export type Usage = {
   // "Paid models" list.
   paidModels: { [name: string]: PaidUsage };
 };
+
+const MAX_BACKEND_LOG = 60;
+
+// Lines the backend printed to stderr (a startup crash, a dyld error, a traceback).
+export function appendBackendLog(state: ChatState, text: string): ChatState {
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length === 0) return state;
+  return { ...state, backendLog: [...state.backendLog, ...lines].slice(-MAX_BACKEND_LOG) };
+}
+
+// The backend process ended. (A folder the user declined to trust also ends it, on purpose.)
+export function backendExited(state: ChatState): ChatState {
+  return { ...state, connected: false, running: false, backendExited: true };
+}
