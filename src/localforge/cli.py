@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, repl, theme, trust, upgrades, usage_store
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, repl, task_summary, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -1048,9 +1048,11 @@ def run(
         console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
         if cli_provider:
             console.print(f"[warning]{escape(_cli_failure_advice(cli_provider, str(exc)))}[/warning]")
+        _print_task_summary(exc.stats, "failed", str(exc))
         raise typer.Exit(code=1) from None
     except local_transport.LocalOrchestratorError as exc:
         console.print(f"[bold error]Error:[/bold error] {escape(str(exc))}")
+        _print_task_summary(getattr(exc, "stats", None), "failed", str(exc))
         raise typer.Exit(code=1) from None
     except TaskCancelled as exc:
         # Ctrl+C mid-task: only the task stops, not the session. Changes the
@@ -1058,6 +1060,7 @@ def run(
         _session_usage.append((frontier_model, exc.stats))
         _record_usage(frontier_model, exc.stats)
         console.print("\n[warning]Stopped.[/warning] Changes you already approved are kept. Type your next message.")
+        _print_task_summary(exc.stats, "stopped")
         raise typer.Exit(code=130) from None
     except OrchestrationError as exc:
         # Even a non-convergent run spent real frontier tokens/cost and local
@@ -1067,9 +1070,15 @@ def run(
         _record_usage(frontier_model, exc.stats)
         if show_usage:
             _print_usage_panel(exc.stats, frontier_model)
+        _print_task_summary(exc.stats, "stopped", str(exc))
         raise typer.Exit(code=1) from None
     except Exception as exc:  # noqa: BLE001 - top-level CLI boundary: show a clean message, not a traceback
         console.print(f"[bold error]Error:[/bold error] {exc}")
+        stats = getattr(exc, "stats", None)  # orchestrator.run() attaches what the task had done so far
+        if stats is not None:
+            _session_usage.append((frontier_model, stats))
+            _record_usage(frontier_model, stats)
+        _print_task_summary(stats, "failed", str(exc))
         raise typer.Exit(code=1) from None
 
     if not activity.reply_streamed:
@@ -1079,8 +1088,27 @@ def run(
         console.print(Markdown(result.answer or "(no answer)"))
     _session_usage.append((frontier_model, result.stats))
     _record_usage(frontier_model, result.stats)
+    _print_task_summary(result.stats, "completed")
     if show_usage:
         _print_usage_panel(result.stats, frontier_model)
+
+
+def _print_task_summary(stats, outcome: str, error: str | None = None) -> None:
+    """The panel shown after every task: what it did, and what went wrong.
+    A plain question answered with no tools used has nothing to list, so a
+    completed task with no steps prints nothing; anything that failed or
+    stopped always prints, even with no steps recorded."""
+    summary = task_summary.build(getattr(stats, "log", None), outcome, error)
+    if outcome == "completed" and task_summary.is_empty(summary):
+        return
+    console.print(
+        Panel(
+            "\n".join(escape(line) for line in task_summary.render_lines(summary)),
+            title="Summary",
+            border_style="error" if outcome == "failed" else "panel.border",
+            expand=False,
+        )
+    )
 
 
 def _augment_path_for_gui_launch() -> None:

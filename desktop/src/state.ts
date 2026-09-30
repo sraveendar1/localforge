@@ -2,7 +2,21 @@ export type ToolItem = { kind: "tool"; name: string; summary: string; result?: s
 export type DelegateItem = { kind: "delegate"; modality: string; model: string; output: string; done: boolean; tokens?: number; seconds?: number };
 export type NoteItem = { kind: "note"; text: string };
 export type Item = ToolItem | DelegateItem | NoteItem;
-export type Message = { role: "user" | "assistant" | "error" | "system"; text: string; items: Item[]; round?: number; imageDataUrl?: string };
+// What a task did and what went wrong, sent after every task (task_summary.py).
+export type TaskSummary = {
+  outcome: "completed" | "stopped" | "failed";
+  error: string | null;
+  durationS: number;
+  steps: number;
+  files: { action: string; path: string; by: string }[];
+  delegations: { tool: string; model: string; path: string; detail: string }[];
+  commands: { command: string; ok: boolean; detail: string }[];
+  reads: number;
+  web: number;
+  declined: { what: string; tool: string }[];
+  problems: { what: string; error: string; recovered: boolean }[];
+};
+export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export type Gpu = { name: string; vram_gb: number; backend: string };
@@ -393,6 +407,23 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
           qualityTier: Number(m.model?.quality_tier ?? 0),
         })),
       };
+    }
+    case "task_summary": {
+      const r = ev.summary ?? {};
+      const summary: TaskSummary = {
+        outcome: r.outcome === "failed" || r.outcome === "stopped" ? r.outcome : "completed",
+        error: r.error ? String(r.error) : null,
+        durationS: Number(r.duration_s ?? 0),
+        steps: Number(r.steps ?? 0),
+        files: Array.isArray(r.files) ? r.files : [],
+        delegations: Array.isArray(r.delegations) ? r.delegations : [],
+        commands: Array.isArray(r.commands) ? r.commands : [],
+        reads: Number(r.reads ?? 0),
+        web: Number(r.web ?? 0),
+        declined: Array.isArray(r.declined) ? r.declined : [],
+        problems: Array.isArray(r.problems) ? r.problems : [],
+      };
+      return { ...state, messages: [...state.messages, { role: "summary", text: "", items: [], summary }] };
     }
     case "orchestrator_options": {
       const options = Array.isArray(ev.options) ? ev.options : [];

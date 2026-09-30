@@ -14,11 +14,12 @@ from dataclasses import dataclass, field
 import litellm
 from litellm import completion
 
-from localforge import brief, cli_transport, content_blocks, local_transport, memory
+from localforge import brief, cli_transport, content_blocks, local_transport, memory, task_summary
 from localforge.backends.ollama import OllamaBackend
 from localforge.hardware import HardwareProfile, detect_hardware
 from localforge.tools import CHECK_COMMAND as _CHECK_COMMAND
 from localforge.tools import ActivityHooks, DelegateCallback, Dispatcher, build_tool_schemas
+from localforge.tools import _summarize
 from localforge.workspace import Workspace
 
 
@@ -54,6 +55,12 @@ class RunStats:
     delegate_tokens_generated: int = 0
     delegate_cost_usd: float = 0.0
     delegate_notional_cost_usd: float = 0.0
+
+    def __post_init__(self) -> None:
+        # What this task did, step by step, for the summary shown after every
+        # task (task_summary.py). Deliberately not a dataclass field: asdict()
+        # and the usage history would otherwise carry every step around.
+        self.log = task_summary.TaskLog()
 
     @property
     def frontier_total_tokens(self) -> int:
@@ -517,6 +524,17 @@ def run(
         why = "it hit a usage limit" if isinstance(exc, cli_transport.UsageLimitError) else "the orchestrator's CLI failed"
         _remember_if_unfinished(workspace, task, why, conversation.last_progress)
         raise
+    except Exception as exc:
+        # Any other failure (a bad key, a network error, a bug) also carries
+        # the stats -- and with them the step log -- so the caller can still
+        # say what the task got done before it broke.
+        _copy_dispatch_stats(stats, dispatcher)
+        if getattr(exc, "stats", None) is None:
+            try:
+                exc.stats = stats
+            except Exception:  # noqa: BLE001, S110 - an exception type that refuses attributes just goes without
+                pass
+        raise
     else:
         if workspace is not None:
             memory.clear_open_work(workspace.root, task)  # done (or the user will see it in the answer, not silently)
@@ -537,7 +555,7 @@ def _remember_if_unfinished(workspace, task: str, why: str, progress: _Progress 
         pass
 
 
-def _call_frontier(orchestrator: dict, hooks, messages, tools):
+def _call_frontier(orchestrator: dict, hooks, messages, tools, log=None):
     """One orchestrator turn.
 
     Retried once if the failure looks transient (a dropped connection, a
@@ -567,6 +585,8 @@ def _call_frontier(orchestrator: dict, hooks, messages, tools):
             limit = _as_usage_limit(exc, orchestrator)
             if limit is not None and hooks.on_limit is not None:
                 decision = hooks.on_limit(limit)
+                if log is not None and decision:
+                    log.note("the orchestrator hit a usage limit" + (" and switched model" if isinstance(decision, tuple) else "; waited for it to reset"))
                 if decision == "retry":
                     attempt = 0  # a fresh start after the wait, not a retry of a broken call
                     continue
@@ -577,6 +597,8 @@ def _call_frontier(orchestrator: dict, hooks, messages, tools):
                 raise limit from None
             if limit is not None or attempt >= MAX_FRONTIER_ATTEMPTS or not _is_transient(exc):
                 raise
+            if log is not None:
+                log.note(f"an orchestrator call failed ({str(exc)[:120]}) and was retried")
             if hooks.on_tool is not None:
                 left = MAX_FRONTIER_ATTEMPTS - attempt
                 hooks.on_tool("retry", f"the orchestrator call failed ({str(exc)[:120]}); retrying ({left} more {'try' if left == 1 else 'tries'})")
@@ -669,7 +691,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                     "The user can say \"continue\" to carry on from there.",
                 }
             )
-        response = _call_frontier(orchestrator, hooks, messages, tools)
+        response = _call_frontier(orchestrator, hooks, messages, tools, stats.log)
         frontier_model = orchestrator["model"]  # may have been switched while waiting out a limit
         _record_frontier_usage(response, stats)
         message = response.choices[0].message
@@ -709,6 +731,7 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                     "or tell the user what's blocking and what you tried."
                 )
             else:
+                args = {}
                 try:
                     args = json.loads(call.function.arguments or "{}")
                     result = dispatcher.dispatch(name, args, on_delegate=on_delegate)
@@ -716,6 +739,14 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                 except Exception as exc:  # noqa: BLE001 - surfaced to the orchestrator model, not swallowed
                     error = str(exc) or type(exc).__name__
                     result = None
+                if name not in _UNLOGGED_TOOLS:
+                    stats.log.record(
+                        name,
+                        _log_target(name, args if isinstance(args, dict) else {}),
+                        task_summary.outcome_of(result, error),
+                        error or result or "",
+                        model=getattr(dispatcher, "_last_delegate_model", None) if name.startswith("delegate_") else None,
+                    )
                 if error is None:
                     if name in EXPLORE_TOOLS:
                         target = args.get("pattern") if name == "search" else (args.get("path") or "(whole project)")
@@ -778,6 +809,17 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
             )
 
     return _stop(messages, stats, _finish, f"Stopped after {MAX_ROUNDS} steps without finishing.")
+
+
+# Bookkeeping, not work the user would want listed in the summary.
+_UNLOGGED_TOOLS = {"update_todos", "remember", "forget"}
+
+
+def _log_target(name: str, args: dict) -> str:
+    """A short label of what a step was about, for the task summary."""
+    if name.startswith("delegate_"):
+        return str(args.get("path") or "")
+    return _summarize(name, args)[:200]
 
 
 def _open_items_and_unchecked(progress: _Progress | None) -> tuple[list[str], list[str]]:

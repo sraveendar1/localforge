@@ -476,6 +476,28 @@ touched, only the old result content. This bounds both context size and
 per-round cost on long tasks without needing an extra summarization LLM
 call.
 
+### The summary after every task
+
+When a task ends -- finished, stopped, or failed -- localforge prints what it actually did, in the terminal and in the desktop app:
+
+```
+╭─ Summary ─────────────────────────────────────────────╮
+│ Done in 2m 14s · 7 steps                              │
+│ Files changed:                                        │
+│   updated src/app.py  (written by qwen2.5-coder:7b)   │
+│ Delegated to: qwen2.5-coder:7b ×1                     │
+│ Commands run:                                         │
+│   ✗ pytest -q                                         │
+│   ✓ pytest -q                                         │
+│ You declined:                                         │
+│   old.py                                              │
+│ Problems:                                             │
+│   ✗ run_command pytest -q: exit code 1 (recovered)    │
+╰───────────────────────────────────────────────────────╯
+```
+
+It lists the files changed and which model wrote each, the commands run and whether they passed, anything you declined, and **every problem**, including ones the task got past on its own (marked `(recovered)`) -- a failed step, a retried orchestrator call, a usage limit. If the task ended in an error, the error text is in the summary too (`Error: ...`), along with what got done before it broke. A plain question answered without using any tools prints no summary.
+
 ### Usage metrics
 
 Token usage is shown only when you ask for it, so it doesn't clutter every

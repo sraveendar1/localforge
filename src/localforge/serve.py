@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, config, delegate_target, memory, trust
+from localforge import brief, cli_transport, config, delegate_target, memory, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -318,17 +318,34 @@ class StdioServer:
         try:
             result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace, image=image)
             self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats))
+            self._emit_summary(result.stats, "completed")
             self._record_usage(result.stats)
-        except Cancelled:
+        except Cancelled as exc:
             self.emit("run_cancelled")
+            self._emit_summary(getattr(exc, "stats", None), "stopped")
         except OrchestrationError as exc:
             self.emit("error", message=str(exc), stats=_jsonable_stats(getattr(exc, "stats", None)))
+            self._emit_summary(getattr(exc, "stats", None), "stopped", str(exc))
             self._record_usage(getattr(exc, "stats", None))
         except Exception as exc:
             self.emit("error", message=f"{type(exc).__name__}: {exc}")
+            self._emit_summary(getattr(exc, "stats", None), "failed", f"{type(exc).__name__}: {exc}")
             self._record_usage(getattr(exc, "stats", None))
         finally:
             self._start_next_queued()
+
+    def _emit_summary(self, stats, outcome: str, error: str | None = None) -> None:
+        """What the task did and what went wrong, after every task -- the same
+        summary the terminal prints. A plain question answered with no tools
+        used has nothing to list, so a completed task with no steps sends none;
+        a failure or stop always does. Never allowed to fail the task."""
+        try:
+            summary = task_summary.build(getattr(stats, "log", None), outcome, error)
+            if outcome == "completed" and task_summary.is_empty(summary):
+                return
+            self.emit("task_summary", summary=summary)
+        except Exception:  # noqa: BLE001, S110 - a nicety after the fact; the run itself already ended
+            pass
 
     def _record_usage(self, stats) -> None:
         """Mirrors cli.py's _record_usage: keep this task in the project's

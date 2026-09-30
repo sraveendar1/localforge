@@ -1,4 +1,4 @@
-import type { Approval, DelegateItem, Item, Message, NoteItem, Todo, ToolItem } from "./state";
+import type { Approval, DelegateItem, Item, Message, NoteItem, TaskSummary, Todo, ToolItem } from "./state";
 import { ActivityStream } from "./ActivityStream";
 
 export function ToolCard({ item }: { item: ToolItem }) {
@@ -103,6 +103,72 @@ export function TodoList({ todos }: { todos: Todo[] }) {
   );
 }
 
+function took(seconds: number): string {
+  if (seconds >= 60) return ` in ${Math.floor(seconds / 60)}m ${String(Math.floor(seconds % 60)).padStart(2, "0")}s`;
+  return seconds >= 1 ? ` in ${Math.round(seconds)}s` : "";
+}
+
+// Shown after every task: what it did and what went wrong -- the desktop
+// counterpart of the terminal's "Summary" panel.
+export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
+  const heading = s.outcome === "failed" ? "Failed" : s.outcome === "stopped" ? "Stopped" : "Done";
+  const tone = s.outcome === "failed" ? "border-mx-red text-mx-red" : s.outcome === "stopped" ? "border-mx-amber text-mx-amber" : "border-mx-dim text-mx-green";
+  const byModel: { [m: string]: number } = {};
+  for (const d of s.delegations) byModel[d.model || "a local model"] = (byModel[d.model || "a local model"] ?? 0) + 1;
+  const looked = [s.reads ? `looked through the project ${s.reads} time${s.reads === 1 ? "" : "s"}` : "", s.web ? `searched the web ${s.web} time${s.web === 1 ? "" : "s"}` : ""].filter(Boolean);
+  return (
+    <div className={`my-2 max-w-[90%] rounded-sm border bg-mx-panel2 px-3 py-2 text-sm ${tone.split(" ")[0]}`} role="region" aria-label="Task summary">
+      <div className={`font-semibold ${tone.split(" ")[1]}`}>
+        {heading}{took(s.durationS)} · {s.steps} step{s.steps === 1 ? "" : "s"}
+      </div>
+      <div className="mt-1 space-y-1 text-xs text-mx-mid">
+        {s.files.length > 0 && (
+          <div>
+            <div className="text-mx-dim">Files changed</div>
+            <ul className="ml-3 list-disc font-mono">
+              {s.files.map((f, i) => (
+                <li key={i}>{f.action.toLowerCase()} {f.path}{f.by && <span className="text-mx-dim"> (written by {f.by})</span>}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {s.delegations.length > 0 && <div><span className="text-mx-dim">Delegated to </span>{Object.entries(byModel).map(([m, n]) => `${m} ×${n}`).join(", ")}</div>}
+        {s.commands.length > 0 && (
+          <div>
+            <div className="text-mx-dim">Commands run</div>
+            <ul className="ml-3 font-mono">
+              {s.commands.map((c, i) => (
+                <li key={i} className={c.ok ? "" : "text-mx-red"}>{c.ok ? "✓" : "✗"} {c.command}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {looked.length > 0 && <div className="text-mx-dim">Also {looked.join(" and ")}.</div>}
+        {s.declined.length > 0 && (
+          <div>
+            <div className="text-mx-dim">You declined</div>
+            <ul className="ml-3 list-disc font-mono">{s.declined.map((d, i) => <li key={i}>{d.what}</li>)}</ul>
+          </div>
+        )}
+        {s.steps > 0 && s.files.length === 0 && s.commands.length === 0 && s.delegations.length === 0 && looked.length === 0 && (
+          <div className="text-mx-dim">No files were changed and no commands were run.</div>
+        )}
+        {s.problems.length > 0 && (
+          <div>
+            <div className="text-mx-red">Problems</div>
+            <ul className="ml-3 font-mono text-mx-red">
+              {s.problems.map((p, i) => (
+                <li key={i} className="whitespace-pre-wrap">✗ {p.what}: {p.error}{p.recovered && <span className="text-mx-dim"> (recovered)</span>}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {s.error && <div className="whitespace-pre-wrap font-mono text-mx-red">Error: {s.error}</div>}
+      </div>
+    </div>
+  );
+}
+
 export function MessageView({ message, thinking }: { message: Message; thinking: boolean }) {
   switch (message.role) {
     case "user":
@@ -124,6 +190,8 @@ export function MessageView({ message, thinking }: { message: Message; thinking:
       return (
         <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid">{message.text}</div>
       );
+    case "summary":
+      return message.summary ? <TaskSummaryCard summary={message.summary} /> : null;
     case "assistant":
       return (
         <div className="my-2 max-w-[90%]">
