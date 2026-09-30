@@ -121,6 +121,7 @@ export function SetupScreen({
   send,
   onSkip,
   skipLabel = "Skip for now",
+  mode = "setup",
 }: {
   status: SetupStatus;
   result: SetupResult | null;
@@ -128,6 +129,9 @@ export function SetupScreen({
   send: (obj: object) => void;
   onSkip: () => void;
   skipLabel?: string;
+  // "setup": nothing works yet (first run). "manage": opened from Models to add or
+  // replace a key or login while the current orchestrator keeps working.
+  mode?: "setup" | "manage";
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   useEffect(() => { setBusy(null); }, [result?.n]);  // an answer arrived: whatever was in flight is done
@@ -137,12 +141,20 @@ export function SetupScreen({
   return (
     <div className="mx-auto flex h-full max-w-xl flex-col gap-4 overflow-y-auto px-6 py-8" data-testid="setup-screen">
       <div>
-        <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">Set up localforge</h1>
-        <p className="mt-2 text-sm text-mx-mid">
-          localforge uses one model to plan and review your work. Choose how to sign in to it. The models that write the
-          code run on this computer, are picked for you, and are downloaded (after asking you) the first time they're needed.
-        </p>
-        {status.orchestrator.reason && (
+        <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "manage" ? "Accounts & keys" : "Set up localforge"}</h1>
+        {mode === "manage" ? (
+          <p className="mt-2 text-sm text-mx-mid">
+            Add or replace an API key, or sign in with a CLI login you already use. Keys are checked with the provider and stay on this
+            computer. Your orchestrator ({status.orchestrator.model || "none"}) keeps working as it is; a new key only becomes a choice
+            in Models, for example to send images to Gemini.
+          </p>
+        ) : (
+          <p className="mt-2 text-sm text-mx-mid">
+            localforge uses one model to plan and review your work. Choose how to sign in to it. The models that write the
+            code run on this computer, are picked for you, and are downloaded (after asking you) the first time they're needed.
+          </p>
+        )}
+        {mode === "setup" && status.orchestrator.reason && (
           <p className="mt-2 text-xs text-mx-amber" data-testid="setup-reason">Right now: {status.orchestrator.reason}.</p>
         )}
       </div>
@@ -160,6 +172,7 @@ export function SetupScreen({
         ))}
       </div>
 
+      {mode === "setup" && (
       <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="setup-local">
         <div className="font-semibold text-mx-bright">Or run everything on this computer (free)</div>
         {!status.ollama.installed ? (
@@ -192,6 +205,7 @@ export function SetupScreen({
           </ul>
         )}
       </div>
+      )}
 
       {result && (
         <p
@@ -204,7 +218,7 @@ export function SetupScreen({
       )}
 
       <div className="flex items-center justify-between text-xs text-mx-dim">
-        <span>You can change all of this later in Models (left panel).</span>
+        <span>{mode === "manage" ? "Models (left panel) is where you choose which one does what." : "You can change all of this later in Models (left panel)."}</span>
         <button type="button" onClick={onSkip} className="rounded-sm border border-mx-dim px-3 py-1 text-mx-mid hover:border-mx-mid hover:text-mx-bright">
           {skipLabel}
         </button>

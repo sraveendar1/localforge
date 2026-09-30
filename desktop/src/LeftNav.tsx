@@ -23,6 +23,7 @@ export function LeftNav({
   source,
   budgets,
   onSetup,
+  onManageAccounts,
   send,
 }: {
   open: boolean;
@@ -40,6 +41,7 @@ export function LeftNav({
   source: "project" | "defaults" | null;
   budgets: BudgetRow[];
   onSetup: () => void;
+  onManageAccounts: () => void;
   send: (obj: object) => void;
 }) {
   return (
@@ -86,6 +88,7 @@ export function LeftNav({
               source={source}
               budgets={budgets}
               onSetup={onSetup}
+              onManageAccounts={onManageAccounts}
               send={send}
             />
           </Curtain>

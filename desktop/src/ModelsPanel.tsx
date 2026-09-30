@@ -72,6 +72,7 @@ export function ModelsPanel({
   source,
   budgets,
   onSetup,
+  onManageAccounts,
   send,
 }: {
   frontier: string;
@@ -82,6 +83,7 @@ export function ModelsPanel({
   source: "project" | "defaults" | null;
   budgets: BudgetRow[];
   onSetup: () => void;
+  onManageAccounts: () => void;
   send: (obj: object) => void;
 }) {
   const [wantAdvanced, setWantAdvanced] = useState(false);
@@ -193,6 +195,16 @@ export function ModelsPanel({
           </div>
         ))
       )}
+      <button
+        type="button"
+        disabled={!connected}
+        onClick={onManageAccounts}
+        data-testid="manage-accounts"
+        className="w-full rounded-sm border border-mx-dim px-2 py-1 text-left text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
+      >
+        Accounts &amp; keys…
+        <span className="block text-[10px] text-mx-dim">Add an API key or sign in (Claude, GPT, Gemini)</span>
+      </button>
     </div>
   );
 }

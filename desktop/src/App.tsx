@@ -29,6 +29,7 @@ function App() {
   const [leftNavOpen, setLeftNavOpen] = useState(() => loadPanelOpen("left", false));
   const [rightOpen, setRightOpen] = useState(() => loadPanelOpen("right", defaultRightOpen()));
   const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
+  const [manageOpen, setManageOpen] = useState(false);  // Models > Accounts & keys: the same screen, opened on purpose
   const [setupOpen, setSetupOpen] = useState(false);  // the same screen as an overlay, once there is a conversation to keep in view
   const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
@@ -138,7 +139,7 @@ function App() {
   // screen (say a first task just failed for want of a key) it's an overlay so
   // the conversation isn't hidden.
   const inlineSetup = !!chat.setup && needsSetup && !setupSkipped && chat.messages.length === 0;
-  const overlaySetup = !!chat.setup && needsSetup && setupOpen && !inlineSetup;
+  const overlaySetup = !!chat.setup && ((needsSetup && setupOpen && !inlineSetup) || manageOpen);
   const openSetup = () => { setSetupSkipped(false); setSetupOpen(true); };
   // Once something works, forget having skipped or opened setup: if it stops working
   // later, that should start from the banner, not pop the overlay up on its own.
@@ -222,6 +223,7 @@ function App() {
           source={chat.modelsSource}
           budgets={chat.budgets}
           onSetup={openSetup}
+          onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
           send={send}
         />
         <main className="flex min-w-0 flex-1 flex-col">
@@ -355,7 +357,7 @@ function App() {
       {overlaySetup && chat.setup && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Set up models" data-testid="setup-overlay">
           <div className="w-full max-w-xl rounded-sm border border-mx-mid bg-mx-bg">
-            <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupOpen(false)} skipLabel="Close" />
+            <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => { setSetupOpen(false); setManageOpen(false); }} skipLabel="Close" mode={manageOpen ? "manage" : "setup"} />
           </div>
         </div>
       )}

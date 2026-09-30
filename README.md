@@ -367,6 +367,8 @@ A fresh install needs no terminal. After you open a folder and trust it, if no m
 2. **Or run everything on this computer.** It shows whether Ollama is installed and running and lists the models you've downloaded (one that's too big for the machine is greyed out with the reason). Ollama itself is installed from ollama.com; the app links to it.
 3. **Skip for now** leaves a banner ("No model is set up yet, so tasks will fail") instead of nagging. If a task is sent with nothing set up, it fails with a plain message ("claude-opus-5 needs an Anthropic (Claude) API key or login, and none is set up yet. Use “Set up”…") instead of a library error, and the setup opens as an overlay over your conversation.
 
+**Already set up?** The screen only appears when nothing can run yet, so a machine where you ran `localforge setup` earlier goes straight to the chat. To add or replace a key later (say a Gemini key, to send images there) or sign in with another login, open **Models → Accounts & keys…** in the left panel: the same cards, with your current orchestrator left as it is.
+
 The coding, docs and general models need no setup: they're picked for your machine and downloaded (after asking) the first time they're needed. Nothing here replaces `localforge setup` in a terminal, which does the same for the CLI and shares the same saved settings.
 
 ### Using it
