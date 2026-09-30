@@ -50,7 +50,14 @@ THEME_ENV_VAR = "LOCALFORGE_THEME"
 # gemini/ prefix for Google AI Studio (same rule as the Gemini text models).
 IMAGE_MODEL_CHOICES: dict[str, list[str]] = {
     "openai": ["gpt-image-1", "gpt-image-1-mini"],
-    "gemini": ["gemini/imagen-3.0-generate-001", "gemini/gemini-2.5-flash-image"],
+    # Newest first. With a key, provider_check.gemini_image_models() replaces
+    # this with what the key can actually use (still only ids LiteLLM can call).
+    "gemini": [
+        "gemini/gemini-3.1-flash-image-preview",
+        "gemini/gemini-2.5-flash-image",
+        "gemini/gemini-3-pro-image-preview",
+        "gemini/imagen-3.0-generate-001",
+    ],
 }
 
 # Image generation through a provider's own CLI login (a subscription, no API

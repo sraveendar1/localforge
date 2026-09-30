@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, repl, task_summary, theme, trust, upgrades, usage_store
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, repl, task_summary, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -879,6 +879,28 @@ def doctor() -> None:
             "export one of: " + ", ".join(FRONTIER_API_KEY_ENV_VARS) + ", or pick an open-weighted "
             "model as the orchestrator (`localforge setup`, provider \"local\")"
         )
+
+    # Does each provider we hold a key for actually accept it? A wrong or
+    # expired key otherwise shows up as a raw error on the first task.
+    for provider in ("anthropic", "openai", "gemini"):
+        env_var = FRONTIER_PROVIDERS.get(provider)
+        key = os.environ.get(env_var or "")
+        if not key:
+            continue
+        status, detail = provider_check.check_key(provider, key)
+        if status == provider_check.OK:
+            console.print(f"[success]✓[/success] {provider} accepts {env_var}")
+        elif status == provider_check.REJECTED:
+            ok = False
+            console.print(f"[error]✗[/error] {escape(detail)} — check {env_var} (`localforge setup` replaces it)")
+        else:
+            console.print(f"[warning]![/warning] {escape(detail)}")
+        if provider == "gemini" and status == provider_check.OK:
+            images = provider_check.gemini_image_models(key)
+            if images:
+                console.print(f"[success]✓[/success] Gemini image models available to this key: {', '.join(m.removeprefix('gemini/') for m in images[:4])}")
+            else:
+                console.print("[warning]![/warning] No Gemini image model is available to this key (Gemini image generation needs one)")
 
     hw = detect_hardware()
     console.print()

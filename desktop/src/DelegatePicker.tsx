@@ -1,4 +1,17 @@
-import type { DelegateOptions } from "./state";
+import type { DelegateCloudOption, DelegateOptions } from "./state";
+
+// Cloud choices grouped by provider and how you sign in, so several models of
+// one provider read as a list under it rather than a run of near-identical lines.
+function groupCloud(items: DelegateCloudOption[]): { key: string; title: string; items: DelegateCloudOption[] }[] {
+  const groups = new Map<string, { key: string; title: string; items: DelegateCloudOption[] }>();
+  for (const c of items) {
+    const key = `${c.provider}:${c.kind}`;
+    const title = `${c.provider[0].toUpperCase()}${c.provider.slice(1)} · ${c.kind === "api" ? "API key" : "CLI login"}`;
+    if (!groups.has(key)) groups.set(key, { key, title, items: [] });
+    groups.get(key)!.items.push(c);
+  }
+  return [...groups.values()];
+}
 
 // The choices for one task type's model: Auto, a local model (free), or a
 // paid cloud model through a key/login you already have. Sends nothing
@@ -53,18 +66,25 @@ export function DelegatePicker({
       {options.cloud.length > 0 && (
         <div className="mt-1 border-t border-mx-dim pt-1">
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{isImage ? "Image models (costs money per image)" : "Cloud (costs money)"}</div>
-          {options.cloud.map(c => {
-            const value = `${c.kind}:${c.provider}:${c.model}`;
-            return (
-              <button
-                key={value}
-                className={"block w-full rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (options.current === value ? "text-mx-amber" : "text-mx-mid")}
-                onClick={() => { onPick(value); onClose(); }}
-              >
-                {c.model} ({c.provider}, via {c.kind === "api" ? "API key" : "CLI login"}){isImage && c.kind === "cli" ? " – experimental, uses your plan's image allowance" : ""}
-              </button>
-            );
-          })}
+          {groupCloud(options.cloud).map(group => (
+            <div key={group.key} className="mb-1">
+              <div className="px-1.5 text-[10px] text-mx-dim">{group.title}</div>
+              {group.items.map(c => {
+                const value = `${c.kind}:${c.provider}:${c.model}`;
+                return (
+                  <button
+                    key={value}
+                    className={"block w-full break-words rounded-sm px-1.5 py-0.5 text-left hover:bg-mx-dim/50 " + (options.current === value ? "text-mx-amber" : "text-mx-mid")}
+                    onClick={() => { onPick(value); onClose(); }}
+                  >
+                    {c.model.replace(/^gemini\//, "")}
+                    {typeof c.priceUsd === "number" && <span className="text-mx-dim"> · ~${c.priceUsd.toFixed(3)}/image</span>}
+                    {isImage && c.kind === "cli" && <span className="text-mx-dim"> · experimental, uses your plan's image allowance</span>}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
       <button className="mt-1 block w-full rounded-sm px-1.5 py-0.5 text-left text-mx-red hover:bg-mx-dim/50" onClick={onClose}>

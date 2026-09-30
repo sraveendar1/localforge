@@ -34,7 +34,7 @@ export function ActiveModelsPanel({
       <div>
         <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Paid models</div>
         {configuredPaid.length === 0 ? (
-          <div className="text-mx-dim italic">None: everything is local.</div>
+          <div className="text-mx-dim italic">None in use.</div>
         ) : (
           <ul className="space-y-1" data-testid="active-paid">
             {configuredPaid.map(m => (

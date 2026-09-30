@@ -48,7 +48,7 @@ export function UsagePanel({
       <section>
         <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Paid models</h3>
         {rows.length === 0 ? (
-          <p className="text-mx-dim italic">None in use: everything runs on local models.</p>
+          <p className="text-mx-dim italic">None in use.</p>
         ) : (
           <div className="space-y-2" data-testid="paid-models">
             {rows.map(r => {

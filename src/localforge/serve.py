@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, task_summary, trust
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -106,6 +106,84 @@ def _auth_for_typed_model(model: str) -> dict | None:
     return None
 
 
+_SETUP_PROVIDERS = ("anthropic", "openai", "gemini")
+_PROVIDER_LABELS = {"anthropic": "Anthropic (Claude)", "openai": "OpenAI (GPT)", "gemini": "Google (Gemini)"}
+
+
+def _orchestrator_readiness(model: str, cli_provider: str | None) -> tuple[bool, str]:
+    """Whether the orchestrator that would really run can run, and if not, why
+    in plain words. The route matters: a Claude login only counts once it has
+    been chosen as the way in (auth method saved), not merely because `claude`
+    is installed -- otherwise the run goes to the API and fails."""
+    from localforge import cli
+
+    if model.startswith(local_transport.PREFIXES):
+        name = local_transport.model_name(model)
+        installed = _installed_model_names(OllamaBackend())
+        if name in installed or f"{name}:latest" in installed:
+            return True, ""
+        return False, f"{name} isn't downloaded (or Ollama isn't running)"
+    if cli_provider:
+        if cli_transport.available(cli_provider):
+            return True, ""
+        return False, cli_transport.requirements_message(cli_provider)
+    provider = cli._cloud_provider(model)
+    env_var = config.FRONTIER_PROVIDERS.get(provider) if provider else None
+    if provider is None:
+        return True, ""  # some other LiteLLM model: can't tell, so don't get in the way
+    if env_var and os.environ.get(env_var):
+        return True, ""
+    return False, f"{model} needs a {_PROVIDER_LABELS.get(provider, provider)} API key or login, and none is set up yet"
+
+
+def _setup_status(model: str, cli_provider: str | None) -> dict:
+    """Everything the first-run screen needs, without any secret in it."""
+    ready, reason = _orchestrator_readiness(model, cli_provider)
+    ollama = OllamaBackend()
+    running = ollama.is_running()
+    sizes = model_fit.installed_sizes() if running else None
+    hardware = detect_hardware()
+    providers = []
+    for provider in _SETUP_PROVIDERS:
+        spec = config.FRONTIER_CLI_AUTH.get(provider)
+        env_var = config.FRONTIER_PROVIDERS.get(provider)
+        providers.append({
+            "id": provider,
+            "label": _PROVIDER_LABELS[provider],
+            "key_set": bool(env_var and os.environ.get(env_var)),
+            "key_url": config.FRONTIER_CONSOLE_URLS.get(provider),
+            "cli": {
+                "command": spec["command"],
+                "installed": cli_transport.available(provider),
+                "install_hint": spec["install_hint"],
+                "login_hint": spec["login_hint"],
+            } if spec else None,
+        })
+    return {
+        "needs_setup": not ready,
+        "orchestrator": {"model": model, "ready": ready, "reason": reason},
+        "providers": providers,
+        "ollama": {
+            "installed": shutil.which("ollama") is not None,
+            "running": running,
+            "models": [
+                {"name": name, "problem": model_fit.selection_problem(name, hardware, sizes, fetch_sizes=False)}
+                for name in sorted(sizes or {})
+            ],
+        },
+    }
+
+
+def _friendly_failure(exc: Exception, model: str, cli_provider: str | None) -> tuple[str, bool]:
+    """(message, is a set-up problem). A first task with no key or login used
+    to end in LiteLLM's raw `AuthenticationError: Missing Anthropic API Key -
+    A call is being made to anthropic but...`; say what to do instead."""
+    ready, reason = _orchestrator_readiness(model, cli_provider)
+    if not ready and (type(exc).__name__ == "AuthenticationError" or "api key" in str(exc).lower()):
+        return f"{reason}. Use “Set up” to add an API key or sign in, then send your message again.", True
+    return f"{type(exc).__name__}: {exc}", False
+
+
 def _orchestrator_options() -> list[dict]:
     """Every orchestrator usable on this machine, for the header dropdown:
     the models already in Ollama plus each cloud provider whose API key or
@@ -141,26 +219,29 @@ def _advanced_model_snapshot() -> dict:
         for m in delegate_target.ALL_MODALITIES
     }
 
+MAX_MODELS_PER_PROVIDER = 8  # in a picker, per provider and way of signing in
+
+
 def _delegate_options(modality: str) -> dict:
     """Everything the GUI's "Change" picker offers for one modality: every
     local catalog model (with its fit-relevant fields and install status,
     same shape `localforge catalog` already shows) plus a cloud entry for
-    each provider that's actually usable right now -- has an API key set,
-    or its CLI is on PATH and logged in. A cloud entry's model is that
-    provider's own default choice (config.FRONTIER_MODEL_CHOICES); the
-    chat/CLI `/advanced-model` command is still how you'd pick something more
-    specific than the default.
+    each model of each provider that's actually usable right now -- has an
+    API key set, or its CLI is on PATH.
     """
     if modality in delegate_target.GENERATIVE:
-        # Image: every image model of each provider that has an API key (no
-        # local image backend and no CLI-login route yet). Video: nothing.
-        images = [
-            {"kind": "api", "provider": provider, "model": model}
-            for provider, models in config.IMAGE_MODEL_CHOICES.items()
-            if modality == "image" and os.environ.get(config.FRONTIER_PROVIDERS.get(provider) or "")
-            for model in models
-        ]
-        if modality == "image":  # plus a provider's own CLI login where its CLI has an image tool (Codex)
+        # Image: every image model of each provider that has an API key -- for
+        # Gemini, the ones that key can actually use -- with the price per
+        # image where it's known. Video: nothing.
+        images = []
+        if modality == "image":
+            for provider in config.IMAGE_MODEL_CHOICES:
+                key = os.environ.get(config.FRONTIER_PROVIDERS.get(provider) or "")
+                if not key:
+                    continue
+                for model in provider_check.image_models_for(provider, key):
+                    images.append({"kind": "api", "provider": provider, "model": model, "price_usd": provider_check.image_price(model)})
+            # plus a provider's own CLI login where its CLI has an image tool (Codex)
             images += [
                 {"kind": "cli", "provider": provider, "model": model}
                 for provider, models in config.IMAGE_CLI_CHOICES.items()
@@ -178,19 +259,26 @@ def _delegate_options(modality: str) -> dict:
         }
         for m in load_catalog() if m.modality == modality
     ]
+    from localforge import cli
+
     cloud = []
     for provider, env_var in config.FRONTIER_PROVIDERS.items():
         if provider == "local" or not env_var or not os.environ.get(env_var):
             continue
-        default_model = next(iter(config.FRONTIER_MODEL_CHOICES.get(provider, [])), None)
-        if default_model:
-            cloud.append({"kind": "api", "provider": provider, "model": default_model})
+        # Every model the provider offers (Gemini's from the key itself), not
+        # just its default: "Claude orchestrates, Gemini Flash writes docs"
+        # needs a choice of Gemini models.
+        try:
+            models = cli._provider_models(provider)
+        except Exception:  # noqa: BLE001 - the curated list is the fallback
+            models = list(config.FRONTIER_MODEL_CHOICES.get(provider, []))
+        for model in models[:MAX_MODELS_PER_PROVIDER]:
+            cloud.append({"kind": "api", "provider": provider, "model": model})
     for provider in config.FRONTIER_CLI_AUTH:
         if not cli_transport.available(provider):
             continue
-        default_model = next(iter(config.FRONTIER_MODEL_CHOICES.get(provider, [])), None)
-        if default_model:
-            cloud.append({"kind": "cli", "provider": provider, "model": default_model})
+        for model in config.FRONTIER_MODEL_CHOICES.get(provider, [])[:MAX_MODELS_PER_PROVIDER]:
+            cloud.append({"kind": "cli", "provider": provider, "model": model})
     return {
         "local": local,
         "cloud": cloud,
@@ -211,10 +299,29 @@ def _catalog():
     catalog = load_catalog()
     return [{'name': entry.name, 'modality': entry.modality, 'runtime': entry.runtime, 'min_vram_gb': entry.min_vram_gb, 'min_ram_gb': entry.min_ram_gb, 'disk_gb': entry.disk_gb, 'quality_tier': entry.quality_tier} for entry in catalog]
 
-def _doctor():
+def _doctor(model: str = "", cli_provider: str | None = None):
     checks = []
     ollama_path = shutil.which('ollama')
     checks.append({'name': 'Ollama installed', 'ok': ollama_path is not None, 'detail': ollama_path or 'Ollama not installed. Install it from https://ollama.com.'})
+    if ollama_path is not None:
+        running = OllamaBackend().is_running()
+        checks.append({'name': 'Ollama running', 'ok': running, 'detail': 'Ollama is answering.' if running else 'Ollama is installed but not running. Start it (open the Ollama app, or `ollama serve`).'})
+    if model:
+        ready, reason = _orchestrator_readiness(model, cli_provider)
+        checks.append({'name': 'Orchestrator', 'ok': ready, 'detail': f'{model} can run.' if ready else f'{reason}. Use Set up.'})
+    for provider in _SETUP_PROVIDERS:
+        env_var = config.FRONTIER_PROVIDERS.get(provider)
+        key = os.environ.get(env_var or '')
+        label = _PROVIDER_LABELS[provider]
+        if key:
+            status, detail = provider_check.check_key(provider, key)
+            checks.append({'name': f'{label} API key', 'ok': status != provider_check.REJECTED, 'detail': detail if status != provider_check.OK else f'{env_var} is set and {provider} accepts it.'})
+            if provider == 'gemini' and status == provider_check.OK:
+                images = provider_check.gemini_image_models(key)
+                checks.append({'name': 'Gemini image models', 'ok': bool(images), 'detail': f'{len(images)} available to this key: ' + ', '.join(m.removeprefix('gemini/') for m in images[:4]) if images else 'None of Google\'s image models are available to this key (image generation with Gemini needs one).'})
+        spec = config.FRONTIER_CLI_AUTH.get(provider)
+        if spec and cli_transport.available(provider):
+            checks.append({'name': f'{spec["command"]} CLI', 'ok': True, 'detail': f'`{spec["command"]}` is installed (a login through it is used only once chosen in Set up).'})
     try:
         hardware = detect_hardware()
         checks.append({'name': 'Hardware detected', 'ok': True, 'detail': f'OS: {hardware.os} ({hardware.arch}), CPU cores: {hardware.cpu_cores}, RAM: {hardware.ram_gb} GB, Free disk: {hardware.free_disk_gb} GB.'})
@@ -380,9 +487,12 @@ class StdioServer:
             self._emit_summary(getattr(exc, "stats", None), "stopped", str(exc))
             self._record_usage(getattr(exc, "stats", None))
         except Exception as exc:
-            self.emit("error", message=f"{type(exc).__name__}: {exc}")
-            self._emit_summary(getattr(exc, "stats", None), "failed", f"{type(exc).__name__}: {exc}")
+            message, needs_setup = _friendly_failure(exc, self.frontier_model, self.cli_provider)
+            self.emit("error", message=message, detail=f"{type(exc).__name__}: {exc}", setup_needed=needs_setup)
+            self._emit_summary(getattr(exc, "stats", None), "failed", message)
             self._record_usage(getattr(exc, "stats", None))
+            if needs_setup:
+                self._emit_setup_status()
         finally:
             self._start_next_queued()
 
@@ -533,6 +643,16 @@ class StdioServer:
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
             self.emit('todos_updated', todos=self._todos)
             self._emit_queue()
+        elif message_type == "setup_status_request":
+            threading.Thread(target=self._emit_setup_status, daemon=True).start()
+        elif message_type == "save_api_key":
+            threading.Thread(
+                target=self._save_api_key, args=(str(message.get("provider", "")), str(message.get("key", ""))), daemon=True
+            ).start()
+        elif message_type == "setup_use_login":
+            threading.Thread(target=self._use_login, args=(str(message.get("provider", "")),), daemon=True).start()
+        elif message_type == "setup_choose_orchestrator":
+            self._choose_orchestrator(str(message.get("model", "")).strip())
         elif message_type == "orchestrator_options_request":
             # Off the reader thread: a Gemini key makes the list fetch hit the network.
             threading.Thread(target=self._emit_orchestrator_options, daemon=True).start()
@@ -701,7 +821,8 @@ class StdioServer:
         elif cmd == "/catalog":
             self.emit("catalog", items=_catalog())
         elif cmd == "/doctor":
-            self.emit("doctor", checks=_doctor())
+            # Off the reader thread: it asks each provider whether its key works.
+            threading.Thread(target=lambda: self.emit("doctor", checks=_doctor(self.frontier_model, self.cli_provider)), daemon=True).start()
         elif cmd == "/scan":
             self.emit("system_stats", hardware=_hardware(), cpu_percent=psutil.cpu_percent(interval=0.01), ram_used_gb=round(psutil.virtual_memory().used / (1024 ** 3), 1), ram_total_gb=round(psutil.virtual_memory().total / (1024 ** 3), 1))
 
@@ -711,6 +832,98 @@ class StdioServer:
         except Exception:  # noqa: BLE001 - a nicer dropdown, never a reason to fail
             options = []
         self.emit("orchestrator_options", options=options, current=self.frontier_model)
+
+    # --- first-run setup: keys, logins and the default orchestrator --------------
+
+    def _emit_setup_status(self) -> None:
+        try:
+            self.emit("setup_status", **_setup_status(self.frontier_model, self.cli_provider))
+        except Exception:  # noqa: BLE001 - a status panel must never take the session down
+            pass
+
+    def _setup_result(self, ok: bool, message: str) -> None:
+        self.emit("setup_result", ok=ok, message=message)
+        self._emit_setup_status()
+        self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        self._emit_orchestrator_options()
+        self._emit_advanced_model()
+
+    def _make_default_orchestrator(self, model: str, auth: dict) -> None:
+        """Set `model` as the orchestrator: as the default every project starts
+        from (what `localforge setup` saves), and for this session. A project
+        that already has its own saved models is updated too, or its file
+        would just put the old one back."""
+        from localforge import cli
+
+        config.save({config.FRONTIER_MODEL_ENV_VAR: model, **auth})
+        if project_models.source() == "project":
+            project_models.save({config.FRONTIER_MODEL_ENV_VAR: model, **auth})
+        self.frontier_model = model
+        self.cli_provider = cli._cli_provider_for(model, explicit=False)
+
+    def _save_api_key(self, provider: str, raw_key: str) -> None:
+        """Save an API key (globally, in the private config file -- keys aren't
+        per project), after asking the provider whether it accepts it. The key
+        is never echoed back or put in an event."""
+        from localforge import cli
+
+        env_var = config.FRONTIER_PROVIDERS.get(provider) if provider in _SETUP_PROVIDERS else None
+        if not env_var:
+            return self._setup_result(False, f"Unknown provider {provider!r}.")
+        label = _PROVIDER_LABELS[provider]
+        key = provider_check.clean_key(raw_key)
+        if not provider_check.looks_like_a_key(key):
+            return self._setup_result(False, "That doesn't look like an API key (it's empty, too short, or has spaces in it). Copy the whole key from the provider's page.")
+        status, detail = provider_check.check_key(provider, key)
+        if status == provider_check.REJECTED:
+            return self._setup_result(False, f"{label} rejected that key ({detail}). Check it was copied completely, and that it's a key for {label}.")
+        # Asked *before* saving: the new key itself would make the current
+        # (default, never-chosen) model look ready and nothing would be chosen.
+        was_ready, _ = _orchestrator_readiness(self.frontier_model, self.cli_provider)
+        config.save({env_var: key})
+        note = "" if status == provider_check.OK else f" I couldn't check it right now — {detail} — so it's saved as typed."
+        if was_ready:
+            return self._setup_result(True, f"Saved your {label} key.{note}")
+        try:
+            models = cli._provider_models(provider)
+        except Exception:  # noqa: BLE001
+            models = []
+        model = (models or config.FRONTIER_MODEL_CHOICES.get(provider) or [""])[0]
+        self._make_default_orchestrator(model, {config.AUTH_METHOD_ENV_VAR: config.AUTH_API_KEY, config.FRONTIER_PROVIDER_ENV_VAR: provider})
+        self._setup_result(True, f"Saved your {label} key and chose {model} to plan and review your work.{note} You can change it any time in Models.")
+
+    def _use_login(self, provider: str) -> None:
+        """Use a provider's own CLI login (a subscription) as the orchestrator,
+        after checking the CLI is installed and actually answers -- signed out,
+        it doesn't, and saving it would only fail on the first task."""
+        from localforge import cli
+
+        spec = config.FRONTIER_CLI_AUTH.get(provider) if provider in _SETUP_PROVIDERS else None
+        if spec is None:
+            return self._setup_result(False, f"Unknown provider {provider!r}.")
+        if not cli_transport.available(provider):
+            return self._setup_result(False, cli_transport.requirements_message(provider))
+        works, why = cli_transport.probe(provider)
+        if not works:
+            return self._setup_result(False, f"`{spec['command']}` didn't answer: {why}. {cli._cli_failure_advice(provider, why)}")
+        model = config.FRONTIER_MODEL_CHOICES[provider][0]
+        self._make_default_orchestrator(model, {config.AUTH_METHOD_ENV_VAR: config.AUTH_CLI_LOGIN, config.FRONTIER_PROVIDER_ENV_VAR: provider})
+        self._setup_result(True, f"Using your {spec['command']} login: {model} will plan and review your work (it draws on your subscription).")
+
+    def _choose_orchestrator(self, model: str) -> None:
+        """Pick one of the orchestrators that can run here (as listed in the
+        Models section): a downloaded local model, or a cloud one with a key or
+        login. A local model too big for this machine is refused."""
+        from localforge import cli
+
+        match = next((auth for m, _label, auth in cli._model_choices() if m == model), None)
+        if match is None:
+            return self._setup_result(False, f"{model or 'That model'} isn't available here yet.")
+        if model.startswith(local_transport.PREFIXES):
+            if why := model_fit.selection_problem(local_transport.model_name(model)):
+                return self._setup_result(False, f"Can't use {local_transport.model_name(model)}: {why}.")
+        self._make_default_orchestrator(model, match)
+        self._setup_result(True, f"{model} will plan and review your work.")
 
     def _adopt_project_models(self) -> None:
         """Apply this folder's saved models (.localforge/models.json) and send

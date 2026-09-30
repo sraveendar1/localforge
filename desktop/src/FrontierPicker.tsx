@@ -1,19 +1,6 @@
 import { useState } from "react";
 import type { OrchestratorOption } from "./state";
 
-// Shown until the backend has said what is actually usable on this machine
-// (or when it can't: no Ollama, no keys). The real list -- every model already
-// in Ollama plus each provider with an API key or CLI login -- arrives as an
-// `orchestrator_options` event and replaces this.
-const FALLBACK_OPTIONS: OrchestratorOption[] = [
-  { id: "claude-opus-5", label: "claude-opus-5", group: "Anthropic" },
-  { id: "claude-sonnet-5", label: "claude-sonnet-5", group: "Anthropic" },
-  { id: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5-20251001", group: "Anthropic" },
-  { id: "claude-fable-5-1", label: "claude-fable-5-1", group: "Anthropic" },
-  { id: "gpt-5", label: "gpt-5", group: "OpenAI" },
-  { id: "gemini/gemini-2.5-pro", label: "gemini/gemini-2.5-pro", group: "Gemini" },
-];
-
 // The choices for the orchestrator (the frontier model that plans and
 // reviews). Same list `/model` shows in the terminal. No "Auto": the
 // orchestrator is always an explicit choice.
@@ -22,14 +9,16 @@ export function FrontierPicker({
   options,
   onPick,
   onClose,
+  onSetup,
 }: {
   current: string;
   options: OrchestratorOption[];
   onPick: (model: string) => void;
   onClose: () => void;
+  onSetup: () => void;
 }) {
   const [other, setOther] = useState("");
-  const known = options.length > 0 ? options : FALLBACK_OPTIONS;
+  const known = options;  // only what can actually run here (never a list of models with no key behind them)
   const groups: { [group: string]: OrchestratorOption[] } = {};
   for (const o of known) (groups[o.group] ??= []).push(o);
 
@@ -42,6 +31,12 @@ export function FrontierPicker({
 
   return (
     <div className="mt-1 rounded-sm border border-mx-dim bg-mx-panel2 p-2">
+      {options.length === 0 && (
+        <p className="px-1.5 pb-1 text-mx-dim">
+          Nothing to choose from yet: no API key, login or downloaded local model.{" "}
+          <button type="button" className="text-mx-green underline hover:text-mx-bright" onClick={() => { onSetup(); onClose(); }}>Set up…</button>
+        </p>
+      )}
       {Object.entries(groups).map(([group, items], i) => (
         <div key={group} className={i > 0 ? "mt-1 border-t border-mx-dim pt-1" : ""}>
           <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{group}</div>

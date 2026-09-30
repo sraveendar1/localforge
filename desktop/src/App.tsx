@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
+import { SetupScreen } from "./SetupScreen";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
@@ -24,6 +25,8 @@ function App() {
   const [input, setInput] = useState("");
   const [slashActive, setSlashActive] = useState(0);
   const [leftNavOpen, setLeftNavOpen] = useState(false);
+  const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
+  const [setupOpen, setSetupOpen] = useState(false);  // the same screen as an overlay, once there is a conversation to keep in view
   const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
@@ -123,7 +126,18 @@ function App() {
   }
 
   // Every paid model in play and its role(s): the right-hand panels list these.
-  const configuredPaid = configuredPaidModels(chat.model, chat.orchestratorOptions, chat.localModelTargets);
+  const needsSetup = !!chat.setup?.needsSetup;
+  // First-run setup shows in place of the empty chat; with a conversation on
+  // screen (say a first task just failed for want of a key) it's an overlay so
+  // the conversation isn't hidden.
+  const inlineSetup = !!chat.setup && needsSetup && !setupSkipped && chat.messages.length === 0;
+  const overlaySetup = !!chat.setup && needsSetup && setupOpen && !inlineSetup;
+  const openSetup = () => { setSetupSkipped(false); setSetupOpen(true); };
+  // Once something works, forget having skipped or opened setup: if it stops working
+  // later, that should start from the banner, not pop the overlay up on its own.
+  useEffect(() => { if (!needsSetup) { setSetupSkipped(false); setSetupOpen(false); } }, [needsSetup]);
+  // (the orchestrator isn't listed as "in use" while it can't run: nothing is set up)
+  const configuredPaid = configuredPaidModels(needsSetup ? "" : chat.model, chat.orchestratorOptions, chat.localModelTargets);
 
   const lastAssistant = chat.messages.map(m => m.role).lastIndexOf("assistant");
 
@@ -140,6 +154,7 @@ function App() {
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
       send({ type: "orchestrator_options_request" });  // the header dropdown: installed + keyed/logged-in models
+      send({ type: "setup_status_request" });  // is an orchestrator set up at all? (first-run screen)
       send({ type: "advanced_model_request" });  // per-modality delegate target (auto, or a pinned override)
     }
   }, [chat.connected, chat.trustRequired, send]);
@@ -162,17 +177,26 @@ function App() {
         <button
           type="button"
           disabled={!chat.connected}
-          title="Change models"
+          title={needsSetup ? "No model is set up yet" : "Change models"}
           aria-label="Orchestrator model (click to change models)"
-          onClick={() => { setLeftNavOpen(true); setModelsSignal(n => n + 1); send({ type: "orchestrator_options_request" }); }}
+          onClick={() => {
+            if (needsSetup) { openSetup(); return; }  // nothing to choose between yet: set up first
+            setLeftNavOpen(true); setModelsSignal(n => n + 1); send({ type: "orchestrator_options_request" });
+          }}
           className="max-w-xs truncate rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1 text-sm text-mx-bright hover:border-mx-mid disabled:opacity-50"
         >
-          {chat.model || "model"}
+          {needsSetup ? "Set up models…" : chat.model || "model"}
         </button>
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
       </header>
       {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-dim">{chat.status}</div>}
+      {folder && needsSetup && !inlineSetup && !overlaySetup && !chat.trustRequired && (
+        <div className="flex items-center gap-3 border-b border-mx-amber bg-mx-panel px-4 py-1 text-xs text-mx-amber" role="alert" data-testid="setup-banner">
+          <span>No model is set up yet, so tasks will fail{chat.setup?.orchestrator.reason ? `: ${chat.setup.orchestrator.reason}` : ""}.</span>
+          <button type="button" className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={openSetup}>Set up</button>
+        </div>
+      )}
       <div className="flex min-h-0 flex-1">
         <LeftNav
           open={leftNavOpen}
@@ -188,6 +212,7 @@ function App() {
           delegateOptions={chat.delegateOptions}
           connected={chat.connected}
           source={chat.modelsSource}
+          onSetup={openSetup}
           send={send}
         />
         <main className="flex min-w-0 flex-1 flex-col">
@@ -216,6 +241,8 @@ function App() {
                   </button>
                 </div>
               </div>
+            ) : inlineSetup && chat.setup ? (
+              <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupSkipped(true)} />
             ) : chat.messages.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-mx-mid">
                 <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-bright glow">localforge</h1>
@@ -316,6 +343,13 @@ function App() {
           <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
         </aside>
       </div>
+      {overlaySetup && chat.setup && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Set up models" data-testid="setup-overlay">
+          <div className="w-full max-w-xl rounded-sm border border-mx-mid bg-mx-bg">
+            <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupOpen(false)} skipLabel="Close" />
+          </div>
+        </div>
+      )}
       <StatusBar folder={folder} connected={chat.connected} running={chat.running} model={chat.model} autoApprove={chat.autoApprove} todoCount={chat.todos.length} doneCount={chat.todos.filter(t => t.status === "completed").length} onCancel={() => send({ type: "cancel" })} />
     </div>
   );

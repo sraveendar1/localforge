@@ -339,6 +339,19 @@ cross-compile):
 cd desktop && npm run tauri build
 ```
 
+### First run: setting up inside the app
+
+A fresh install needs no terminal. After you open a folder and trust it, if no model can run yet, the app opens a **Set up localforge** screen in place of the empty chat (the header chip says "Set up models…" until it's done):
+
+1. **Sign in to the model that plans and reviews your work.** One card each for Anthropic (Claude), OpenAI (GPT) and Google (Gemini):
+   - **Use my `claude` / `codex` / `gemini` login** appears when that app is installed on the computer. It checks that the login really answers (a signed-out one is refused with what to run) and then uses your subscription, no API key.
+   - **Paste an API key.** The field hides what you type. The key is checked with the provider first (a rejected key isn't saved and says so; if the provider can't be reached it's kept with a note), stored only in localforge's private config file (`~/.config/localforge/config.env`, mode 600) and never sent back to the screen. "Get one" opens the provider's key page.
+   - Either way a sensible model is chosen for you (`claude-opus-5`, Gemini's first model from your key, …) and saved as your default for every project; change it any time in Models.
+2. **Or run everything on this computer.** It shows whether Ollama is installed and running and lists the models you've downloaded (one that's too big for the machine is greyed out with the reason). Ollama itself is installed from ollama.com; the app links to it.
+3. **Skip for now** leaves a banner ("No model is set up yet, so tasks will fail") instead of nagging. If a task is sent with nothing set up, it fails with a plain message ("claude-opus-5 needs an Anthropic (Claude) API key or login, and none is set up yet. Use “Set up”…") instead of a library error, and the setup opens as an overlay over your conversation.
+
+The coding, docs and general models need no setup: they're picked for your machine and downloaded (after asking) the first time they're needed. Nothing here replaces `localforge setup` in a terminal, which does the same for the CLI and shares the same saved settings.
+
 ### Using it
 
 Open a project folder (the same one-time trust prompt as the CLI applies),
@@ -393,7 +406,7 @@ the toggle:
 **Image and video rows.** Below coding/docs/general the Models section has an **image** row and a **video** row:
 
 - **Image generation** is off until you pick an image model in Advanced mode (or `localforge advanced-model image <value>`). Two ways:
-  - **An API key** (`api:<provider>:<model>`): OpenAI (`gpt-image-1`, `gpt-image-1-mini`) or Google AI Studio (`gemini/imagen-3.0-generate-001`, `gemini/gemini-2.5-flash-image`), each needing that provider's key. Each image is billed to the key and counted in `/usage`.
+  - **An API key** (`api:<provider>:<model>`): OpenAI (`gpt-image-1`, `gpt-image-1-mini`) or Google AI Studio, each needing that provider's key. For Gemini the picker lists the image models *your key can actually use* (e.g. `gemini-3.1-flash-image-preview`, `gemini-2.5-flash-image`, `gemini-3-pro-image-preview`, Imagen) with the price per image where it's known (about $0.02–0.13), falling back to a built-in list if Google can't be reached. Each image is billed to the key and counted in `/usage`.
   - **Your ChatGPT login through Codex** (`cli:openai:codex-image`), *experimental*: no API key, it uses your plan's image allowance instead of per-image billing. It runs the official `codex exec` in a scratch folder, asks Codex to use its built-in image tool, and takes the image file it produces. It is **not verified against a real login yet** (Codex documents the tool but not its use in scripted `codex exec`), so if no image appears the error says what Codex printed. localforge does not call ChatGPT's private endpoint with your login token, as some third-party tools do. It appears in the picker only when the `codex` CLI is installed. **Claude's login can't do this: Claude has no image model.** Gemini's CLI only gets image generation from an extension, so it isn't offered.
 
   Once one is chosen the orchestrator is offered a `generate_image` tool: it describes the picture and a path, the image model draws it, and you approve saving it (the prompt says what it is and how big, since a picture has no diff). There is no local image backend yet.

@@ -50,9 +50,26 @@ export type UsageTotals = {
 };
 export type ConfiguredModel = { modality: string; name: string; runtime: string; qualityTier: number };
 export type LocalModelTarget = { target: string; description: string };
-export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string };
+export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string; priceUsd?: number | null };
 export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean; problem?: string | null };
 export type DelegateOptions = { local: DelegateLocalOption[]; cloud: DelegateCloudOption[]; current: string };
+// What first-run setup needs to know (no secret in it): whether the orchestrator
+// can run, which providers have a key or an installed CLI, and Ollama.
+export type SetupProvider = {
+  id: string;
+  label: string;
+  keySet: boolean;
+  keyUrl: string | null;
+  cli: { command: string; installed: boolean; installHint: string; loginHint: string } | null;
+};
+export type SetupStatus = {
+  needsSetup: boolean;
+  orchestrator: { model: string; ready: boolean; reason: string };
+  providers: SetupProvider[];
+  ollama: { installed: boolean; running: boolean; models: { name: string; problem: string | null }[] };
+};
+// The answer to a setup action; `n` counts them so a screen can tell a new one.
+export type SetupResult = { ok: boolean; message: string; n: number };
 export type OrchestratorOption = { id: string; label: string; group: string; problem?: string | null };
 export type ChatState = {
   messages: Message[];
@@ -69,6 +86,8 @@ export type ChatState = {
   // Every orchestrator usable here (installed Ollama models + cloud providers
   // with a key or CLI login), for the header dropdown. Empty until fetched.
   orchestratorOptions: OrchestratorOption[];
+  setup: SetupStatus | null;
+  setupResult: SetupResult | null;
   // Per-modality delegate target (see /advanced-model): auto by default, or a
   // pinned local/cloud override. delegateOptions is fetched lazily, per
   // modality, only when the "Change" picker for that row is opened.
@@ -125,6 +144,8 @@ export const initialState: ChatState = {
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
   orchestratorOptions: [],
+  setup: null,
+  setupResult: null,
   modelsSource: null,
   localModelTargets: {},
   delegateOptions: {},
@@ -391,7 +412,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -471,6 +492,29 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       };
       return { ...state, messages: [...state.messages, { role: "summary", text: "", items: [], summary }] };
     }
+    case "setup_status": {
+      const providers = Array.isArray(ev.providers) ? ev.providers : [];
+      const oll = ev.ollama ?? {};
+      const setup: SetupStatus = {
+        needsSetup: !!ev.needs_setup,
+        orchestrator: { model: String(ev.orchestrator?.model ?? ""), ready: !!ev.orchestrator?.ready, reason: String(ev.orchestrator?.reason ?? "") },
+        providers: providers.map((p: any) => ({
+          id: String(p.id ?? ""), label: String(p.label ?? p.id ?? ""), keySet: !!p.key_set, keyUrl: p.key_url ? String(p.key_url) : null,
+          cli: p.cli ? { command: String(p.cli.command ?? ""), installed: !!p.cli.installed, installHint: String(p.cli.install_hint ?? ""), loginHint: String(p.cli.login_hint ?? "") } : null,
+        })),
+        ollama: {
+          installed: !!oll.installed, running: !!oll.running,
+          models: (Array.isArray(oll.models) ? oll.models : []).map((m: any) => ({ name: String(m.name ?? ""), problem: m.problem ? String(m.problem) : null })),
+        },
+      };
+      return { ...state, setup };
+    }
+    case "setup_result": {
+      const result: SetupResult = { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.setupResult?.n ?? 0) + 1 };
+      // A success is worth remembering once the setup screen has gone away.
+      const next = { ...state, setupResult: result };
+      return result.ok ? addSystemMessage(next, `✓ ${result.message}`) : next;
+    }
     case "orchestrator_options": {
       const options = Array.isArray(ev.options) ? ev.options : [];
       return {
@@ -502,7 +546,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
               disk_gb: Number(m.disk_gb ?? 0), installed: Boolean(m.installed),
               problem: m.problem ? String(m.problem) : null,
             })),
-            cloud: cloud.map((c: any) => ({ kind: c.kind === "cli" ? "cli" : "api", provider: String(c.provider ?? ""), model: String(c.model ?? "") })),
+            cloud: cloud.map((c: any) => ({ kind: c.kind === "cli" ? "cli" : "api", provider: String(c.provider ?? ""), model: String(c.model ?? ""), priceUsd: typeof c.price_usd === "number" ? c.price_usd : null })),
             current: String(ev.current ?? "auto"),
           },
         },

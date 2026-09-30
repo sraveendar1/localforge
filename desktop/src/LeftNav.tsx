@@ -21,6 +21,7 @@ export function LeftNav({
   delegateOptions,
   connected,
   source,
+  onSetup,
   send,
 }: {
   open: boolean;
@@ -36,6 +37,7 @@ export function LeftNav({
   delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
   source: "project" | "defaults" | null;
+  onSetup: () => void;
   send: (obj: object) => void;
 }) {
   return (
@@ -80,6 +82,7 @@ export function LeftNav({
               delegateOptions={delegateOptions}
               connected={connected}
               source={source}
+              onSetup={onSetup}
               send={send}
             />
           </Curtain>

@@ -31,6 +31,7 @@ export function ModelsPanel({
   delegateOptions,
   connected,
   source,
+  onSetup,
   send,
 }: {
   frontier: string;
@@ -39,6 +40,7 @@ export function ModelsPanel({
   delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
   source: "project" | "defaults" | null;
+  onSetup: () => void;
   send: (obj: object) => void;
 }) {
   const [wantAdvanced, setWantAdvanced] = useState(false);
@@ -120,6 +122,7 @@ export function ModelsPanel({
             options={frontierOptions}
             onPick={model => send({ type: "set_model", model })}
             onClose={() => setOpen(null)}
+            onSetup={onSetup}
           />
         )}
       </div>
