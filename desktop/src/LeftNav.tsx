@@ -1,6 +1,6 @@
 import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
-import type { DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
+import type { BudgetRow, DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
 
 // A collapsible left rail (chevron-toggled): recently-opened project folders
 // (so switching projects doesn't mean the native file dialog every time) and
@@ -21,6 +21,7 @@ export function LeftNav({
   delegateOptions,
   connected,
   source,
+  budgets,
   onSetup,
   send,
 }: {
@@ -37,6 +38,7 @@ export function LeftNav({
   delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
   source: "project" | "defaults" | null;
+  budgets: BudgetRow[];
   onSetup: () => void;
   send: (obj: object) => void;
 }) {
@@ -82,6 +84,7 @@ export function LeftNav({
               delegateOptions={delegateOptions}
               connected={connected}
               source={source}
+              budgets={budgets}
               onSetup={onSetup}
               send={send}
             />

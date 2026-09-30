@@ -93,6 +93,13 @@ function ProviderCard({
           {savingKey ? "Checking…" : "Save key"}
         </button>
       </form>
+      {provider.id === "gemini" && (
+        <div className="mt-1 text-xs text-mx-dim" data-testid="gemini-credit-note">
+          A Google AI Pro subscription doesn't make API calls free, but it includes $10 a month in Google Cloud credits that can pay for
+          them once activated (<Link url="https://developers.google.com/program">how</Link>). Gemini image generation has no free tier; you can set a
+          monthly limit in Models so it never goes past that.
+        </div>
+      )}
       {provider.keyUrl && (
         <div className="mt-1 text-xs text-mx-dim">
           No key yet? <Link url={provider.keyUrl}>Get one</Link>. It's checked with {provider.label.split(" ")[0]} and stored only on this computer.

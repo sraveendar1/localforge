@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
 import { SetupScreen } from "./SetupScreen";
+import { RightPanel } from "./RightPanel";
+import { defaultRightOpen, loadPanelOpen, savePanelOpen } from "./panelPrefs";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
@@ -24,7 +26,8 @@ function App() {
   const [folder, setFolder] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [slashActive, setSlashActive] = useState(0);
-  const [leftNavOpen, setLeftNavOpen] = useState(false);
+  const [leftNavOpen, setLeftNavOpen] = useState(() => loadPanelOpen("left", false));
+  const [rightOpen, setRightOpen] = useState(() => loadPanelOpen("right", defaultRightOpen()));
   const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
   const [setupOpen, setSetupOpen] = useState(false);  // the same screen as an overlay, once there is a conversation to keep in view
   const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
@@ -126,6 +129,10 @@ function App() {
   }
 
   // Every paid model in play and its role(s): the right-hand panels list these.
+  // The chevron tabs toggle a side panel and remember the choice. Only a click is
+  // remembered: with no choice yet the right panel just starts closed on a narrow window.
+  const toggleLeft = () => { const next = !leftNavOpen; setLeftNavOpen(next); savePanelOpen("left", next); };
+  const toggleRight = () => { const next = !rightOpen; setRightOpen(next); savePanelOpen("right", next); };
   const needsSetup = !!chat.setup?.needsSetup;
   // First-run setup shows in place of the empty chat; with a conversation on
   // screen (say a first task just failed for want of a key) it's an overlay so
@@ -154,7 +161,8 @@ function App() {
       send({ type: "usage_request" });  // historical usage (previous session, all-time)
       send({ type: "configured_models_request" });  // best-fit local model per modality
       send({ type: "orchestrator_options_request" });  // the header dropdown: installed + keyed/logged-in models
-      send({ type: "setup_status_request" });  // is an orchestrator set up at all? (first-run screen)
+      send({ type: "setup_status_request" });
+      send({ type: "budget_request" });  // this month's paid image spending and the limit  // is an orchestrator set up at all? (first-run screen)
       send({ type: "advanced_model_request" });  // per-modality delegate target (auto, or a pinned override)
     }
   }, [chat.connected, chat.trustRequired, send]);
@@ -200,7 +208,7 @@ function App() {
       <div className="flex min-h-0 flex-1">
         <LeftNav
           open={leftNavOpen}
-          onToggle={() => setLeftNavOpen(o => !o)}
+          onToggle={toggleLeft}
           recentFolders={recentFolders}
           currentFolder={folder}
           onSelectFolder={startSessionForFolder}
@@ -212,6 +220,7 @@ function App() {
           delegateOptions={chat.delegateOptions}
           connected={chat.connected}
           source={chat.modelsSource}
+          budgets={chat.budgets}
           onSetup={openSetup}
           send={send}
         />
@@ -327,7 +336,7 @@ function App() {
           </div>
         </main>
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
-        <aside className="w-72 shrink-0 space-y-3 overflow-y-auto border-l border-mx-dim bg-mx-panel p-3">
+        <RightPanel open={rightOpen} onToggle={toggleRight}>
           <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
           <Curtain title="Plan"><TodoList todos={chat.todos} /></Curtain>
           <Curtain title="Active LLMs">
@@ -341,7 +350,7 @@ function App() {
           </Curtain>
           <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} configuredPaid={configuredPaid} usageHistory={chat.usageHistory} /></Curtain>
           <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
-        </aside>
+        </RightPanel>
       </div>
       {overlaySetup && chat.setup && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Set up models" data-testid="setup-overlay">

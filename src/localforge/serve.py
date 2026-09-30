@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, task_summary, trust
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -586,6 +586,8 @@ class StdioServer:
                     self.handle_catalog_command(cmd)
                 elif cmd == "/model":
                     self.handle_model_command(arg)
+                elif cmd == "/budget":
+                    self.handle_budget_command(arg)
                 elif cmd == "/advanced-model":
                     self.handle_advanced_model_command(arg)
                 elif cmd == "/auto":
@@ -643,6 +645,10 @@ class StdioServer:
             self.emit('settings', auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
             self.emit('todos_updated', todos=self._todos)
             self._emit_queue()
+        elif message_type == "budget_request":
+            self._emit_budget()
+        elif message_type == "set_budget":
+            self._set_budget(str(message.get("provider", "")).strip().lower(), message.get("usd"))
         elif message_type == "setup_status_request":
             threading.Thread(target=self._emit_setup_status, daemon=True).start()
         elif message_type == "save_api_key":
@@ -832,6 +838,48 @@ class StdioServer:
         except Exception:  # noqa: BLE001 - a nicer dropdown, never a reason to fail
             options = []
         self.emit("orchestrator_options", options=options, current=self.frontier_model)
+
+    # --- paid image spending: this month's total and the optional monthly limit ---
+
+    def _emit_budget(self) -> None:
+        self.emit("budget", providers=[spend.summary(p) for p in sorted(config.IMAGE_MODEL_CHOICES)])
+
+    def handle_budget_command(self, arg: str) -> None:
+        """`/budget` shows this month's paid image spending; `/budget gemini 10`
+        sets a monthly limit and `/budget gemini off` removes it -- the same as
+        `localforge budget` in the terminal."""
+        parts = arg.split()
+        if len(parts) >= 2:
+            raw = parts[1].lstrip("$").lower()
+            if raw in ("off", "none", "no"):
+                self._set_budget(parts[0].lower(), None)
+            else:
+                try:
+                    amount: float | None = float(raw)
+                except ValueError:
+                    amount = None
+                if amount is None:
+                    return self.emit("error", message=f"{parts[1]!r} isn't an amount. Use `/budget gemini 10` or `/budget gemini off`.")
+                self._set_budget(parts[0].lower(), amount)
+        lines = []
+        for provider in sorted(config.IMAGE_MODEL_CHOICES):
+            row = spend.summary(provider)
+            limit = f"of ${row['limit']:.2f}" if row["limit"] else "(no limit set)"
+            lines.append(f"{provider}: ${row['spent']:.2f} {limit} this month, {row['images']} image{'s' if row['images'] != 1 else ''}")
+        self.emit("system_text", text="\n".join(lines))
+        self._emit_budget()
+
+    def _set_budget(self, provider: str, usd) -> None:
+        """Set a provider's monthly limit for paid image generation, or (usd
+        null) remove it. Saved globally, with the keys: the credit and the bill
+        belong to the account, not to a project."""
+        if provider not in config.IMAGE_MODEL_CHOICES:
+            return self.emit("error", message=f"Unknown provider {provider!r}.")
+        if usd is not None:
+            if isinstance(usd, bool) or not isinstance(usd, (int, float)) or not 0 < usd <= 100_000:
+                return self.emit("error", message=f"{usd!r} isn't an amount. Give a number of dollars, or clear the limit.")
+        spend.set_budget(provider, None if usd is None else float(usd))
+        self._emit_budget()
 
     # --- first-run setup: keys, logins and the default orchestrator --------------
 

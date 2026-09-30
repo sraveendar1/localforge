@@ -366,7 +366,7 @@ Decline** choices as the CLI's (y)es/(n)o/(a)lways. A queue strip shows
 tasks typed while one is already running, and a status bar mirrors the
 CLI's always-visible activity line.
 
-**Sidebar** (right side): five independently collapsible sections — click
+**Sidebar** (right side, and the whole panel collapses from the chevron tab on its edge, like the left one; each panel remembers whether you left it open, and the right one starts closed on a narrow window): five independently collapsible sections — click
 any title to expand/collapse it — in this order: **Overall goal** (this
 project's AGENTS.md summary, if it has one), **Plan** (the running task's
 todos), **Active LLMs** (which model is handling each kind of work right
@@ -410,6 +410,10 @@ the toggle:
   - **Your ChatGPT login through Codex** (`cli:openai:codex-image`), *experimental*: no API key, it uses your plan's image allowance instead of per-image billing. It runs the official `codex exec` in a scratch folder, asks Codex to use its built-in image tool, and takes the image file it produces. It is **not verified against a real login yet** (Codex documents the tool but not its use in scripted `codex exec`), so if no image appears the error says what Codex printed. localforge does not call ChatGPT's private endpoint with your login token, as some third-party tools do. It appears in the picker only when the `codex` CLI is installed. **Claude's login can't do this: Claude has no image model.** Gemini's CLI only gets image generation from an extension, so it isn't offered.
 
   Once one is chosen the orchestrator is offered a `generate_image` tool: it describes the picture and a path, the image model draws it, and you approve saving it (the prompt says what it is and how big, since a picture has no diff). There is no local image backend yet.
+- **Paid images cost money, and a subscription doesn't cover that.** An image through an API key is billed per image to that key. Google AI Pro ($19.99/month) does **not** make Gemini API calls free, and Gemini image generation has no free tier; what the plan does include is **$10 a month in Google Cloud credits** that can pay for Gemini API use once you activate them (in the Google Developer Program, applied to a Cloud project; they reset monthly and don't roll over — see [Google's page](https://developers.google.com/program)). The plan's own image and video allowance (in the Gemini app and Flow) is not available to other programs, and no supported way to use a Google login for images from code was found. So localforge helps you stay inside a budget instead:
+  - **A confirmation before every paid image** saying what it costs ("about $0.039, charged to your gemini API key… this month so far: $2.10 of your $10.00 limit"). It follows Auto-approve / "Always allow" like other prompts.
+  - **A monthly limit per provider**: `localforge budget gemini 10` (or `/budget gemini 10`, or "set a monthly limit" under the image row in Models). Once another image would go over it, localforge refuses **before anything is billed** and tells the orchestrator. `localforge budget` shows the month so far; `off` removes a limit. Set it to $10 to stay inside the Pro credits.
+  - Spending is kept per provider and month in `~/.config/localforge/spend.json` (not per project: the credit and the bill belong to the account). The limit is enforced on known prices (Gemini's image models have one; OpenAI's are priced per token, so for them only spending already recorded can stop a call). Your provider's own dashboard remains the source of truth.
 - **Video** has a row so the choice has somewhere to live, but video generation isn't built, so it can't be chosen yet.
 
 The chat input doubles as a command line: typing `/` brings up every

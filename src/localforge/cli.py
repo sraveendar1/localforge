@@ -24,7 +24,7 @@ from rich.panel import Panel
 from rich.progress import BarColumn, DownloadColumn, Progress, TextColumn, TimeRemainingColumn, TransferSpeedColumn
 from rich.table import Table
 
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, repl, task_summary, theme, trust, upgrades, usage_store
+from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, repl, spend, task_summary, theme, trust, upgrades, usage_store
 from localforge.advisor import recommend_models
 from localforge.backends.ollama import OllamaBackend
 from localforge.catalog import NoFittingModelError, best_match, load_catalog, recommendations
@@ -1421,7 +1421,7 @@ class _LiveActivity:
             console.print("[warning]  No terminal to ask on — declined. Use --yes to approve changes non-interactively.[/warning]")
             return False
         _drain_buffered_input()
-        what = {"write": "file changes", "delete": "deletions", "command": "commands", "download": "model downloads"}.get(kind, kind)
+        what = {"write": "file changes", "delete": "deletions", "command": "commands", "download": "model downloads", "spend": "paid image generation"}.get(kind, kind)
         while True:
             # (y)es not [y]es: Rich reads [y] as a style tag and prints nothing
             answer = console.input(f"  Allow? [bold](y)[/bold]es / [bold](n)[/bold]o / [bold](a)[/bold]lways allow {what} this session: ").strip().lower()
@@ -2397,6 +2397,47 @@ def _describe_active_target(modality: str, recs: dict, installed: set[str]) -> s
         return "auto -- no local model fits this machine"
     on_disk = "installed" if entry.name in installed else "not installed"
     return f"{entry.name} (auto, local, {on_disk})"
+
+
+@app.command(name="budget")
+def budget_command(
+    provider: str = typer.Argument(None, help="openai or gemini. Omit to show this month's spending."),
+    amount: str = typer.Argument(None, help="Monthly limit in USD for paid image generation, or 'off'. Omit to show it."),
+) -> None:
+    """Show or set a monthly spending limit for paid image generation.
+
+    A subscription doesn't make API calls free, and image generation through an
+    API key is billed per image. Set a limit and localforge refuses to generate
+    once it would be passed (nothing billed), and asks before each image."""
+    providers = sorted(config.IMAGE_MODEL_CHOICES)
+    if provider is not None and provider.lower() not in providers:
+        console.print(f"[error]Unknown provider {escape(provider)!r}.[/error] Use {' or '.join(providers)}.")
+        raise typer.Exit(code=1)
+    if provider is not None and amount is not None:
+        provider = provider.lower()
+        if amount.strip().lower() in ("off", "none", "no", "0"):
+            spend.set_budget(provider, None)
+            console.print(f"[success]✓[/success] No monthly limit for {provider} image generation.")
+        else:
+            try:
+                usd = float(amount.strip().lstrip("$"))
+                if usd <= 0 or usd > 100_000:
+                    raise ValueError
+            except ValueError:
+                console.print(f"[error]{escape(amount)!r} isn't an amount.[/error] Use a number of dollars, e.g. `budget {provider} 10`, or `off`.")
+                raise typer.Exit(code=1) from None
+            spend.set_budget(provider, usd)
+            console.print(f"[success]✓[/success] {provider} image generation is limited to ${usd:g} a month.")
+    for name in [provider.lower()] if provider else providers:
+        row = spend.summary(name)
+        limit = f"of ${row['limit']:.2f}" if row["limit"] else "(no limit set)"
+        console.print(f"{name}: ${row['spent']:.2f} {limit} this month, {row['images']} image{'s' if row['images'] != 1 else ''}")
+    if provider is None or provider.lower() == "gemini":
+        console.print(
+            "[dim]Google AI Pro includes $10 a month in Google Cloud credits that can pay for Gemini API use once activated "
+            "(https://developers.google.com/program). The subscription alone doesn't cover API calls, and Gemini image "
+            "generation has no free tier -- set the limit to $10 to stay inside those credits.[/dim]"
+        )
 
 
 def _models_source_line() -> str:

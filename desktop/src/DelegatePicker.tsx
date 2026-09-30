@@ -65,7 +65,7 @@ export function DelegatePicker({
       )}
       {options.cloud.length > 0 && (
         <div className="mt-1 border-t border-mx-dim pt-1">
-          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{isImage ? "Image models (costs money per image)" : "Cloud (costs money)"}</div>
+          <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{isImage ? "Image models (billed per image to your API key)" : "Cloud (costs money)"}</div>
           {groupCloud(options.cloud).map(group => (
             <div key={group.key} className="mb-1">
               <div className="px-1.5 text-[10px] text-mx-dim">{group.title}</div>

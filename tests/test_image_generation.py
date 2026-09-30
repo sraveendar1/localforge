@@ -146,7 +146,9 @@ def test_generating_saves_the_image_after_approval_and_bills_it(tmp_path, openai
     assert (tmp_path / "assets" / "red.png").read_bytes() == _png()
     assert out.startswith("Created assets/red.png (image/png")
     assert fake.calls == [("gpt-image-1", "a red square", "openai")]
-    assert seen[0][0] == "write" and "assets/red.png" in seen[0][1] and "image/png" in seen[0][2]
+    # asked about the cost first, then about saving the file
+    assert [k for k, _t, _d in seen] == ["spend", "write"]
+    assert seen[1][0] == "write" and "assets/red.png" in seen[1][1] and "image/png" in seen[1][2]
     assert d.delegate_cost_usd == pytest.approx(0.04) and d.local_tokens_generated == 0
     assert d._last_delegate_model == "gpt-image-1"
 

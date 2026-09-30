@@ -70,6 +70,8 @@ export type SetupStatus = {
 };
 // The answer to a setup action; `n` counts them so a screen can tell a new one.
 export type SetupResult = { ok: boolean; message: string; n: number };
+// This month's paid image spending per provider, and the user's optional monthly limit.
+export type BudgetRow = { provider: string; spent: number; limit: number | null; images: number };
 export type OrchestratorOption = { id: string; label: string; group: string; problem?: string | null };
 export type ChatState = {
   messages: Message[];
@@ -86,6 +88,7 @@ export type ChatState = {
   // Every orchestrator usable here (installed Ollama models + cloud providers
   // with a key or CLI login), for the header dropdown. Empty until fetched.
   orchestratorOptions: OrchestratorOption[];
+  budgets: BudgetRow[];
   setup: SetupStatus | null;
   setupResult: SetupResult | null;
   // Per-modality delegate target (see /advanced-model): auto by default, or a
@@ -144,6 +147,7 @@ export const initialState: ChatState = {
   usageHistory: { previousSession: null, allTime: null },
   configuredModels: [],
   orchestratorOptions: [],
+  budgets: [],
   setup: null,
   setupResult: null,
   modelsSource: null,
@@ -412,7 +416,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -491,6 +495,15 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
         problems: Array.isArray(r.problems) ? r.problems : [],
       };
       return { ...state, messages: [...state.messages, { role: "summary", text: "", items: [], summary }] };
+    }
+    case "system_text":
+      return addSystemMessage(state, String(ev.text ?? ""));
+    case "budget": {
+      const rows = Array.isArray(ev.providers) ? ev.providers : [];
+      return {
+        ...state,
+        budgets: rows.map((r: any) => ({ provider: String(r.provider ?? ""), spent: Number(r.spent ?? 0), limit: typeof r.limit === "number" ? r.limit : null, images: Number(r.images ?? 0) })),
+      };
     }
     case "setup_status": {
       const providers = Array.isArray(ev.providers) ? ev.providers : [];
