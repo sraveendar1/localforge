@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BudgetLine } from "./BudgetLine";
 import { Link, ProviderCard } from "./SetupScreen";
 import type { BudgetRow, ChatState, DelegateOptions, PullState } from "./state";
@@ -44,6 +44,9 @@ function PullStatus({ pull }: { pull: PullState | undefined }) {
 }
 
 const isPulling = (p: PullState | undefined) => !!p && !p.done;
+// A download's state, but only where it was asked for: a refusal under the orchestrator list
+// mustn't turn up under a task row for the same model.
+const pullOf = (pulls: ChatState["pulls"], name: string, ctx: string): PullState | undefined => (pulls[name]?.ctx === ctx ? pulls[name] : undefined);
 
 // A text box for a model name, with a button that downloads it (if needed) and uses it.
 // The tag the backend downloads under (it adds :latest, and ignores an ollama/ prefix).
@@ -59,6 +62,7 @@ function TypedModel({
   disabled,
   onSubmit,
   pulls,
+  ctx = "",
 }: {
   placeholder: string;
   label: string;
@@ -66,6 +70,7 @@ function TypedModel({
   disabled: boolean;
   onSubmit: (name: string) => void;
   pulls?: ChatState["pulls"];  // when the name is a download, its progress and outcome show underneath
+  ctx?: string;
 }) {
   const [name, setName] = useState("");
   const [submitted, setSubmitted] = useState("");
@@ -93,7 +98,59 @@ function TypedModel({
           {buttonLabel}
         </button>
       </form>
-      {pulls && submitted && <PullStatus pull={pulls[normalizeName(submitted)]} />}
+      {pulls && submitted && <PullStatus pull={pullOf(pulls, normalizeName(submitted), ctx)} />}
+    </div>
+  );
+}
+
+// The models a provider offers, directly under its card: pick the one that plans. Appears once the
+// provider can be used, and scrolls into view when it first does so it's never missed.
+function ProviderModels({
+  provider,
+  label,
+  options,
+  current,
+  disabled,
+  placeholder,
+  onChoose,
+  onTyped,
+}: {
+  provider: string;
+  label: string;
+  options: ChatState["orchestratorOptions"];
+  current: string;
+  disabled: boolean;
+  placeholder: string;
+  onChoose: (id: string) => void;
+  onTyped: (id: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => { ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); }, []);
+  const vias = [...new Set(options.map(o => o.via))];
+  return (
+    <div ref={ref} className="ml-3 mt-1 rounded-sm border-l-2 border-mx-mid bg-mx-panel2 p-3" data-testid={`models-${provider}`}>
+      <div className="font-semibold text-mx-bright">Pick the model that plans</div>
+      {vias.map(via => (
+        <div key={via} className="mt-1">
+          {vias.length > 1 && <div className="text-[10px] uppercase tracking-wide text-mx-dim">{via === "login" ? "With your login" : "With your API key"}</div>}
+          {options.filter(o => o.via === via).map(o => (
+            <button
+              key={o.id}
+              type="button"
+              disabled={disabled}
+              aria-pressed={o.id === current}
+              onClick={() => onChoose(o.id)}
+              className={"flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-mx-dim/40 " + (o.id === current ? "text-mx-green" : "text-mx-mid")}
+            >
+              <span aria-hidden>{o.id === current ? "●" : "○"}</span>
+              <span className="min-w-0 flex-1 truncate">{o.id}</span>
+            </button>
+          ))}
+        </div>
+      ))}
+      <div className="mt-2">
+        <TypedModel placeholder={`Other ${label.split(" ")[0]} model id, e.g. ${placeholder}`} label={`Other ${label.split(" ")[0]} model id`} buttonLabel="Use" disabled={disabled} onSubmit={onTyped} />
+      </div>
     </div>
   );
 }
@@ -115,6 +172,7 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [wantAdvanced, setWantAdvanced] = useState(false);
+  const [tried, setTried] = useState<string | null>(null);  // an installed model that was picked but can't run here: say why, right under it
   const [open, setOpen] = useState<string | null>(null);  // the task row whose choices are showing
   const result = chat.setupResult;
   useEffect(() => { setBusy(null); }, [result?.n]);
@@ -139,10 +197,8 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
 
   const needsOrchestrator = setup.needsSetup;
   const ollama = setup.ollama;
-  const optionGroups: { [group: string]: typeof chat.orchestratorOptions } = {};
-  for (const o of chat.orchestratorOptions) (optionGroups[o.group] ??= []).push(o);
 
-  const pull = (model: string, use_as?: object) => send({ type: "pull_model", model, use_as });
+  const pull = (model: string, use_as: object | undefined, ctx: string) => send({ type: "pull_model", model, use_as, ctx });
 
   function chooseMode(next: "auto" | "advanced") {
     setOpen(null);
@@ -170,61 +226,47 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
   );
 
   // ---- step 1: the orchestrator -------------------------------------------------
+  // A provider's models appear right under its own card once it can be used (a key is saved or
+  // its login chosen), so choosing one is the next thing you see, not a list further down.
+  const optionsFor = (provider: string) => chat.orchestratorOptions.filter(o => o.provider === provider);
+  const localOptions = optionsFor("local");
+  const modelPlaceholder: { [provider: string]: string } = { anthropic: "claude-sonnet-5-5", openai: "gpt-5", gemini: "gemini/gemini-2.5-pro" };
+  const planning = !needsOrchestrator;
+
   const stepOrchestrator = (
     <div className="space-y-4">
       <p className="text-sm text-mx-mid">
-        One model plans your work and checks it. It can be a paid one (sign in or paste a key) or an open-weight model that runs on
-        this computer for free. The models that write the code are chosen in the next step.
+        One model plans your work and checks it. It can be a paid one (sign in or paste a key, then pick its model right under it) or an
+        open-weight model that runs on this computer for free. The models that write the code are chosen in the next step.
       </p>
 
       <div className="space-y-3" data-testid="wizard-providers">
-        {setup.providers.map(p => (
-          <ProviderCard
-            key={p.id}
-            provider={p}
-            busy={busy}
-            disabled={disabled}
-            onKey={key => { setBusy(`key:${p.id}`); send({ type: "save_api_key", provider: p.id, key }); }}
-            onLogin={() => { setBusy(`login:${p.id}`); send({ type: "setup_use_login", provider: p.id }); }}
-          />
-        ))}
-      </div>
-
-      <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-choose">
-        <div className="font-semibold text-mx-bright">Choose the model that plans</div>
-        {chat.orchestratorOptions.length === 0 && (
-          <p className="mt-1 text-xs text-mx-dim">Nothing to choose yet. Sign in or add a key above, or download an open-weight model below.</p>
-        )}
-        {Object.entries(optionGroups).map(([group, items]) => (
-          <div key={group} className="mt-2">
-            <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">{group}</div>
-            {items.map(o => (
-              <div key={o.id}>
-                <button
-                  type="button"
-                  disabled={disabled || !!o.problem}
-                  title={o.problem ?? undefined}
-                  aria-pressed={o.id === chat.model}
-                  onClick={() => { setBusy(`orch:${o.id}`); send({ type: "setup_choose_orchestrator", model: o.id }); }}
-                  className={"flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs " + (o.problem ? "cursor-not-allowed text-mx-dim line-through" : "hover:bg-mx-dim/40 " + (o.id === chat.model && !needsOrchestrator ? "text-mx-green" : "text-mx-mid"))}
-                >
-                  <span aria-hidden>{o.id === chat.model && !needsOrchestrator ? "●" : "○"}</span>
-                  <span className="min-w-0 flex-1 truncate">{o.id}</span>
-                </button>
-                {o.problem && <p className="px-2 pb-1 text-[11px] text-mx-red">Can't run here: {o.problem}.</p>}
-              </div>
-            ))}
-          </div>
-        ))}
-        <div className="mt-3">
-          <TypedModel
-            placeholder="Other model id, e.g. gpt-5 or gemini/gemini-2.5-pro"
-            label="Other model id"
-            buttonLabel="Use"
-            disabled={disabled}
-            onSubmit={name => { setBusy("orch:typed"); send({ type: "setup_choose_orchestrator", model: name, typed: true }); }}
-          />
-        </div>
+        {setup.providers.map(p => {
+          const opts = optionsFor(p.id);
+          return (
+            <div key={p.id}>
+              <ProviderCard
+                provider={p}
+                busy={busy}
+                disabled={disabled}
+                onKey={key => { setBusy(`key:${p.id}`); send({ type: "save_api_key", provider: p.id, key }); }}
+                onLogin={() => { setBusy(`login:${p.id}`); send({ type: "setup_use_login", provider: p.id }); }}
+              />
+              {opts.length > 0 && (
+                <ProviderModels
+                  provider={p.id}
+                  label={p.label}
+                  options={opts}
+                  current={planning ? chat.model : ""}
+                  disabled={disabled}
+                  placeholder={modelPlaceholder[p.id] ?? "model id"}
+                  onChoose={id => { setBusy(`orch:${id}`); send({ type: "setup_choose_orchestrator", model: id }); }}
+                  onTyped={id => { setBusy("orch:typed"); send({ type: "setup_choose_orchestrator", model: id, typed: true }); }}
+                />
+              )}
+            </div>
+          );
+        })}
       </div>
 
       <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-local">
@@ -238,41 +280,71 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
         ) : (
           <>
             <p className="mt-1 text-xs text-mx-dim">
-              Only models recommended for this computer can be downloaded. Anything too big for its memory or disk is refused before it starts.
-              Small models are often unreliable at planning; a paid model is the safer choice.
+              Small models are often unreliable at planning; a paid model is the safer choice. A model that isn't recommended for this
+              computer won't be downloaded; you'll be told why if you pick one.
             </p>
-            <ul className="mt-2 space-y-2 text-xs">
-              {ollama.suggested.map(m => {
-                const p = chat.pulls[m.name];
-                return (
-                  <li key={m.name} data-testid={`suggested-${m.name}`}>
-                    <div className="flex items-center gap-2">
-                      <span className={"min-w-0 flex-1 truncate " + (m.problem ? "text-mx-dim line-through" : "text-mx-mid")}>
-                        {m.name} <span className="text-mx-dim">· {gb(m.diskGb)}</span>
-                      </span>
-                      <button
-                        type="button"
-                        disabled={disabled || !!m.problem || isPulling(p)}
-                        onClick={() => pull(m.name, { orchestrator: true })}
-                        className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
-                      >
-                        {isPulling(p) ? "Downloading…" : "Download & use"}
-                      </button>
-                    </div>
-                    {m.problem && <p className="mt-0.5 text-[11px] text-mx-red">Not recommended here, so it can't be downloaded: {m.problem}.</p>}
-                    <PullStatus pull={p} />
-                  </li>
-                );
-              })}
-            </ul>
+            {localOptions.length > 0 && (
+              <div className="mt-2" data-testid="wizard-local-installed">
+                <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Already on this computer</div>
+                {localOptions.map(o => (
+                  <div key={o.id}>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      aria-pressed={o.id === chat.model}
+                      onClick={() => {
+                        if (o.problem) return setTried(o.id);  // say why, don't pretend it works
+                        setTried(null);
+                        setBusy(`orch:${o.id}`);
+                        send({ type: "setup_choose_orchestrator", model: o.id });
+                      }}
+                      className={"flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-xs hover:bg-mx-dim/40 " + (o.id === chat.model && planning ? "text-mx-green" : "text-mx-mid")}
+                    >
+                      <span aria-hidden>{o.id === chat.model && planning ? "●" : "○"}</span>
+                      <span className="min-w-0 flex-1 truncate">{o.id.replace(/^ollama(_chat)?\//, "")}</span>
+                    </button>
+                    {tried === o.id && o.problem && <p role="alert" className="px-2 pb-1 text-[11px] text-mx-red">Can't use it here: {o.problem}.</p>}
+                  </div>
+                ))}
+              </div>
+            )}
+            {ollama.suggested.length > 0 && (
+              <div className="mt-3">
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-mx-dim">Download one</div>
+                <ul className="space-y-2 text-xs">
+                  {ollama.suggested.map(m => {
+                    const p = pullOf(chat.pulls, m.name, "orchestrator");
+                    return (
+                      <li key={m.name} data-testid={`suggested-${m.name}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate text-mx-mid">
+                            {m.name} <span className="text-mx-dim">· {gb(m.diskGb)}</span>
+                          </span>
+                          <button
+                            type="button"
+                            disabled={disabled || isPulling(p)}
+                            onClick={() => pull(m.name, { orchestrator: true }, "orchestrator")}
+                            className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+                          >
+                            {isPulling(p) ? "Downloading…" : "Download & use"}
+                          </button>
+                        </div>
+                        <PullStatus pull={p} />
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
             <div className="mt-3">
               <TypedModel
-                placeholder="Type a model name, e.g. llama3.1:8b"
+                placeholder="Or type a model name, e.g. llama3.1:8b"
                 label="Open-weight model name"
                 buttonLabel="Download & use"
                 disabled={disabled}
-                onSubmit={name => pull(name, { orchestrator: true })}
+                onSubmit={name => pull(name, { orchestrator: true }, "orchestrator")}
                 pulls={chat.pulls}
+                ctx="orchestrator"
               />
             </div>
           </>
@@ -309,7 +381,7 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
       <div className="space-y-2">
         {TASKS.filter(([m]) => targets[m]).map(([modality, label, blurb]) => {
           const t = targets[modality];
-          const autoPull = t.autoModel ? chat.pulls[t.autoModel] : undefined;
+          const autoPull = t.autoModel ? pullOf(chat.pulls, t.autoModel, "auto") : undefined;
           return (
             <div key={modality} className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid={`task-${modality}`}>
               <div className="flex items-center justify-between gap-2">
@@ -328,7 +400,7 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
 
               {!advanced && t.autoModel && t.installed === false && (
                 <div className="mt-2">
-                  <button type="button" disabled={disabled || isPulling(autoPull)} onClick={() => pull(t.autoModel!)}
+                  <button type="button" disabled={disabled || isPulling(autoPull)} onClick={() => pull(t.autoModel!, undefined, "auto")}
                     className="rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
                     {isPulling(autoPull) ? "Downloading…" : `Download now (${gb(t.diskGb)})`}
                   </button>
@@ -349,7 +421,7 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
                   pulls={chat.pulls}
                   disabled={disabled}
                   onPick={target => { send({ type: "set_delegate_target", modality, target, inline: true }); }}
-                  onPull={(name) => pull(name, { modality })}
+                  onPull={(name) => pull(name, { modality }, modality)}
                   onNeedKey={() => setStep(0)}
                 />
               )}
@@ -452,6 +524,7 @@ function TaskChoices({
   onPull: (name: string) => void;
   onNeedKey: () => void;
 }) {
+  const [tried, setTried] = useState<string | null>(null);  // an installed model that was picked but can't run here
   if (!options) return <div className="mt-2 text-xs italic text-mx-dim">Loading options…</div>;
   const isImage = modality === "image";
   const row = "block w-full rounded-sm px-2 py-1 text-left text-xs ";
@@ -473,24 +546,24 @@ function TaskChoices({
         <div>
           <div className="mb-0.5 px-2 text-[10px] uppercase tracking-wide text-mx-dim">Open-weight, on this computer (free)</div>
           {options.local.map(m => {
-            const p = pulls[m.name];
+            const p = pullOf(pulls, m.name, modality);
             const current = options.current === `ollama:${m.name}`;
             return (
               <div key={m.name}>
                 <div className="flex items-center gap-2">
-                  <button type="button" disabled={disabled || !!m.problem || (!m.installed)} title={m.problem ?? undefined}
-                    onClick={() => onPick(m.name)}
-                    className={row + "min-w-0 flex-1 truncate " + (m.problem ? "cursor-not-allowed text-mx-dim line-through" : m.installed ? "hover:bg-mx-dim/40 " + (current ? "text-mx-green" : "text-mx-mid") : "cursor-default text-mx-dim")}>
+                  <button type="button" disabled={disabled || !m.installed}
+                    onClick={() => { if (m.problem) return setTried(m.name); setTried(null); onPick(m.name); }}
+                    className={row + "min-w-0 flex-1 truncate " + (m.installed ? "hover:bg-mx-dim/40 " + (current ? "text-mx-green" : "text-mx-mid") : "cursor-default text-mx-dim")}>
                     {current ? "● " : ""}{m.name} <span className="text-mx-dim">· {m.installed ? "installed" : `${gb(m.disk_gb)} to download`}</span>
                   </button>
-                  {!m.installed && !m.problem && (
+                  {!m.installed && (
                     <button type="button" disabled={disabled || isPulling(p)} onClick={() => onPull(m.name)}
                       className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
                       {isPulling(p) ? "Downloading…" : "Download & use"}
                     </button>
                   )}
                 </div>
-                {m.problem && <p className="px-2 pb-1 text-[11px] text-mx-red">Not recommended here{m.installed ? "" : ", so it can't be downloaded"}: {m.problem}.</p>}
+                {tried === m.name && m.problem && <p role="alert" className="px-2 pb-1 text-[11px] text-mx-red">Can't use it here: {m.problem}.</p>}
                 <PullStatus pull={p} />
               </div>
             );
@@ -523,6 +596,7 @@ function TaskChoices({
             disabled={disabled}
             onSubmit={name => onPull(name)}
             pulls={pulls}
+            ctx={modality}
           />
         </div>
       )}

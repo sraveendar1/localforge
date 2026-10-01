@@ -144,3 +144,28 @@ def test_auto_rows_say_which_model_they_mean(tmp_path, fake_ollama):
     snap = serve_module._advanced_model_snapshot()
     assert snap["coding"].get("auto_model")
     assert snap["coding"]["installed"] is False
+
+
+def test_pull_events_echo_where_the_download_was_asked_for(tmp_path, fake_ollama):
+    server, out = _server(tmp_path)
+    server.handle({"type": "pull_model", "model": "rm -rf /", "ctx": "docs"})
+    import time
+    for _ in range(50):
+        if _events(out, "pull_result"):
+            break
+        time.sleep(0.05)
+    assert _events(out, "pull_result")[-1]["ctx"] == "docs"
+
+
+def test_orchestrator_options_say_which_provider_and_route_they_belong_to(monkeypatch):
+    import localforge.cli as cli_module
+
+    monkeypatch.setattr(cli_module, "_model_choices", lambda: [
+        ("claude-opus-5", "Claude", {"LOCALFORGE_AUTH_METHOD": "api_key", "LOCALFORGE_FRONTIER_PROVIDER": "anthropic"}),
+        ("ollama/llama3.1:8b", "llama", {"LOCALFORGE_AUTH_METHOD": "local", "LOCALFORGE_FRONTIER_PROVIDER": "local"}),
+    ])
+    monkeypatch.setattr(serve_module.config, "AUTH_METHOD_ENV_VAR", "LOCALFORGE_AUTH_METHOD")
+    monkeypatch.setattr(serve_module.config, "FRONTIER_PROVIDER_ENV_VAR", "LOCALFORGE_FRONTIER_PROVIDER")
+    options = serve_module._orchestrator_options()
+    assert (options[0]["provider"], options[0]["via"]) == ("anthropic", "api_key")
+    assert (options[1]["provider"], options[1]["via"]) == ("local", "local")

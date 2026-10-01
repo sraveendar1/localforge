@@ -223,14 +223,15 @@ def _orchestrator_options() -> list[dict]:
     hardware, sizes = detect_hardware(), model_fit.installed_sizes()
     for model, label, auth in cli._model_choices():
         problem = None
+        provider = auth.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
+        via = "login" if auth.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN else "api_key"
         if model.startswith("ollama/"):
+            provider, via = "local", "local"
             group = "Local (Ollama, free)"
             problem = model_fit.selection_problem(local_transport.model_name(model), hardware, sizes, fetch_sizes=False)
         else:
-            provider = auth.get(config.FRONTIER_PROVIDER_ENV_VAR, "")
-            via = "login" if auth.get(config.AUTH_METHOD_ENV_VAR) == config.AUTH_CLI_LOGIN else "API key"
-            group = f"{provider.title()} ({via})"
-        options.append({"id": model, "label": label, "group": group, "auth": auth, "problem": problem})
+            group = f"{provider.title()} ({'login' if via == 'login' else 'API key'})"
+        options.append({"id": model, "label": label, "group": group, "provider": provider, "via": via, "auth": auth, "problem": problem})
     return options
 
 def _advanced_model_snapshot() -> dict:
@@ -700,7 +701,7 @@ class StdioServer:
             self._choose_orchestrator(str(message.get("model", "")).strip(), typed=bool(message.get("typed")))
         elif message_type == "pull_model":
             use_as = message.get("use_as") if isinstance(message.get("use_as"), dict) else None
-            threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as), daemon=True).start()
+            threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
         elif message_type == "finish_project_setup":
             self._finish_project_setup()
         elif message_type == "orchestrator_options_request":
@@ -1038,7 +1039,7 @@ class StdioServer:
                 name = name[len(prefix):]
         return name if ":" in name else f"{name}:latest"
 
-    def _pull_model(self, raw_name: str, use_as: dict | None) -> None:
+    def _pull_model(self, raw_name: str, use_as: dict | None, ctx: str = "") -> None:
         """Download an Ollama model (progress as `pull_progress` events, the end
         as `pull_result`) and, if asked, make it the orchestrator or a task
         type's model. A model that isn't recommended for this machine -- too big
@@ -1052,7 +1053,7 @@ class StdioServer:
         name = self._normalize_model_name(raw_name)
 
         def result(ok: bool, message: str, **extra) -> None:
-            self.emit("pull_result", model=name, ok=ok, message=message, **extra)
+            self.emit("pull_result", model=name, ok=ok, message=message, ctx=ctx, **extra)
             self._emit_setup_status()
             self._emit_orchestrator_options()
             if use_as and use_as.get("modality"):
@@ -1084,10 +1085,10 @@ class StdioServer:
             if now - last[0] >= 0.25 or event.get("status") == "success":
                 last[0] = now
                 self.emit("pull_progress", model=name, status=str(event.get("status", "")),
-                          completed=event.get("completed"), total=event.get("total"))
+                          completed=event.get("completed"), total=event.get("total"), ctx=ctx)
 
         try:
-            self.emit("pull_progress", model=name, status="starting", completed=None, total=None)
+            self.emit("pull_progress", model=name, status="starting", completed=None, total=None, ctx=ctx)
             ollama.ensure_available(name, on_progress=on_progress)
         except Exception as exc:  # noqa: BLE001
             StdioServer._pulling.discard(name)

@@ -79,7 +79,8 @@ export type SetupStatus = {
 };
 // A model download in progress, or its outcome. `blocked` = refused before any download
 // because the model isn't recommended for this machine.
-export type PullState = { status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
+// `ctx` says where the download was asked for ("orchestrator", a task type, "auto"), so its progress or refusal shows only there.
+export type PullState = { ctx: string; status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
 // The guided model setup in the centre of the window: "unknown" until the project's models
 // are known, "active" while it is on screen, "done" once finished or closed.
 export type WizardState = "unknown" | "active" | "done";
@@ -87,7 +88,7 @@ export type WizardState = "unknown" | "active" | "done";
 export type SetupResult = { ok: boolean; message: string; n: number };
 // This month's paid image spending per provider, and the user's optional monthly limit.
 export type BudgetRow = { provider: string; spent: number; limit: number | null; images: number };
-export type OrchestratorOption = { id: string; label: string; group: string; problem?: string | null };
+export type OrchestratorOption = { id: string; label: string; group: string; provider: string; via: string; problem?: string | null };
 export type ChatState = {
   messages: Message[];
   approvals: Approval[];
@@ -560,13 +561,13 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       const name = String(ev.model ?? "");
       if (!name) return state;
       const num = (v: any) => (typeof v === "number" ? v : null);
-      return { ...state, pulls: { ...state.pulls, [name]: { status: String(ev.status ?? ""), completed: num(ev.completed), total: num(ev.total), done: false } } };
+      return { ...state, pulls: { ...state.pulls, [name]: { ctx: String(ev.ctx ?? ""), status: String(ev.status ?? ""), completed: num(ev.completed), total: num(ev.total), done: false } } };
     }
     case "pull_result": {
       const name = String(ev.model ?? "");
       if (!name) return state;
       const prev = state.pulls[name];
-      return { ...state, pulls: { ...state.pulls, [name]: { status: "", completed: prev?.completed ?? null, total: prev?.total ?? null, done: true, ok: !!ev.ok, message: String(ev.message ?? ""), blocked: !!ev.blocked } } };
+      return { ...state, pulls: { ...state.pulls, [name]: { ctx: String(ev.ctx ?? ""), status: "", completed: prev?.completed ?? null, total: prev?.total ?? null, done: true, ok: !!ev.ok, message: String(ev.message ?? ""), blocked: !!ev.blocked } } };
     }
     case "setup_result": {
       const result: SetupResult = { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.setupResult?.n ?? 0) + 1 };
@@ -578,7 +579,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       const options = Array.isArray(ev.options) ? ev.options : [];
       return {
         ...state,
-        orchestratorOptions: options.map((o: any) => ({ id: String(o.id ?? ""), label: String(o.label ?? o.id ?? ""), group: String(o.group ?? "Other"), problem: o.problem ? String(o.problem) : null })).filter((o: OrchestratorOption) => o.id),
+        orchestratorOptions: options.map((o: any) => ({ id: String(o.id ?? ""), label: String(o.label ?? o.id ?? ""), group: String(o.group ?? "Other"), provider: String(o.provider ?? ""), via: String(o.via ?? ""), problem: o.problem ? String(o.problem) : null })).filter((o: OrchestratorOption) => o.id),
         model: ev.current ? String(ev.current) : state.model,
       };
     }
