@@ -105,10 +105,11 @@ function App() {
     fileInputRef.current?.click();
   }
 
-  function onImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = ""; // allow picking the same file again later
-    if (!file || !file.type.startsWith("image/")) return;
+  // One image can ride along with a message. It comes from the 📎 button, from pasting
+  // (Cmd/Ctrl+V with an image on the clipboard, e.g. a screenshot) or from dropping a file
+  // onto the message box.
+  function attachImageFile(file: File | null | undefined): boolean {
+    if (!file || !file.type.startsWith("image/")) return false;
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result ?? "");
@@ -118,6 +119,31 @@ function App() {
       setAttachedImage({ dataUrl, mimeType: match[1], data: match[2] });
     };
     reader.readAsDataURL(file);
+    return true;
+  }
+
+  function onImageSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow picking the same file again later
+    attachImageFile(file);
+  }
+
+  function imageFrom(data: DataTransfer | null): File | null {
+    if (!data) return null;
+    for (const item of Array.from(data.items ?? [])) {
+      if (item.kind === "file" && item.type.startsWith("image/")) return item.getAsFile();
+    }
+    return Array.from(data.files ?? []).find(f => f.type.startsWith("image/")) ?? null;
+  }
+
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const file = imageFrom(e.clipboardData);
+    if (file && attachImageFile(file)) e.preventDefault();  // an image paste isn't text; ordinary text pastes untouched
+  }
+
+  function onDrop(e: React.DragEvent) {
+    const file = imageFrom(e.dataTransfer);
+    if (file) { e.preventDefault(); attachImageFile(file); }
   }
 
   function submit() {
@@ -322,7 +348,7 @@ function App() {
             <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={onImageSelected} />
             <button
               type="button"
-              title="Attach an image (needs a vision-capable orchestrator)"
+              title="Attach an image (or paste or drop one into the box). Needs a vision-capable orchestrator."
               disabled={!chat.connected || !!chat.trustRequired}
               onClick={pickImage}
               className="self-end rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
@@ -332,9 +358,12 @@ function App() {
             <textarea
               rows={3}
               className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"
-              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
+              onPaste={onPaste}
+              onDrop={onDrop}
+              onDragOver={e => { if (Array.from(e.dataTransfer.items ?? []).some(i => i.kind === "file")) e.preventDefault(); }}
               onKeyDown={e => {
                 if (slashMatches.length > 0 && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
                   e.preventDefault();
