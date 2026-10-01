@@ -1243,6 +1243,15 @@ def _human_duration(seconds: float) -> str:
     return f"{seconds}s"
 
 
+
+def _delegate_kind(entry) -> str:
+    """How a delegated model is reached, for the activity line: an open-weight model on this
+    computer, or a paid one through an API key or a CLI login (a pinned cloud delegate)."""
+    if getattr(entry, "runtime", "ollama") in ("api", "cli"):
+        provider = (getattr(entry, "provider", None) or "cloud").title()
+        return f"paid model, via {provider} {'login' if entry.runtime == 'cli' else 'API key'}"
+    return f"open-weighted model, via {entry.runtime}"
+
 class _LiveActivity:
     """Shows a run as it happens: a spinner only while the frontier model is
     thinking, and each local model's output streamed as it's generated, so
@@ -1315,7 +1324,7 @@ class _LiveActivity:
 
     def _on_delegate(self, modality: str, entry) -> None:
         self._stop_spinner()
-        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{entry.name}[/accent] (open-weighted model, via {entry.runtime})")
+        console.print(f"  → delegating [bold]{modality}[/bold] to [accent]{escape(entry.name)}[/accent] ({_delegate_kind(entry)})")
         self._at_line_start = True
         self._first_token_at = None
         # Nothing streams while the model loads into memory, which can take
@@ -1580,7 +1589,7 @@ class _BackgroundActivity(_LiveActivity):
         state = self.runner.state
         state.local_model, state.local_what = entry.name, f"working on {modality}"
         state.local_tokens, state.local_started = 0, time.monotonic()
-        console.print(f"  → {modality} → [accent]{entry.name}[/accent] (open-weighted model)", highlight=False)
+        console.print(f"  → {modality} → [accent]{escape(entry.name)}[/accent] ({_delegate_kind(entry)})", highlight=False)
         self._step(f"→ {modality} delegated to {entry.name}")
 
     def _on_token(self, chunk: str) -> None:

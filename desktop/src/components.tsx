@@ -19,10 +19,13 @@ export function ToolCard({ item }: { item: ToolItem }) {
 }
 
 export function DelegateCard({ item }: { item: DelegateItem }) {
+  const paid = item.runtime === "api" || item.runtime === "cli";
+  const provider = item.provider ? item.provider[0].toUpperCase() + item.provider.slice(1) : "";
   return (
-    <div className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm my-1">
-      <span className="text-mx-mid">{`Local model `}</span>
-      <span className="font-mono font-semibold text-mx-green">{item.model}</span>
+    <div className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm my-1" data-testid="delegate-card">
+      <span className="text-mx-mid">{paid ? "Paid model " : "Local model "}</span>
+      <span className={"font-mono font-semibold " + (paid ? "text-mx-amber" : "text-mx-green")}>{item.model}</span>
+      {paid && <span className="ml-2 text-xs text-mx-dim">{`${provider} ${item.runtime === "cli" ? "login" : "API key"}`.trim()}</span>}
       <span className={"text-xs text-mx-dim ml-2" + (item.done ? "" : " animate-pulse")}>
         {item.done ? `done · ${item.tokens ?? 0} tokens · ${(item.seconds ?? 0).toFixed(1)} s` : `writing…`}
       </span>

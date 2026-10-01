@@ -539,9 +539,9 @@ class StdioServer:
     def _hooks(self) -> ActivityHooks:
         return ActivityHooks(
             on_frontier=self._on_frontier,
-            on_delegate=lambda modality, entry: self.emit("delegate_started", modality=modality, model=entry.name),
+            on_delegate=lambda modality, entry: self.emit("delegate_started", modality=modality, model=entry.name, runtime=entry.runtime, provider=entry.provider),
             on_token=lambda text: self.emit("delegate_token", text=text),
-            on_done=lambda modality, entry, tokens, seconds: self.emit("delegate_finished", modality=modality, model=entry.name, tokens=tokens, seconds=round(seconds, 2)),
+            on_done=lambda modality, entry, tokens, seconds: self.emit("delegate_finished", modality=modality, model=entry.name, runtime=entry.runtime, tokens=tokens, seconds=round(seconds, 2)),
             on_pull=lambda model, event: self.emit("model_pull", model=model, progress=event),
             on_tool=lambda name, summary: self.emit("tool_call_started", name=name, summary=summary),
             on_tool_result=lambda name, result: self.emit("tool_call_finished", name=name, result=result),

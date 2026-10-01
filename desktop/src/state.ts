@@ -1,5 +1,6 @@
 export type ToolItem = { kind: "tool"; name: string; summary: string; result?: string };
-export type DelegateItem = { kind: "delegate"; modality: string; model: string; output: string; done: boolean; tokens?: number; seconds?: number };
+// `runtime` is how the model is reached: "ollama" (on this computer) or "api"/"cli" (a paid model).
+export type DelegateItem = { kind: "delegate"; modality: string; model: string; runtime: string; provider: string; output: string; done: boolean; tokens?: number; seconds?: number };
 export type NoteItem = { kind: "note"; text: string };
 export type Item = ToolItem | DelegateItem | NoteItem;
 // What a task did and what went wrong, sent after every task (task_summary.py).
@@ -391,7 +392,10 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       );
     case "delegate_started": {
       const name = String(ev.model ?? "");
-      const started = addItem(state, { kind: "delegate", modality: String(ev.modality ?? ""), model: name, output: "", done: false });
+      const runtime = String(ev.runtime ?? "ollama");
+      const started = addItem(state, { kind: "delegate", modality: String(ev.modality ?? ""), model: name, runtime, provider: String(ev.provider ?? ""), output: "", done: false });
+      // A paid model isn't a "local model": it's counted under paid models (from the run's stats).
+      if (runtime === "api" || runtime === "cli") return started;
       const entry = started.usage.localModels[name] || { runs: 0, tokens: 0, active: false };
       return {
         ...started,
@@ -413,7 +417,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
         it => it.kind === "delegate" && !it.done,
         it => (it.kind === "delegate" ? { ...it, done: true, tokens, seconds: Number(ev.seconds ?? 0) } : it)
       );
-      // This event carries no model name, so credit whichever local model is active.
+      if (ev.runtime === "api" || ev.runtime === "cli") return finished;  // paid tokens come with the run's stats, not as local output
       const localModels: Usage["localModels"] = {};
       for (const [name, entry] of Object.entries(finished.usage.localModels)) {
         localModels[name] = entry.active ? { ...entry, active: false, tokens: entry.tokens + tokens } : entry;

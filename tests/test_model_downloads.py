@@ -207,3 +207,26 @@ def test_system_stats_always_answers_even_when_the_hardware_probe_fails(monkeypa
     stats = serve_module._system_stats()
     assert stats["hardware"]["os"] and stats["hardware"]["cpu_cores"] >= 1
     assert stats["ram_total_gb"] > 0
+
+
+def test_a_paid_delegate_is_announced_as_paid_not_local(tmp_path):
+    from localforge.catalog import ModelEntry
+
+    server, out = _server(tmp_path)
+    paid = ModelEntry(name="claude-haiku-4-5", modality="coding", runtime="api", provider="anthropic", min_vram_gb=0, min_ram_gb=0, disk_gb=0, quality_tier=0)
+    hooks = server._hooks()
+    hooks.on_delegate("coding", paid)
+    hooks.on_done("coding", paid, 10, 1.0)
+    started, finished = _events(out, "delegate_started")[-1], _events(out, "delegate_finished")[-1]
+    assert (started["runtime"], started["provider"]) == ("api", "anthropic")
+    assert finished["runtime"] == "api"
+
+
+def test_the_activity_line_says_paid_for_a_cloud_delegate_and_open_weighted_for_a_local_one():
+    from localforge.catalog import ModelEntry
+    from localforge.cli import _delegate_kind
+
+    paid = ModelEntry(name="m", modality="coding", runtime="cli", provider="anthropic", min_vram_gb=0, min_ram_gb=0, disk_gb=0, quality_tier=0)
+    local = ModelEntry(name="q", modality="coding", runtime="ollama", min_vram_gb=0, min_ram_gb=0, disk_gb=4, quality_tier=1)
+    assert _delegate_kind(paid) == "paid model, via Anthropic login"
+    assert _delegate_kind(local) == "open-weighted model, via ollama"
