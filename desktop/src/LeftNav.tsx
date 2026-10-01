@@ -18,7 +18,7 @@ export function LeftNav({
   targets,
   connected,
   source,
-  onChangeModels,
+  onChange,
   onManageAccounts,
 }: {
   open: boolean;
@@ -31,7 +31,7 @@ export function LeftNav({
   targets: { [modality: string]: LocalModelTarget };
   connected: boolean;
   source: "project" | "defaults" | null;
-  onChangeModels: () => void;
+  onChange: (which: "frontier" | string | null) => void;
   onManageAccounts: () => void;
 }) {
   return (
@@ -74,7 +74,7 @@ export function LeftNav({
               targets={targets}
               connected={connected}
               source={source}
-              onChangeModels={onChangeModels}
+              onChange={onChange}
               onManageAccounts={onManageAccounts}
             />
           </Curtain>

@@ -169,3 +169,41 @@ def test_orchestrator_options_say_which_provider_and_route_they_belong_to(monkey
     options = serve_module._orchestrator_options()
     assert (options[0]["provider"], options[0]["via"]) == ("anthropic", "api_key")
     assert (options[1]["provider"], options[1]["via"]) == ("local", "local")
+
+
+def test_models_can_still_be_changed_after_the_initial_setup_is_finished(tmp_path, fake_ollama, monkeypatch):
+    """Reported: after the first setup, changing models from the app stopped working."""
+    from localforge import project_models
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-" + "x" * 40)
+    server, out = _server(tmp_path)
+    server.handle({"type": "finish_project_setup"})
+    assert project_models.source() == "project"
+
+    fake_ollama["installed"]["llama3.1:8b"] = 4.9
+    server.handle({"type": "set_delegate_target", "modality": "docs", "target": "llama3.1:8b", "inline": True})
+    assert dt.get("docs").model == "llama3.1:8b"
+    server.handle({"type": "set_delegate_target", "modality": "docs", "target": "auto", "inline": True})
+    assert dt.get("docs").kind == "auto"
+
+    server.handle({"type": "setup_choose_orchestrator", "model": "claude-sonnet-5-5", "typed": True})
+    assert server.frontier_model == "claude-sonnet-5-5"
+    assert _events(out, "setup_result")[-1]["ok"] is True
+    saved = json.loads((tmp_path / ".localforge" / "models.json").read_text())
+    assert saved["orchestrator"]["model"] == "claude-sonnet-5-5"
+
+
+def test_a_refused_change_is_reported_as_a_setup_result_not_buried_in_the_chat(tmp_path, fake_ollama):
+    server, out = _server(tmp_path)
+    server.handle({"type": "set_delegate_target", "modality": "docs", "target": "not-a-real-model:1b", "inline": True})
+    result = _events(out, "setup_result")[-1]
+    assert result["ok"] is False and "isn't installed" in result["message"]
+    assert not _events(out, "error")
+
+
+def test_system_stats_always_answers_even_when_the_hardware_probe_fails(monkeypatch):
+    monkeypatch.setattr(serve_module, "_hardware_cache", None)
+    monkeypatch.setattr(serve_module, "_hardware", lambda: (_ for _ in ()).throw(RuntimeError("no sysctl")))
+    stats = serve_module._system_stats()
+    assert stats["hardware"]["os"] and stats["hardware"]["cpu_cores"] >= 1
+    assert stats["ram_total_gb"] > 0

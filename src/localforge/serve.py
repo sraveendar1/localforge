@@ -372,6 +372,48 @@ def _doctor(model: str = "", cli_provider: str | None = None):
 def _hardware():
     return detect_hardware().model_dump()
 
+
+_hardware_cache: tuple[float, dict] | None = None
+HARDWARE_CACHE_SECONDS = 30.0  # the static facts (cores, RAM, GPU) don't change; free disk barely does
+
+
+def _system_stats() -> dict:
+    """What the System panel shows, and it always answers: a hardware probe that
+    fails (a missing tool, a locked-down machine) falls back to what psutil and
+    `platform` can say, rather than leaving the panel empty. The static part is
+    cached for a few seconds so the 5-second refresh doesn't re-run `sysctl` /
+    `nvidia-smi` each time."""
+    import platform
+    import time
+
+    global _hardware_cache
+    now = time.monotonic()
+    if _hardware_cache is not None and now - _hardware_cache[0] < HARDWARE_CACHE_SECONDS:
+        hardware = _hardware_cache[1]
+    else:
+        try:
+            hardware = _hardware()
+        except Exception:  # noqa: BLE001 - show something rather than nothing
+            try:
+                free = round(shutil.disk_usage(Path.home()).free / (1024 ** 3), 1)
+            except OSError:
+                free = 0.0
+            hardware = {
+                "os": platform.system(), "arch": platform.machine(),
+                "cpu_cores": psutil.cpu_count(logical=False) or psutil.cpu_count() or 1,
+                "ram_gb": round(psutil.virtual_memory().total / (1024 ** 3), 1),
+                "free_disk_gb": free, "gpus": [], "memory_bandwidth_gbps": None,
+            }
+        _hardware_cache = (now, hardware)
+    try:
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        memory = psutil.virtual_memory()
+        ram_used_gb = round(memory.used / (1024 ** 3), 1)
+        ram_total_gb = round(memory.total / (1024 ** 3), 1)
+    except Exception:  # noqa: BLE001
+        cpu_percent, ram_used_gb, ram_total_gb = 0, 0, 0
+    return {"hardware": hardware, "cpu_percent": cpu_percent, "ram_used_gb": ram_used_gb, "ram_total_gb": ram_total_gb}
+
 NOTE_PREFIX = "Note from the user: "
 
 class StdioServer:
@@ -747,16 +789,7 @@ class StdioServer:
         elif message_type == "cancel":
             self.handle_stop_command()
         elif message_type == "system_stats":
-            try:
-                cpu_percent = psutil.cpu_percent(interval=0.01)
-                memory = psutil.virtual_memory()
-                ram_used_gb = round(memory.used / (1024 ** 3), 1)
-                ram_total_gb = round(memory.total / (1024 ** 3), 1)
-            except Exception:
-                cpu_percent = 0
-                ram_used_gb = 0
-                ram_total_gb = 0
-            self.emit('system_stats', hardware=_hardware(), cpu_percent=cpu_percent, ram_used_gb=ram_used_gb, ram_total_gb=ram_total_gb)
+            self.emit("system_stats", **_system_stats())
         else:
             self.emit("error", message=f"Unknown message type: {message_type}")
         return True
@@ -878,7 +911,7 @@ class StdioServer:
             # Off the reader thread: it asks each provider whether its key works.
             threading.Thread(target=lambda: self.emit("doctor", checks=_doctor(self.frontier_model, self.cli_provider)), daemon=True).start()
         elif cmd == "/scan":
-            self.emit("system_stats", hardware=_hardware(), cpu_percent=psutil.cpu_percent(interval=0.01), ram_used_gb=round(psutil.virtual_memory().used / (1024 ** 3), 1), ram_total_gb=round(psutil.virtual_memory().total / (1024 ** 3), 1))
+            self.emit("system_stats", **_system_stats())
 
     def _emit_orchestrator_options(self):
         try:

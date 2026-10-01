@@ -3,12 +3,24 @@ import { ConfiguredModel, LocalModelTarget, Usage } from "./state";
 
 const MODALITY_ORDER = ["coding", "docs", "general"];
 
+const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-dim";
+const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
+
+// "qwen2.5-coder:7b (auto, local, installed)" -> the model, and the note after it.
+function splitDescription(description: string): { name: string; note: string } {
+  const at = description.indexOf(" (");
+  if (at < 0 || !description.endsWith(")")) return { name: description, note: "" };
+  return { name: description.slice(0, at), note: description.slice(at + 2, -1) };
+}
+
 // "Active LLMs at play", split by what each costs: the paid models in use
 // (the orchestrator, and any task type -- image always -- sent to a paid model,
 // each with its role) and the free local ones (with a pulsing dot on the one
 // generating, and this session's run counts). Live status only -- choosing the
-// models lives in the left panel's "Models" section (ModelsPanel), so this one
-// never has settings mixed into it.
+// models lives in the centre-of-window model screen ("Change models…"), so this
+// one never has settings mixed into it. Each model is its own small card: the
+// name on its own line, then what it's for and how it's reached, so long names
+// wrap cleanly instead of pushing columns around.
 export function ActiveModelsPanel({
   usage,
   configuredModels,
@@ -30,42 +42,56 @@ export function ActiveModelsPanel({
   const localOrchestrator = orchestrator.startsWith("ollama/") || orchestrator.startsWith("ollama_chat/");
 
   return (
-    <>
+    <div className="space-y-3" data-testid="active-models">
       <div>
-        <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Paid models</div>
+        <div className={SECTION}>Paid models</div>
         {configuredPaid.length === 0 ? (
           <div className="text-mx-dim italic">None in use.</div>
         ) : (
-          <ul className="space-y-1" data-testid="active-paid">
+          <ul className="space-y-1.5" data-testid="active-paid">
             {configuredPaid.map(m => (
-              <li key={m.name}>
-                <div className="break-words"><span className="text-mx-amber">{m.roles.join(" · ")}</span> <span className="text-mx-bright">{m.name}</span></div>
-                {m.how && <div className="text-mx-dim">{m.how}</div>}
+              <li key={m.name} className={CARD}>
+                <div className="break-words font-medium text-mx-bright">{m.name}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-1">
+                  {m.roles.map(r => (
+                    <span key={r} className="rounded-sm border border-mx-amber/60 px-1 text-[10px] uppercase tracking-wide text-mx-amber">{r}</span>
+                  ))}
+                  {m.how && <span className="text-[11px] text-mx-dim">{m.how}</span>}
+                </div>
               </li>
             ))}
           </ul>
         )}
       </div>
+
       <div>
-        <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Local models (free)</div>
+        <div className={SECTION}>Local models (free)</div>
         {local.length > 0 || localOrchestrator ? (
-          <ul className="space-y-1">
+          <ul className="space-y-1.5" data-testid="active-local">
             {localOrchestrator && (
-              <li className="flex items-center gap-2">
-                <span className="text-mx-mid">orchestrator</span>
-                <span className="min-w-0 break-words text-mx-bright">{orchestrator.replace(/^ollama(_chat)?\//, "")}</span>
+              <li className={CARD}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wide text-mx-mid">orchestrator</span>
+                </div>
+                <div className="break-words font-medium text-mx-bright">{orchestrator.replace(/^ollama(_chat)?\//, "")}</div>
               </li>
             )}
             {local.map(modality => {
               const target = localModelTargets[modality];
               const configured = byModality[modality];
               const live = configured ? usage.localModels[configured.name] : undefined;
+              const { name, note } = target.autoModel
+                ? { name: target.autoModel, note: `auto, ${target.installed ? "installed" : "not installed yet"}` }
+                : splitDescription(target.description);
               return (
-                <li key={modality} className="flex items-center gap-2">
-                  {live?.active && <span className="inline-block h-2 w-2 rounded-full bg-mx-green animate-pulse"></span>}
-                  <span className="text-mx-mid">{modality}</span>
-                  <span className="min-w-0 break-words text-mx-bright" title={target.description}>{target.description}</span>
-                  {live && <span className="text-mx-dim tabular-nums ml-auto shrink-0">{live.runs} run{live.runs !== 1 ? "s" : ""}</span>}
+                <li key={modality} className={CARD} title={target.description}>
+                  <div className="flex items-center gap-2">
+                    {live?.active && <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-mx-green" aria-label="working now" />}
+                    <span className="text-[10px] uppercase tracking-wide text-mx-mid">{modality}</span>
+                    {live && <span className="ml-auto shrink-0 tabular-nums text-[11px] text-mx-dim">{live.runs} run{live.runs !== 1 ? "s" : ""}</span>}
+                  </div>
+                  <div className="break-words font-medium text-mx-bright">{name}</div>
+                  {note && <div className="text-[11px] text-mx-dim">{note}</div>}
                 </li>
               );
             })}
@@ -74,10 +100,11 @@ export function ActiveModelsPanel({
           <div className="text-mx-dim italic">{Object.keys(localModelTargets).length ? "None: the task types use paid models." : "No fitting local model found for this machine."}</div>
         )}
       </div>
-      <div className="flex justify-between gap-2 pt-1">
+
+      <div className="flex items-baseline justify-between gap-2 border-t border-mx-dim pt-2">
         <span className="text-mx-mid">Tokens generated this session</span>
-        <span className="text-mx-green tabular-nums">{usage.localTokensGenerated.toLocaleString()}</span>
+        <span className="tabular-nums text-mx-green">{usage.localTokensGenerated.toLocaleString()}</span>
       </div>
-    </>
+    </div>
   );
 }

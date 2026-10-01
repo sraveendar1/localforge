@@ -28,6 +28,7 @@ export type SystemStats = {
     ram_gb: number;
     free_disk_gb: number;
     gpus: Gpu[];
+    memory_bandwidth_gbps?: number | null;
   };
   cpuPercent: number;
   ramUsedGb: number;

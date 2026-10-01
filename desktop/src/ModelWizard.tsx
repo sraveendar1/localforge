@@ -159,6 +159,8 @@ type Props = {
   chat: ChatState;
   send: (obj: object) => void;
   mode: "new" | "edit";
+  startStep?: number;        // 0 = the planner, 1 = the writers
+  startRow?: string | null;  // a task type whose choices should already be open
   onClose: () => void;   // the ✕ / Close: leave without saving anything more
   onFinish: () => void;  // Start / Save: write the project's models file and carry on
 };
@@ -167,15 +169,24 @@ type Props = {
 // saved models yet (right after "Trust this folder"), and again whenever "Change models…"
 // is clicked. Everything about choosing a model -- including why one is refused and
 // downloads with their progress -- reads here, not in a side panel.
-export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
+export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, onClose, onFinish }: Props) {
   const setup = chat.setup;
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(startStep);
   const [busy, setBusy] = useState<string | null>(null);
-  const [wantAdvanced, setWantAdvanced] = useState(false);
+  const [wantAdvanced, setWantAdvanced] = useState(!!startRow);
   const [tried, setTried] = useState<string | null>(null);  // an installed model that was picked but can't run here: say why, right under it
-  const [open, setOpen] = useState<string | null>(null);  // the task row whose choices are showing
+  const [open, setOpen] = useState<string | null>(startRow);  // the task row whose choices are showing
   const result = chat.setupResult;
   useEffect(() => { setBusy(null); }, [result?.n]);
+  // Whatever was asked, the screen never stays locked waiting for an answer that doesn't come.
+  useEffect(() => {
+    if (busy === null) return;
+    const t = setTimeout(() => setBusy(null), 30000);
+    return () => clearTimeout(t);
+  }, [busy]);
+  // Answers (a refusal, a saved key) show at the top, above whatever step is open, and are
+  // cleared when the step changes; one from before this screen opened never shows.
+  const [dismissedN, setDismissedN] = useState(result?.n ?? 0);
 
   const connected = chat.connected;
   const anyPull = Object.values(chat.pulls).some(isPulling);
@@ -190,6 +201,7 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
     send({ type: "orchestrator_options_request" });
     send({ type: "advanced_model_request" });
     send({ type: "budget_request" });
+    if (startRow) send({ type: "delegate_options_request", modality: startRow });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -456,23 +468,25 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
 
   return (
     <div className="mx-auto flex h-full max-w-2xl flex-col gap-4 overflow-y-auto px-6 pb-0 pt-0" data-testid="model-wizard">
-      <div className="sticky top-0 z-10 flex items-start justify-between gap-3 bg-mx-bg pb-2 pt-6">
-        <div>
-          <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "edit" ? "Change models" : "Choose your models"}</h1>
-          <div className="mt-2">{stepper}</div>
+      <div className="sticky top-0 z-10 bg-mx-bg pb-2 pt-6">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "edit" ? "Change models" : "Choose your models"}</h1>
+            <div className="mt-2">{stepper}</div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="Close" title="Close" data-testid="wizard-x"
+            className="shrink-0 rounded-sm border border-mx-dim px-2 text-mx-mid hover:border-mx-mid hover:text-mx-bright">✕</button>
         </div>
-        <button type="button" onClick={onClose} aria-label="Close" title="Close" data-testid="wizard-x"
-          className="shrink-0 rounded-sm border border-mx-dim px-2 text-mx-mid hover:border-mx-mid hover:text-mx-bright">✕</button>
+        {result && result.n > dismissedN && (
+          <p role={result.ok ? "status" : "alert"} data-testid="setup-result"
+            className={"mt-2 whitespace-pre-wrap rounded-sm border px-3 py-2 text-sm " + (result.ok ? "border-mx-green text-mx-green" : "border-mx-red text-mx-red")}>
+            {result.message}
+          </p>
+        )}
       </div>
 
       {steps[step]}
 
-      {result && step < 2 && (
-        <p role={result.ok ? "status" : "alert"} data-testid="setup-result"
-          className={"whitespace-pre-wrap rounded-sm border px-3 py-2 text-sm " + (result.ok ? "border-mx-green text-mx-green" : "border-mx-red text-mx-red")}>
-          {result.message}
-        </p>
-      )}
       {step === 0 && needsOrchestrator && setup.orchestrator.reason && (
         <p className="text-xs text-mx-amber" data-testid="setup-reason">Right now: {setup.orchestrator.reason}.</p>
       )}
@@ -483,12 +497,12 @@ export function ModelWizard({ chat, send, mode, onClose, onFinish }: Props) {
         </button>
         <div className="flex gap-2">
           {step > 0 && (
-            <button type="button" onClick={() => { setOpen(null); setStep(step - 1); }} className="rounded-sm border border-mx-dim px-3 py-1 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">Back</button>
+            <button type="button" onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step - 1); }} className="rounded-sm border border-mx-dim px-3 py-1 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">Back</button>
           )}
           {step < 2 ? (
             <button type="button" data-testid="wizard-next" disabled={step === 0 && needsOrchestrator}
               title={step === 0 && needsOrchestrator ? "Choose the model that plans first" : undefined}
-              onClick={() => { setOpen(null); setStep(step + 1); if (step === 0) send({ type: "advanced_model_request" }); }}
+              onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step + 1); if (step === 0) send({ type: "advanced_model_request" }); }}
               className="rounded-sm border border-mx-mid px-4 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
               Next
             </button>

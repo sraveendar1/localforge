@@ -32,6 +32,7 @@ function App() {
   const [rightOpen, setRightOpen] = useState(() => loadPanelOpen("right", defaultRightOpen()));
   const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
   const [manageOpen, setManageOpen] = useState(false);  // Models > Accounts & keys: the same screen, opened on purpose
+  const [wizardStart, setWizardStart] = useState<{ key: number; step: number; row: string | null }>({ key: 0, step: 0, row: null });  // where the model screen opens (a fresh key remounts it)
   const [wizardEdit, setWizardEdit] = useState(false);  // the model screen was opened on purpose ("Change models"), not shown to a new project
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
@@ -147,7 +148,11 @@ function App() {
   const wizardActive = chat.wizard === "active" && !chat.trustRequired && !!folder;
   const inlineSetup = !!chat.setup && needsSetup && !setupSkipped && chat.messages.length === 0 && chat.wizard === "done";
   const overlaySetup = !!chat.setup && manageOpen;
-  const openWizard = () => { setWizardEdit(true); setChat(s => setWizard(s, "active")); };
+  const openWizard = (step = 0, row: string | null = null) => {
+    setWizardEdit(true);
+    setWizardStart(w => ({ key: w.key + 1, step, row }));
+    setChat(s => setWizard(s, "active"));
+  };
   const closeWizard = () => setChat(s => setWizard(s, "done"));
   const finishWizard = () => { send({ type: "finish_project_setup" }); closeWizard(); };
   // Once something works, forget having skipped setup: if it stops working later, that
@@ -198,7 +203,7 @@ function App() {
           title={needsSetup ? "No model is set up yet" : "Change models"}
           aria-label="Orchestrator model (click to change models)"
           onClick={() => {
-            openWizard();  // changing models happens in the centre of the window
+            openWizard(0);  // changing models happens in the centre of the window
           }}
           className="max-w-xs truncate rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1 text-sm text-mx-bright hover:border-mx-mid disabled:opacity-50"
         >
@@ -217,7 +222,7 @@ function App() {
       {folder && needsSetup && !inlineSetup && !overlaySetup && !wizardActive && chat.wizard === "done" && !chat.trustRequired && (
         <div className="flex items-center gap-3 border-b border-mx-amber bg-mx-panel px-4 py-1 text-xs text-mx-amber" role="alert" data-testid="setup-banner">
           <span>No model is set up yet, so tasks will fail{chat.setup?.orchestrator.reason ? `: ${chat.setup.orchestrator.reason}` : ""}.</span>
-          <button type="button" className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={openWizard}>Set up</button>
+          <button type="button" className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={() => openWizard(0)}>Set up</button>
         </div>
       )}
       <div className="flex min-h-0 flex-1">
@@ -232,7 +237,7 @@ function App() {
           targets={chat.localModelTargets}
           connected={chat.connected}
           source={chat.modelsSource}
-          onChangeModels={openWizard}
+          onChange={which => (which && which !== "frontier" ? openWizard(1, which) : openWizard(0))}
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
         />
         <main className="flex min-w-0 flex-1 flex-col">
@@ -271,7 +276,7 @@ function App() {
                 </div>
               </div>
             ) : wizardActive ? (
-              <ModelWizard chat={chat} send={send} mode={wizardEdit ? "edit" : "new"} onClose={closeWizard} onFinish={finishWizard} />
+              <ModelWizard key={wizardStart.key} chat={chat} send={send} mode={wizardEdit ? "edit" : "new"} startStep={wizardStart.step} startRow={wizardStart.row} onClose={closeWizard} onFinish={finishWizard} />
             ) : inlineSetup && chat.setup ? (
               <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupSkipped(true)} />
             ) : chat.messages.length === 0 ? (
@@ -371,7 +376,7 @@ function App() {
             />
           </Curtain>
           <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} configuredPaid={configuredPaid} usageHistory={chat.usageHistory} /></Curtain>
-          <Curtain title="System" defaultOpen={false}><SystemPanel stats={chat.systemStats} /></Curtain>
+          <Curtain title="System"><SystemPanel stats={chat.systemStats} /></Curtain>
         </RightPanel>
       </div>
       {overlaySetup && chat.setup && (

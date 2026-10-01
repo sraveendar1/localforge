@@ -17,21 +17,35 @@ export function ModelsPanel({
   targets,
   connected,
   source,
-  onChangeModels,
+  onChange,
   onManageAccounts,
 }: {
   frontier: string;
   targets: { [modality: string]: LocalModelTarget };
   connected: boolean;
   source: "project" | "defaults" | null;
-  onChangeModels: () => void;
+  onChange: (which: "frontier" | string | null) => void;  // opens the model screen in the centre, at that model
   onManageAccounts: () => void;
 }) {
   const rows = MODALITIES.filter(([m]) => targets[m]);
+  const changeButton = (which: string, label: string) => (
+    <button
+      type="button"
+      disabled={!connected}
+      aria-label={label}
+      onClick={() => onChange(which)}
+      className="shrink-0 rounded-sm border border-mx-dim px-1.5 py-0 text-[10px] text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
+    >
+      Change
+    </button>
+  );
   return (
     <div className="space-y-2" data-testid="models-panel">
       <div>
-        <div className="text-mx-mid">Frontier</div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-mx-mid">Frontier</span>
+          {changeButton("frontier", "Change the frontier model")}
+        </div>
         <div className="break-words text-mx-bright">{frontier || "not set"}</div>
       </div>
       {rows.length === 0 ? (
@@ -39,7 +53,10 @@ export function ModelsPanel({
       ) : (
         rows.map(([modality, label]) => (
           <div key={modality}>
-            <div className="text-mx-mid">{label}</div>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-mx-mid">{label}</span>
+              {modality !== "video" && changeButton(modality, `Change the ${label.toLowerCase()} model`)}
+            </div>
             <div className={"break-words " + (modality === "video" || (modality === "image" && targets[modality].target === "auto") ? "text-mx-dim italic" : "text-mx-bright")}>
               {targets[modality].description}
             </div>
@@ -54,7 +71,7 @@ export function ModelsPanel({
       <button
         type="button"
         disabled={!connected}
-        onClick={onChangeModels}
+        onClick={() => onChange(null)}
         data-testid="change-models"
         className="w-full rounded-sm border border-mx-mid px-2 py-1 text-left text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:opacity-50"
       >
