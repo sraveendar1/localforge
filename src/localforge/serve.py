@@ -170,8 +170,35 @@ def _setup_status(model: str, cli_provider: str | None) -> dict:
                 {"name": name, "problem": model_fit.selection_problem(name, hardware, sizes, fetch_sizes=False)}
                 for name in sorted(sizes or {})
             ],
+            "suggested": _suggested_local_models(hardware, sizes),
         },
     }
+
+
+MAX_UNFIT_SUGGESTIONS = 4
+
+
+def _suggested_local_models(hardware, sizes: dict[str, float] | None) -> list[dict]:
+    """Open-weight models to offer on the setup screen that aren't on disk yet:
+    the ones this machine can run, best first, then a few that it can't (greyed
+    out, with the reason -- they can't be downloaded from the app)."""
+    from localforge.catalog import fit_problem
+
+    if sizes is None:  # Ollama can't be asked, so nothing can be downloaded anyway
+        return []
+    installed = set(sizes)
+    seen: set[str] = set()
+    fit, unfit = [], []
+    for entry in sorted(load_catalog(), key=lambda m: (-m.quality_tier, m.disk_gb)):
+        if entry.runtime != "ollama" or entry.modality not in delegate_target.MODALITIES or entry.name in seen:
+            continue
+        if entry.name in installed:
+            continue
+        seen.add(entry.name)
+        problem = fit_problem(entry, hardware, installed)
+        row = {"name": entry.name, "disk_gb": entry.disk_gb, "quality_tier": entry.quality_tier, "modality": entry.modality, "problem": problem}
+        (unfit if problem else fit).append(row)
+    return fit[:8] + unfit[:MAX_UNFIT_SUGGESTIONS]
 
 
 def _friendly_failure(exc: Exception, model: str, cli_provider: str | None) -> tuple[str, bool]:
@@ -211,13 +238,18 @@ def _advanced_model_snapshot() -> dict:
     panel and the /advanced-model chat command alike."""
     installed = _installed_model_names(OllamaBackend())
     recs = recommendations(detect_hardware(), installed=installed)
-    return {
-        m: {
+    snapshot = {}
+    for m in delegate_target.ALL_MODALITIES:
+        row = {
             "target": delegate_target.render(delegate_target.get(m)),
             "description": _describe_active_target(m, recs, installed),
         }
-        for m in delegate_target.ALL_MODALITIES
-    }
+        entry = recs.get(m) if m not in delegate_target.GENERATIVE else None
+        if entry is not None and delegate_target.get(m).kind == "auto":
+            # What "auto" resolves to, so the setup screen can offer to download it.
+            row.update(auto_model=entry.name, installed=entry.name in installed, disk_gb=entry.disk_gb)
+        snapshot[m] = row
+    return snapshot
 
 MAX_MODELS_PER_PROVIDER = 8  # in a picker, per provider and way of signing in
 
@@ -258,6 +290,13 @@ def _delegate_options(modality: str) -> dict:
             "problem": model_fit.selection_problem(m.name, hardware, sizes, fetch_sizes=False),
         }
         for m in load_catalog() if m.modality == modality
+    ]
+    catalog_names = {m["name"] for m in local}
+    # Installed models that aren't in the catalog (typed in earlier) can be picked too.
+    local += [
+        {"name": name, "quality_tier": 0, "disk_gb": round(size, 1), "installed": True,
+         "problem": model_fit.selection_problem(name, hardware, sizes, fetch_sizes=False)}
+        for name, size in sorted((sizes or {}).items()) if name not in catalog_names and name not in {f"{n}:latest" for n in catalog_names}
     ]
     from localforge import cli
 
@@ -658,7 +697,12 @@ class StdioServer:
         elif message_type == "setup_use_login":
             threading.Thread(target=self._use_login, args=(str(message.get("provider", "")),), daemon=True).start()
         elif message_type == "setup_choose_orchestrator":
-            self._choose_orchestrator(str(message.get("model", "")).strip())
+            self._choose_orchestrator(str(message.get("model", "")).strip(), typed=bool(message.get("typed")))
+        elif message_type == "pull_model":
+            use_as = message.get("use_as") if isinstance(message.get("use_as"), dict) else None
+            threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as), daemon=True).start()
+        elif message_type == "finish_project_setup":
+            self._finish_project_setup()
         elif message_type == "orchestrator_options_request":
             # Off the reader thread: a Gemini key makes the list fetch hit the network.
             threading.Thread(target=self._emit_orchestrator_options, daemon=True).start()
@@ -685,7 +729,10 @@ class StdioServer:
                 try:
                     delegate_target.apply(modality, target)
                 except delegate_target.InvalidTarget as exc:
-                    self.emit("error", message=str(exc))
+                    if message.get("inline"):  # from the setup screen: show it there, not in the chat
+                        self.emit("setup_result", ok=False, message=str(exc))
+                    else:
+                        self.emit("error", message=str(exc))
                 else:
                     self._emit_advanced_model()
         elif message_type == "set_auto":
@@ -958,13 +1005,19 @@ class StdioServer:
         self._make_default_orchestrator(model, {config.AUTH_METHOD_ENV_VAR: config.AUTH_CLI_LOGIN, config.FRONTIER_PROVIDER_ENV_VAR: provider})
         self._setup_result(True, f"Using your {spec['command']} login: {model} will plan and review your work (it draws on your subscription).")
 
-    def _choose_orchestrator(self, model: str) -> None:
+    def _choose_orchestrator(self, model: str, typed: bool = False) -> None:
         """Pick one of the orchestrators that can run here (as listed in the
         Models section): a downloaded local model, or a cloud one with a key or
         login. A local model too big for this machine is refused."""
         from localforge import cli
 
         match = next((auth for m, _label, auth in cli._model_choices() if m == model), None)
+        if match is None and typed and model:
+            # A model id typed in by hand: same rules as `/model <id>` (refused, with
+            # the reason, when a local model is too big for this machine).
+            if problem := self._switch_orchestrator(model):
+                return self._setup_result(False, problem)
+            return self._setup_result(True, f"{model} will plan and review your work.")
         if match is None:
             return self._setup_result(False, f"{model or 'That model'} isn't available here yet.")
         if model.startswith(local_transport.PREFIXES):
@@ -972,6 +1025,97 @@ class StdioServer:
                 return self._setup_result(False, f"Can't use {local_transport.model_name(model)}: {why}.")
         self._make_default_orchestrator(model, match)
         self._setup_result(True, f"{model} will plan and review your work.")
+
+    # --- downloading open-weight models from the setup screen ---------------------
+
+    _pulling: set[str] = set()
+
+    @staticmethod
+    def _normalize_model_name(raw: str) -> str:
+        name = raw.strip()
+        for prefix in local_transport.PREFIXES:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+        return name if ":" in name else f"{name}:latest"
+
+    def _pull_model(self, raw_name: str, use_as: dict | None) -> None:
+        """Download an Ollama model (progress as `pull_progress` events, the end
+        as `pull_result`) and, if asked, make it the orchestrator or a task
+        type's model. A model that isn't recommended for this machine -- too big
+        for its memory, no room on the disk, or a size that can't be confirmed --
+        is refused *before* anything is downloaded."""
+        import re
+        import time as _time
+
+        from localforge import upgrades
+
+        name = self._normalize_model_name(raw_name)
+
+        def result(ok: bool, message: str, **extra) -> None:
+            self.emit("pull_result", model=name, ok=ok, message=message, **extra)
+            self._emit_setup_status()
+            self._emit_orchestrator_options()
+            if use_as and use_as.get("modality"):
+                self.emit("delegate_options", modality=str(use_as["modality"]), **_delegate_options(str(use_as["modality"])))
+
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-/]*:[A-Za-z0-9._\-]+", name):
+            return result(False, f"{raw_name.strip()!r} isn't a model name Ollama understands (like llama3.1:8b).", blocked=True)
+        if name in StdioServer._pulling:
+            return result(False, f"{name} is already downloading.")
+        ollama = OllamaBackend()
+        if not ollama.is_running():
+            return result(False, "Ollama isn't running. Open the Ollama app (or run `ollama serve`), then try again.")
+        try:
+            problem = model_fit.download_problem(name)
+        except Exception as exc:  # noqa: BLE001
+            problem = f"couldn't check whether it fits ({exc})"
+        if problem:
+            return result(False, f"Not downloaded: {name} isn't recommended for this machine: {problem}.", blocked=True)
+
+        StdioServer._pulling.add(name)
+        failure: list[str] = []
+        last = [0.0]
+
+        def on_progress(event: dict) -> None:
+            if event.get("error"):
+                failure.append(str(event["error"]))
+                return
+            now = _time.monotonic()
+            if now - last[0] >= 0.25 or event.get("status") == "success":
+                last[0] = now
+                self.emit("pull_progress", model=name, status=str(event.get("status", "")),
+                          completed=event.get("completed"), total=event.get("total"))
+
+        try:
+            self.emit("pull_progress", model=name, status="starting", completed=None, total=None)
+            ollama.ensure_available(name, on_progress=on_progress)
+        except Exception as exc:  # noqa: BLE001
+            StdioServer._pulling.discard(name)
+            return result(False, f"Couldn't download {name}: {exc}")
+        StdioServer._pulling.discard(name)
+        if failure:
+            return result(False, f"Couldn't download {name}: {failure[0]}")
+        upgrades.mark_managed(name)
+
+        used = ""
+        if use_as and use_as.get("orchestrator"):
+            self._choose_orchestrator(f"ollama/{name}")
+            used = " and set as the orchestrator"
+        elif use_as and use_as.get("modality"):
+            modality = str(use_as["modality"])
+            try:
+                delegate_target.apply(modality, name)
+            except delegate_target.InvalidTarget as exc:
+                return result(False, f"Downloaded {name}, but it can't be used for {modality}: {exc}")
+            self._emit_advanced_model()
+            used = f" and set for {modality}"
+        result(True, f"Downloaded {name}{used}.")
+
+    def _finish_project_setup(self) -> None:
+        """Save the models chosen on the setup screen to this project's own file
+        (.localforge/models.json), so the folder opens straight to chat next time."""
+        project_models.save({})
+        self._emit_advanced_model()
 
     def _adopt_project_models(self) -> None:
         """Apply this folder's saved models (.localforge/models.json) and send

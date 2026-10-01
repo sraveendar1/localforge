@@ -159,10 +159,16 @@ def apply(modality: str, value: str, scope: str = "project") -> DelegateTarget:
 
     match = next((m for m in load_catalog() if m.modality == modality and m.name == value), None)
     if match is None:
-        raise InvalidTarget(
-            f"{value!r} isn't a {modality} model in the catalog. "
-            "Run `localforge catalog` to see options, or pass 'auto'/an api:.../cli:... target."
-        )
+        # A model typed by hand: usable once it's on this machine (downloaded
+        # through the app, which first checks it fits).
+        from localforge import model_fit
+
+        if value not in (model_fit.installed_sizes() or {}):
+            raise InvalidTarget(
+                f"{value!r} isn't a {modality} model in the catalog and isn't installed. "
+                "Download it first (the desktop app does that when you type its name), "
+                "or pass 'auto'/an api:.../cli:... target."
+            )
     from localforge import model_fit  # local: model_fit imports this module
 
     if why := model_fit.selection_problem(value):

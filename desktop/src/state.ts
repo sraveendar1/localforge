@@ -49,7 +49,9 @@ export type UsageTotals = {
   models: string[];
 };
 export type ConfiguredModel = { modality: string; name: string; runtime: string; qualityTier: number };
-export type LocalModelTarget = { target: string; description: string };
+// `autoModel`/`installed`/`diskGb` are only set when the target is "auto" and a local model
+// fits: the model "auto" means here, and whether it still has to be downloaded.
+export type LocalModelTarget = { target: string; description: string; autoModel?: string; installed?: boolean; diskGb?: number };
 export type DelegateCloudOption = { kind: "api" | "cli"; provider: string; model: string; priceUsd?: number | null };
 export type DelegateLocalOption = { name: string; quality_tier: number; disk_gb: number; installed: boolean; problem?: string | null };
 export type DelegateOptions = { local: DelegateLocalOption[]; cloud: DelegateCloudOption[]; current: string };
@@ -66,8 +68,21 @@ export type SetupStatus = {
   needsSetup: boolean;
   orchestrator: { model: string; ready: boolean; reason: string };
   providers: SetupProvider[];
-  ollama: { installed: boolean; running: boolean; models: { name: string; problem: string | null }[] };
+  ollama: {
+    installed: boolean;
+    running: boolean;
+    models: { name: string; problem: string | null }[];
+    // Open-weight models not on disk yet: those that fit this machine, then some that don't
+    // (with the reason, and they can't be downloaded from the app).
+    suggested: { name: string; diskGb: number; qualityTier: number; modality: string; problem: string | null }[];
+  };
 };
+// A model download in progress, or its outcome. `blocked` = refused before any download
+// because the model isn't recommended for this machine.
+export type PullState = { status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
+// The guided model setup in the centre of the window: "unknown" until the project's models
+// are known, "active" while it is on screen, "done" once finished or closed.
+export type WizardState = "unknown" | "active" | "done";
 // The answer to a setup action; `n` counts them so a screen can tell a new one.
 export type SetupResult = { ok: boolean; message: string; n: number };
 // This month's paid image spending per provider, and the user's optional monthly limit.
@@ -98,6 +113,8 @@ export type ChatState = {
   budgets: BudgetRow[];
   setup: SetupStatus | null;
   setupResult: SetupResult | null;
+  pulls: { [model: string]: PullState };
+  wizard: WizardState;
   // Per-modality delegate target (see /advanced-model): auto by default, or a
   // pinned local/cloud override. delegateOptions is fetched lazily, per
   // modality, only when the "Change" picker for that row is opened.
@@ -161,6 +178,8 @@ export const initialState: ChatState = {
   budgets: [],
   setup: null,
   setupResult: null,
+  pulls: {},
+  wizard: "unknown",
   modelsSource: null,
   localModelTargets: {},
   delegateOptions: {},
@@ -427,7 +446,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":
@@ -529,9 +548,25 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
         ollama: {
           installed: !!oll.installed, running: !!oll.running,
           models: (Array.isArray(oll.models) ? oll.models : []).map((m: any) => ({ name: String(m.name ?? ""), problem: m.problem ? String(m.problem) : null })),
+          suggested: (Array.isArray(oll.suggested) ? oll.suggested : []).map((m: any) => ({
+            name: String(m.name ?? ""), diskGb: Number(m.disk_gb ?? 0), qualityTier: Number(m.quality_tier ?? 0),
+            modality: String(m.modality ?? ""), problem: m.problem ? String(m.problem) : null,
+          })),
         },
       };
       return { ...state, setup };
+    }
+    case "pull_progress": {
+      const name = String(ev.model ?? "");
+      if (!name) return state;
+      const num = (v: any) => (typeof v === "number" ? v : null);
+      return { ...state, pulls: { ...state.pulls, [name]: { status: String(ev.status ?? ""), completed: num(ev.completed), total: num(ev.total), done: false } } };
+    }
+    case "pull_result": {
+      const name = String(ev.model ?? "");
+      if (!name) return state;
+      const prev = state.pulls[name];
+      return { ...state, pulls: { ...state.pulls, [name]: { status: "", completed: prev?.completed ?? null, total: prev?.total ?? null, done: true, ok: !!ev.ok, message: String(ev.message ?? ""), blocked: !!ev.blocked } } };
     }
     case "setup_result": {
       const result: SetupResult = { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.setupResult?.n ?? 0) + 1 };
@@ -551,9 +586,15 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       const targets = ev.targets && typeof ev.targets === "object" ? ev.targets : {};
       const localModelTargets: ChatState["localModelTargets"] = {};
       for (const [modality, t] of Object.entries<any>(targets)) {
-        localModelTargets[modality] = { target: String(t?.target ?? "auto"), description: String(t?.description ?? "auto") };
+        localModelTargets[modality] = {
+          target: String(t?.target ?? "auto"), description: String(t?.description ?? "auto"),
+          ...(t?.auto_model ? { autoModel: String(t.auto_model), installed: !!t.installed, diskGb: Number(t.disk_gb ?? 0) } : {}),
+        };
       }
-      return { ...state, localModelTargets, modelsSource: ev.source === "project" || ev.source === "defaults" ? ev.source : state.modelsSource };
+      const source = ev.source === "project" || ev.source === "defaults" ? ev.source : state.modelsSource;
+      // The first time the project's models are known decides whether it is new (no file yet).
+      const wizard: WizardState = state.wizard === "unknown" ? (source === "defaults" ? "active" : "done") : state.wizard;
+      return { ...state, localModelTargets, modelsSource: source, wizard };
     }
     case "delegate_options": {
       const modality = String(ev.modality ?? "");
@@ -597,6 +638,10 @@ export function addError(state: ChatState, text: string): ChatState {
 // the old addItem()-onto-last-assistant path silently dropped the reply.
 export function addSystemMessage(state: ChatState, text: string): ChatState {
   return { ...state, messages: [...state.messages, { role: "system", text, items: [] }] };
+}
+
+export function setWizard(state: ChatState, wizard: WizardState): ChatState {
+  return { ...state, wizard };
 }
 
 export function removeApproval(state: ChatState, id: string): ChatState {

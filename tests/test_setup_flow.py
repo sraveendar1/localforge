@@ -68,7 +68,7 @@ def test_a_bare_machine_needs_setup_and_says_why(tmp_path):
     assert st["orchestrator"]["ready"] is False and "API key or login" in st["orchestrator"]["reason"]
     assert [p["id"] for p in st["providers"]] == ["anthropic", "openai", "gemini"]
     assert all(p["key_set"] is False for p in st["providers"])
-    assert st["ollama"] == {"installed": False, "running": False, "models": []}
+    assert st["ollama"] == {"installed": False, "running": False, "models": [], "suggested": []}
 
 
 def test_a_key_makes_the_orchestrator_ready(tmp_path, monkeypatch):

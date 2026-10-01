@@ -10,7 +10,7 @@ async function openLink(url: string) {
   }
 }
 
-function Link({ url, children }: { url: string; children: React.ReactNode }) {
+export function Link({ url, children }: { url: string; children: React.ReactNode }) {
   return (
     <button type="button" onClick={() => openLink(url)} className="text-mx-green underline hover:text-mx-bright">
       {children}
@@ -18,7 +18,7 @@ function Link({ url, children }: { url: string; children: React.ReactNode }) {
   );
 }
 
-function ProviderCard({
+export function ProviderCard({
   provider,
   busy,
   disabled,
@@ -141,7 +141,11 @@ export function SetupScreen({
   return (
     <div className="mx-auto flex h-full max-w-xl flex-col gap-4 overflow-y-auto px-6 py-8" data-testid="setup-screen">
       <div>
-        <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "manage" ? "Accounts & keys" : "Set up localforge"}</h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "manage" ? "Accounts & keys" : "Set up localforge"}</h1>
+          <button type="button" onClick={onSkip} aria-label="Close" title="Close" data-testid="setup-x"
+            className="shrink-0 rounded-sm border border-mx-dim px-2 text-mx-mid hover:border-mx-mid hover:text-mx-bright">✕</button>
+        </div>
         {mode === "manage" ? (
           <p className="mt-2 text-sm text-mx-mid">
             Add or replace an API key, or sign in with a CLI login you already use. Keys are checked with the provider and stay on this

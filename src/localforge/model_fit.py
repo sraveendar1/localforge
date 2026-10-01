@@ -69,6 +69,50 @@ def selection_problem(
     return fit_problem(entry, hardware, installed)
 
 
+def registry_size_gb(name: str, timeout: float = 6.0) -> float | None:
+    """The download size of an Ollama tag that isn't in the catalog, from the
+    registry's manifest (the sum of its layers), or None when it can't be
+    found or the registry can't be reached."""
+    import httpx
+
+    repo, _, tag = name.partition(":")
+    repo = repo if "/" in repo else f"library/{repo}"
+    try:
+        resp = httpx.get(
+            f"https://registry.ollama.ai/v2/{repo}/manifests/{tag or 'latest'}",
+            headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
+            timeout=timeout,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        total = sum(int(layer.get("size", 0)) for layer in data.get("layers", [])) + int(data.get("config", {}).get("size", 0))
+    except Exception:  # noqa: BLE001 - "can't tell" is handled by the caller
+        return None
+    return total / 1e9 if total > 0 else None
+
+
+def download_problem(
+    name: str, hardware: HardwareProfile | None = None, sizes: dict[str, float] | None = None
+) -> str | None:
+    """Why `name` must not be downloaded (or used) here, or None if it may be.
+    Stricter than `selection_problem`: a model that isn't in the catalog and isn't
+    installed is sized from the registry, and if that size can't be found it is
+    refused -- nothing is downloaded that couldn't be shown to fit."""
+    sizes = sizes if sizes is not None else installed_sizes()
+    entry = entry_for(name, sizes)
+    if entry is None:
+        size = registry_size_gb(name)
+        if size is None:
+            return (
+                "localforge couldn't confirm its size, so it can't tell whether it fits this machine. "
+                "Pick one from the list, or install it yourself with `ollama pull` if you're sure"
+            )
+        entry = ModelEntry(name=name, modality="general", runtime="ollama", min_vram_gb=0, min_ram_gb=0, disk_gb=size, quality_tier=0)
+    hardware = hardware or detect_hardware()
+    return fit_problem(entry, hardware, set(sizes) if sizes is not None else None)
+
+
 def refusal(setting: str, name: str, problem: str, fix: str) -> str:
     return f"{setting} is set to {name}, but it can't run on this machine: {problem}. {fix}"
 

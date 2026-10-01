@@ -1,6 +1,6 @@
 import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
-import type { BudgetRow, DelegateOptions, LocalModelTarget, OrchestratorOption } from "./state";
+import type { LocalModelTarget } from "./state";
 
 // A collapsible left rail (chevron-toggled): recently-opened project folders
 // (so switching projects doesn't mean the native file dialog every time) and
@@ -14,17 +14,12 @@ export function LeftNav({
   currentFolder,
   onSelectFolder,
   onOpenDialog,
-  modelsSignal,
   frontier,
-  frontierOptions,
   targets,
-  delegateOptions,
   connected,
   source,
-  budgets,
-  onSetup,
+  onChangeModels,
   onManageAccounts,
-  send,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -32,17 +27,12 @@ export function LeftNav({
   currentFolder: string | null;
   onSelectFolder: (path: string) => void;
   onOpenDialog: () => void;
-  modelsSignal: number;  // bumped by the header's model chip to pull the Models section open
   frontier: string;
-  frontierOptions: OrchestratorOption[];
   targets: { [modality: string]: LocalModelTarget };
-  delegateOptions: { [modality: string]: DelegateOptions };
   connected: boolean;
   source: "project" | "defaults" | null;
-  budgets: BudgetRow[];
-  onSetup: () => void;
+  onChangeModels: () => void;
   onManageAccounts: () => void;
-  send: (obj: object) => void;
 }) {
   return (
     <div className="flex h-full shrink-0">
@@ -78,18 +68,14 @@ export function LeftNav({
               Open folder…
             </button>
           </Curtain>
-          <Curtain title="Models" openSignal={modelsSignal}>
+          <Curtain title="Models">
             <ModelsPanel
               frontier={frontier}
-              frontierOptions={frontierOptions}
               targets={targets}
-              delegateOptions={delegateOptions}
               connected={connected}
               source={source}
-              budgets={budgets}
-              onSetup={onSetup}
+              onChangeModels={onChangeModels}
               onManageAccounts={onManageAccounts}
-              send={send}
             />
           </Curtain>
         </nav>

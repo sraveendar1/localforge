@@ -574,6 +574,11 @@ class Dispatcher:
                 entry = next(
                     (m for m in self.catalog if m.modality == modality and m.name == target.model), None,
                 )
+                if entry is None and self.installed and target.model in self.installed:
+                    # A model typed in by hand: no catalog entry, but it's on disk.
+                    from localforge import model_fit
+
+                    entry = model_fit.entry_for(target.model, model_fit.installed_sizes(), modality)
                 if entry is None:
                     # A stale pin (catalog changed since, or hand-edited
                     # config) degrades to automatic rather than crashing the

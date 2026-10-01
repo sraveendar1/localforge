@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
 import { BackendStatus } from "./BackendStatus";
 import { SetupScreen } from "./SetupScreen";
+import { ModelWizard } from "./ModelWizard";
 import { RightPanel } from "./RightPanel";
 import { defaultRightOpen, loadPanelOpen, savePanelOpen } from "./panelPrefs";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
@@ -13,7 +14,7 @@ import { StatusBar } from "./StatusBar";
 import { ForgingIndicator } from "./ForgingIndicator";
 import { GoalPanel } from "./GoalPanel";
 import { ActiveModelsPanel } from "./ActiveModelsPanel";
-import { addError, addUserMessage, applyEvent, initialState, removeApproval, appendBackendLog, backendExited } from "./state";
+import { addError, addUserMessage, applyEvent, initialState, removeApproval, appendBackendLog, backendExited, setWizard } from "./state";
 import { SystemPanel } from "./SystemPanel";
 import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import { Curtain } from "./Curtain";
@@ -31,8 +32,7 @@ function App() {
   const [rightOpen, setRightOpen] = useState(() => loadPanelOpen("right", defaultRightOpen()));
   const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
   const [manageOpen, setManageOpen] = useState(false);  // Models > Accounts & keys: the same screen, opened on purpose
-  const [setupOpen, setSetupOpen] = useState(false);  // the same screen as an overlay, once there is a conversation to keep in view
-  const [modelsSignal, setModelsSignal] = useState(0);  // header chip -> open the left panel's Models section
+  const [wizardEdit, setWizardEdit] = useState(false);  // the model screen was opened on purpose ("Change models"), not shown to a new project
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -73,6 +73,7 @@ function App() {
 
   async function startSessionForFolder(dir: string) {
     setFolder(dir);
+    setWizardEdit(false);
     setChat({ ...initialState, backendStartedAt: Date.now() });
     setRecentFolders(r => addRecentFolder(dir, r));
     try { // No model is passed: the backend uses this project's saved models
@@ -139,15 +140,19 @@ function App() {
   const toggleLeft = () => { const next = !leftNavOpen; setLeftNavOpen(next); savePanelOpen("left", next); };
   const toggleRight = () => { const next = !rightOpen; setRightOpen(next); savePanelOpen("right", next); };
   const needsSetup = !!chat.setup?.needsSetup;
-  // First-run setup shows in place of the empty chat; with a conversation on
-  // screen (say a first task just failed for want of a key) it's an overlay so
-  // the conversation isn't hidden.
-  const inlineSetup = !!chat.setup && needsSetup && !setupSkipped && chat.messages.length === 0;
-  const overlaySetup = !!chat.setup && ((needsSetup && setupOpen && !inlineSetup) || manageOpen);
-  const openSetup = () => { setSetupSkipped(false); setSetupOpen(true); };
-  // Once something works, forget having skipped or opened setup: if it stops working
-  // later, that should start from the banner, not pop the overlay up on its own.
-  useEffect(() => { if (!needsSetup) { setSetupSkipped(false); setSetupOpen(false); } }, [needsSetup]);
+  // The guided model screen takes the centre of the window: automatically for a project
+  // with no saved models (right after the trust prompt), and whenever "Change models" is
+  // clicked. A project that already has its models but whose orchestrator can't run (a
+  // key was removed) gets the plainer sign-in screen instead.
+  const wizardActive = chat.wizard === "active" && !chat.trustRequired && !!folder;
+  const inlineSetup = !!chat.setup && needsSetup && !setupSkipped && chat.messages.length === 0 && chat.wizard === "done";
+  const overlaySetup = !!chat.setup && manageOpen;
+  const openWizard = () => { setWizardEdit(true); setChat(s => setWizard(s, "active")); };
+  const closeWizard = () => setChat(s => setWizard(s, "done"));
+  const finishWizard = () => { send({ type: "finish_project_setup" }); closeWizard(); };
+  // Once something works, forget having skipped setup: if it stops working later, that
+  // should start from the banner.
+  useEffect(() => { if (!needsSetup) setSetupSkipped(false); }, [needsSetup]);
   // (the orchestrator isn't listed as "in use" while it can't run: nothing is set up)
   const configuredPaid = configuredPaidModels(needsSetup ? "" : chat.model, chat.orchestratorOptions, chat.localModelTargets);
 
@@ -193,8 +198,7 @@ function App() {
           title={needsSetup ? "No model is set up yet" : "Change models"}
           aria-label="Orchestrator model (click to change models)"
           onClick={() => {
-            if (needsSetup) { openSetup(); return; }  // nothing to choose between yet: set up first
-            setLeftNavOpen(true); setModelsSignal(n => n + 1); send({ type: "orchestrator_options_request" });
+            openWizard();  // changing models happens in the centre of the window
           }}
           className="max-w-xs truncate rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1 text-sm text-mx-bright hover:border-mx-mid disabled:opacity-50"
         >
@@ -210,10 +214,10 @@ function App() {
           <button type="button" className="rounded-sm border border-mx-red px-2 py-0.5 hover:text-mx-bright" onClick={() => startSessionForFolder(folder)}>Restart</button>
         </div>
       )}
-      {folder && needsSetup && !inlineSetup && !overlaySetup && !chat.trustRequired && (
+      {folder && needsSetup && !inlineSetup && !overlaySetup && !wizardActive && chat.wizard === "done" && !chat.trustRequired && (
         <div className="flex items-center gap-3 border-b border-mx-amber bg-mx-panel px-4 py-1 text-xs text-mx-amber" role="alert" data-testid="setup-banner">
           <span>No model is set up yet, so tasks will fail{chat.setup?.orchestrator.reason ? `: ${chat.setup.orchestrator.reason}` : ""}.</span>
-          <button type="button" className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={openSetup}>Set up</button>
+          <button type="button" className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={openWizard}>Set up</button>
         </div>
       )}
       <div className="flex min-h-0 flex-1">
@@ -224,17 +228,12 @@ function App() {
           currentFolder={folder}
           onSelectFolder={startSessionForFolder}
           onOpenDialog={openFolder}
-          modelsSignal={modelsSignal}
           frontier={chat.model}
-          frontierOptions={chat.orchestratorOptions}
           targets={chat.localModelTargets}
-          delegateOptions={chat.delegateOptions}
           connected={chat.connected}
           source={chat.modelsSource}
-          budgets={chat.budgets}
-          onSetup={openSetup}
+          onChangeModels={openWizard}
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
-          send={send}
         />
         <main className="flex min-w-0 flex-1 flex-col">
           <div className="flex-1 overflow-y-auto px-4 py-3">
@@ -271,6 +270,8 @@ function App() {
                   </button>
                 </div>
               </div>
+            ) : wizardActive ? (
+              <ModelWizard chat={chat} send={send} mode={wizardEdit ? "edit" : "new"} onClose={closeWizard} onFinish={finishWizard} />
             ) : inlineSetup && chat.setup ? (
               <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupSkipped(true)} />
             ) : chat.messages.length === 0 ? (
@@ -374,9 +375,9 @@ function App() {
         </RightPanel>
       </div>
       {overlaySetup && chat.setup && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Set up models" data-testid="setup-overlay">
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Accounts and keys" data-testid="setup-overlay">
           <div className="w-full max-w-xl rounded-sm border border-mx-mid bg-mx-bg">
-            <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => { setSetupOpen(false); setManageOpen(false); }} skipLabel="Close" mode={manageOpen ? "manage" : "setup"} />
+            <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setManageOpen(false)} skipLabel="Close" mode="manage" />
           </div>
         </div>
       )}
