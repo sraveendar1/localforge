@@ -15,9 +15,10 @@ export type TaskSummary = {
   reads: number;
   web: number;
   declined: { what: string; tool: string }[];
-  problems: { what: string; error: string; recovered: boolean }[];
+  problems: { what: string; error: string; recovered: boolean; plain?: string }[];
+  plainError?: string | null;
 };
-export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary };
+export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary; detail?: string };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export type Gpu = { name: string; vram_gb: number; backend: string };
@@ -440,7 +441,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "run_cancelled":
       return addItem({ ...state, running: false, status: "", approvals: [] }, { kind: "note", text: "Stopped." });
     case "error":
-      return withStats(addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error")), ev.stats);
+      return withStats(addError({ ...state, running: false, approvals: [] }, String(ev.message ?? "error"), ev.detail ? String(ev.detail) : undefined), ev.stats);
     case "settings":
       return { ...state, autoApprove: !!ev.auto_approve, model: ev.model ?? state.model, streamOutput: ev.stream_output ?? state.streamOutput };
     case "system_stats":
@@ -529,6 +530,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
         web: Number(r.web ?? 0),
         declined: Array.isArray(r.declined) ? r.declined : [],
         problems: Array.isArray(r.problems) ? r.problems : [],
+        plainError: r.plain_error ? String(r.plain_error) : null,
       };
       return { ...state, messages: [...state.messages, { role: "summary", text: "", items: [], summary }] };
     }
@@ -632,8 +634,8 @@ export function addUserMessage(state: ChatState, text: string, imageDataUrl?: st
   return { ...state, messages: [...state.messages, { role: "user", text, items: [], imageDataUrl }] };
 }
 
-export function addError(state: ChatState, text: string): ChatState {
-  return { ...state, messages: [...state.messages, { role: "error", text, items: [] }] };
+export function addError(state: ChatState, text: string, detail?: string): ChatState {
+  return { ...state, messages: [...state.messages, { role: "error", text, items: [], ...(detail && detail !== text ? { detail } : {}) }] };
 }
 
 // Slash-command replies (help, /why, /summary, /model, /models, /installed,

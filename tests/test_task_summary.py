@@ -305,3 +305,42 @@ def test_desktop_sends_the_error_in_the_summary_too(tmp_path):
     assert _events(out, "error")
     s = _events(out, "task_summary")[-1]["summary"]
     assert s["outcome"] == "failed" and "model exploded" in s["error"] and s["steps"] == 1
+
+
+# --- plain English ----------------------------------------------------------------------------
+
+def test_the_judge_warning_from_the_screenshot_reads_as_a_sentence():
+    raw = ("[WARNING: the judge model flagged this result (The response is a request for more information instead of "
+           "fulfilling the task of creating the new function; it does not add any code.) -- verify before use, or "
+           "delegate again with clearer/simpler instructions]")
+    text = ts.explain_error(raw, "delegate_coding_task")
+    assert "[WARNING" not in text and "--" not in text and "verify before use" not in text
+    assert "coding model" in text and "request for more information" in text and "ask again" in text
+
+
+def test_known_internal_messages_are_explained_and_unknown_ones_are_kept():
+    assert "syntax error" in ts.explain_error("delegate_coding_task failed: the local model's a.py doesn't parse, even after one retry", "delegate_coding_task")
+    assert "ran out of room" in ts.explain_error("[WARNING: the local coding model's output hit its 4096-token limit and was cut off ...]", "delegate_coding_task")
+    assert "low on memory" in ts.explain_error("... so memory is short on this machine right now ...")
+    assert ts.explain_error("AuthenticationError: bad key") == "AuthenticationError: bad key"  # unknown: nothing lost
+
+
+def test_a_usage_limit_keeps_the_reset_time_in_the_sentence():
+    text = ts.explain_error("You've hit your session limit · resets 11:40am (America/Chicago)")
+    assert "usage limit" in text and "11:40am" in text
+
+
+def test_friendly_names_for_steps():
+    assert ts.friendly_step("delegate_coding_task", "dia.py") == "The coding model (dia.py)"
+    assert ts.friendly_step("delegate_docs_task") == "The writing model"
+    assert ts.friendly_step("run_command", "npm test") == "Running a command"
+
+
+def test_problems_in_the_summary_carry_a_plain_sentence_and_keep_the_raw_text():
+    log = ts.TaskLog()
+    log.record("delegate_coding_task", "dia.py", "failed", "[WARNING: the judge model flagged this result (it only asks a question) -- verify before use, or delegate again]")
+    s = ts.build(log, "completed")
+    p = s["problems"][0]
+    assert p["plain"].startswith("The coding model (dia.py):") and "[WARNING" not in p["plain"]
+    assert "[WARNING" in p["error"]
+    assert "[WARNING" not in "\n".join(ts.render_lines(s))

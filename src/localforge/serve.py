@@ -6,7 +6,7 @@ JSON; everything else goes to stderr.
 """
 from __future__ import annotations
 
-import dataclasses, json, os, shutil, sys, threading, uuid
+import dataclasses, json, os, re, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
 from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
@@ -208,7 +208,11 @@ def _friendly_failure(exc: Exception, model: str, cli_provider: str | None) -> t
     ready, reason = _orchestrator_readiness(model, cli_provider)
     if not ready and (type(exc).__name__ == "AuthenticationError" or "api key" in str(exc).lower()):
         return f"{reason}. Use “Set up” to add an API key or sign in, then send your message again.", True
-    return f"{type(exc).__name__}: {exc}", False
+    raw = f"{type(exc).__name__}: {exc}"
+    text = re.sub(r"\s+", " ", str(exc) or type(exc).__name__).strip()
+    plain = task_summary.explain_error(text)
+    # a recognised internal message gets its plain-English sentence; anything else stays as it was
+    return (raw if plain == text[:300] else plain), False
 
 
 def _orchestrator_options() -> list[dict]:

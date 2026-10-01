@@ -74,9 +74,10 @@ export function ApprovalPanel({ approvals, onDecide }: { approvals: Approval[]; 
   if (approvals.length === 0) return null;
   const a = approvals[0];
   return (
-    <div className="m-3 rounded-sm border border-mx-amber bg-mx-panel2 p-3">
+    <div className="m-3 rounded-sm border border-mx-amber bg-mx-panel2 p-3" role="alertdialog" aria-label="Needs your approval" data-testid="approval">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your approval</div>
       <div className="flex items-center">
-        <span className="font-semibold text-mx-green glow">{a.title}</span>
+        <span className="font-semibold text-mx-amber">{a.title}</span>
         <span className="ml-2 rounded-sm border border-mx-amber bg-mx-bg px-1.5 py-0.5 text-xs text-mx-amber">{a.kind}</span>
         {approvals.length > 1 && <span className="text-xs text-mx-dim ml-auto">+{approvals.length - 1} more pending</span>}
       </div>
@@ -172,22 +173,40 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
           <div className="text-mx-dim">No files were changed and no commands were run.</div>
         )}
         {s.problems.length > 0 && (
-          <div>
+          <div data-testid="summary-problems">
             <div className="text-mx-red">Problems</div>
-            <ul className="ml-3 font-mono text-mx-red">
+            <ul className="ml-3 space-y-1 text-mx-red">
               {s.problems.map((p, i) => (
-                <li key={i} className="whitespace-pre-wrap">✗ {p.what}: {p.error}{p.recovered && <span className="text-mx-dim"> (recovered)</span>}</li>
+                <li key={i} className="whitespace-pre-wrap">
+                  ✗ {p.plain ?? `${p.what}: ${p.error}`}{p.recovered && <span className="text-mx-dim"> (recovered)</span>}
+                  {p.plain && (
+                    <details className="text-mx-dim">
+                      <summary className="cursor-pointer text-[11px]">Details</summary>
+                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{p.what}: {p.error}</pre>
+                    </details>
+                  )}
+                </li>
               ))}
             </ul>
           </div>
         )}
-        {s.error && <div className="whitespace-pre-wrap font-mono text-mx-red">Error: {s.error}</div>}
+        {s.error && (
+          <div className="whitespace-pre-wrap text-mx-red" data-testid="summary-error">
+            {s.plainError ?? s.error}
+            {s.plainError && s.plainError !== s.error && (
+              <details className="text-mx-dim">
+                <summary className="cursor-pointer text-[11px]">Details</summary>
+                <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{s.error}</pre>
+              </details>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-export function MessageView({ message, thinking }: { message: Message; thinking: boolean }) {
+export function MessageView({ message, thinking, awaitingInput = false }: { message: Message; thinking: boolean; awaitingInput?: boolean }) {
   switch (message.role) {
     case "user":
       return (
@@ -202,7 +221,15 @@ export function MessageView({ message, thinking }: { message: Message; thinking:
       );
     case "error":
       return (
-        <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red">{message.text}</div>
+        <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red" role="alert">
+          {message.text}
+          {message.detail && (
+            <details className="text-mx-dim">
+              <summary className="cursor-pointer text-[11px]">Details</summary>
+              <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{message.detail}</pre>
+            </details>
+          )}
+        </div>
       );
     case "system":
       return (
@@ -214,7 +241,15 @@ export function MessageView({ message, thinking }: { message: Message; thinking:
       return (
         <div className="my-2 max-w-[90%]">
           <ActivityStream items={message.items} open={thinking} round={message.round} />
-          {message.text && <div className="mt-1 whitespace-pre-wrap leading-relaxed">{message.text}</div>}
+          {message.text && awaitingInput ? (
+            <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="needs-input">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your input</div>
+              <div className="whitespace-pre-wrap leading-relaxed text-mx-amber">{message.text}</div>
+              <div className="mt-1 text-[11px] text-mx-dim">Type your answer in the box below.</div>
+            </div>
+          ) : (
+            message.text && <div className="mt-1 whitespace-pre-wrap leading-relaxed">{message.text}</div>
+          )}
           {!message.text && thinking && <div className="animate-pulse text-sm text-mx-dim">Thinking…{message.round ? ` round ${message.round}` : ""}</div>}
         </div>
       );

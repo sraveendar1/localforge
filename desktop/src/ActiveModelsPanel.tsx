@@ -1,17 +1,11 @@
 import type { PaidModel } from "./paidModels";
 import { ConfiguredModel, LocalModelTarget, Usage } from "./state";
+import { splitDescription } from "./describe";
 
 const MODALITY_ORDER = ["coding", "docs", "general"];
 
 const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-dim";
 const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
-
-// "qwen2.5-coder:7b (auto, local, installed)" -> the model, and the note after it.
-function splitDescription(description: string): { name: string; note: string } {
-  const at = description.indexOf(" (");
-  if (at < 0 || !description.endsWith(")")) return { name: description, note: "" };
-  return { name: description.slice(0, at), note: description.slice(at + 2, -1) };
-}
 
 // "Active LLMs at play", split by what each costs: the paid models in use
 // (the orchestrator, and any task type -- image always -- sent to a paid model,

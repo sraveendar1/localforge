@@ -15,6 +15,7 @@ terminal text, so the two can't drift apart.
 """
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -83,6 +84,101 @@ def _command_failed(step: Step) -> bool:
     return step.kind == "command" and step.outcome == "ok" and step.detail.startswith("exit code") and not step.detail.startswith("exit code 0")
 
 
+
+# --- plain English for what went wrong ---------------------------------------------------------
+#
+# Reported with a screenshot: "Problems: delegate_coding_task: [WARNING: the judge model flagged this
+# result (The response is a request for more information...) -- verify before use, or delegate again
+# with clearer/simpler instructions]". That is a message between components, not something to show a
+# person. `explain_error` turns the known ones into a sentence that says what happened and what it
+# means; anything unknown is still cleaned up (tool names and bracketed markers dropped) rather than
+# shown raw. The original text is always kept next to it as "details".
+
+_STEP_LABELS = {
+    "delegate_coding_task": "The coding model",
+    "delegate_docs_task": "The writing model",
+    "delegate_general_task": "The general model",
+    "generate_image": "The image model",
+    "read_file": "Reading a file",
+    "list_files": "Listing files",
+    "search": "Searching the project",
+    "edit_file": "Editing a file",
+    "run_command": "Running a command",
+    "web_search": "Searching the web",
+    "fetch_url": "Opening a web page",
+    "make_dir": "Creating a folder",
+    "move_path": "Moving a file",
+    "delete_path": "Deleting a file",
+}
+
+
+def friendly_step(tool: str, target: str = "") -> str:
+    """"delegate_coding_task dia.py" -> "The coding model (dia.py)"."""
+    label = _STEP_LABELS.get(tool) or tool.replace("_", " ").strip().capitalize()
+    target = (target or "").strip()
+    if target and len(target) <= 60 and tool.startswith(("delegate_", "generate_", "edit_", "read_", "move_", "delete_", "make_")):
+        return f"{label} ({target})"
+    return label
+
+
+def _modality_word(text: str) -> str:
+    m = re.search(r"(?<![a-z])(coding|docs?|general|image)(?![a-z])", text or "")
+    return {"docs": "writing", "doc": "writing"}.get(m.group(1), m.group(1)) if m else "local"
+
+
+def explain_error(text: str, tool: str = "") -> str:
+    """A person-readable version of an internal error or warning. Never longer than a couple of
+    sentences; unknown text is cleaned, not hidden."""
+    raw = (text or "").strip()
+    if not raw:
+        return "Something went wrong, but no details were given."
+    one = re.sub(r"\s+", " ", raw)
+    low = one.lower()
+    who = _modality_word(tool) if tool.startswith(("delegate_", "generate_")) else _modality_word(one)
+
+    if m := re.search(r"the judge model flagged this (?:result|file) \((.*?)\)\s*-- verify", one):
+        return (
+            f"The model that double-checks the work did not accept the {who} model's reply: {m.group(1).rstrip('.')}. "
+            "The orchestrator has been told, and will ask again with clearer instructions."
+        )
+    if m := re.search(r"this (\w+) result may be unreliable \((.*?)\)", one):
+        why = m.group(2).split(";")[0]
+        return f"The {_modality_word(m.group(1))} model's reply looked unusable ({why}). It was asked again; if you see this, double-check the result."
+    if "hit its" in low and "token limit" in low and "cut off" in low:
+        return f"The {who} model ran out of room in the middle of its answer, so the reply was cut off and not used. Ask for a smaller change, or split it into steps."
+    if "doesn't parse" in low or "does not parse" in low:
+        return f"The file the {who} model wrote has a syntax error, even after a second try, so nothing was saved. The orchestrator can ask again or write a smaller piece."
+    if "is too large" in low and "rewrite" in low:
+        return "That file is too big for the local model to rewrite in one go. Ask for a change to one part of it, or split the file."
+    if "memory is short" in low or "out of memory" in low:
+        return "The computer ran low on memory while the local model was working. Close other apps, or choose a smaller local model in Models."
+    if "instructions contain" in low and "lines of code" in low:
+        return "The orchestrator tried to write the code itself instead of describing it. It was told to describe the change and let the local model write it."
+    if "edit_file failed" in low and "small fix-ups" in low:
+        return "The orchestrator tried to make a large edit directly. Large changes are written by the local model instead, so it was sent back to delegate."
+    if "no image model is chosen" in low:
+        return "Image generation isn't set up. Choose an image model in Models (it needs an OpenAI or Gemini key)."
+    if "would pass" in low and "limit" in low and "nothing was generated or billed" in low:
+        return "That image would go over your monthly image budget, so it was not generated or billed. You can raise the limit in Models."
+    if low.startswith("the user declined"):
+        return "You declined this step, so it was not done."
+    if "usage limit" in low or "session limit" in low or "rate limit" in low or "spend limit" in low:
+        return f"The AI provider's usage limit was reached ({one[:160]}). Wait for it to reset, or switch models."
+    if "needs a" in low and "api key" in low:
+        return one  # already written for people (see serve._friendly_failure)
+    if "timed out" in low or "timeout" in low:
+        return f"The step took too long and was stopped ({one[:160]}). Try again, or break the request into smaller steps."
+    if m := re.match(r"exit code (\d+)", one):
+        return f"The command failed (exit code {m.group(1)}). Its output is under details."
+
+    # unknown: drop only the machine markers; the words (and any error class) stay, they help to debug
+    cleaned = re.sub(r"^\[(?:WARNING|ERROR):\s*", "", one)
+    cleaned = re.sub(r"\s*\]$", "", cleaned)
+    cleaned = re.sub(r"\s*--\s*verify before use.*$", "", cleaned)
+    cleaned = re.sub(r"^\w+ failed: ", "", cleaned)
+    return cleaned[:300] or "Something went wrong."
+
+
 def build(log: TaskLog | None, outcome: str = "completed", error: str | None = None) -> dict:
     """The summary as plain data. `outcome` is "completed", "stopped"
     (cancelled, or halted with the work kept) or "failed"; `error` is the
@@ -98,7 +194,10 @@ def build(log: TaskLog | None, outcome: str = "completed", error: str | None = N
             # "recovered" when the very same kind of step succeeded afterwards
             # (a retry, or a different attempt at the same target).
             later_ok = any(s.tool == step.tool and s.target == step.target and s.outcome == "ok" and not _command_failed(s) for s in steps[i + 1 :])
-            problems.append({"what": f"{step.tool} {step.target}".strip(), "error": step.detail or "failed", "recovered": later_ok})
+            problems.append({
+                "what": f"{step.tool} {step.target}".strip(), "error": step.detail or "failed", "recovered": later_ok,
+                "plain": f"{friendly_step(step.tool, step.target)}: {explain_error(step.detail or 'failed', step.tool)}",
+            })
             if step.kind == "command":
                 commands.append({"command": step.target, "ok": False, "detail": step.detail})
             continue
@@ -115,10 +214,11 @@ def build(log: TaskLog | None, outcome: str = "completed", error: str | None = N
         elif step.kind == "web":
             web += 1
     for text in log.notes if log else []:
-        problems.append({"what": "handled along the way", "error": text, "recovered": True})
+        problems.append({"what": "handled along the way", "error": text, "recovered": True, "plain": explain_error(text)})
     return {
         "outcome": outcome,
         "error": error or None,
+        "plain_error": explain_error(error) if error else None,
         "duration_s": round(time.time() - log.started_at, 1) if log else 0.0,
         "steps": len(steps),
         "files": files,
@@ -178,8 +278,8 @@ def render_lines(summary: dict) -> list[str]:
     if summary["problems"]:
         lines.append("Problems:")
         lines += _clip(
-            [f"  ✗ {p['what']}: {p['error'][:200]}" + (" (recovered)" if p["recovered"] else "") for p in summary["problems"]]
+            [f"  ✗ {p.get('plain') or p['what'] + ': ' + p['error'][:200]}" + (" (recovered)" if p["recovered"] else "") for p in summary["problems"]]
         )
     if summary["error"]:
-        lines.append(f"Error: {summary['error']}")
+        lines.append(f"Error: {summary.get('plain_error') or summary['error']}")
     return lines

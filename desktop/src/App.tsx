@@ -5,6 +5,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
 import { BackendStatus } from "./BackendStatus";
 import { SetupScreen } from "./SetupScreen";
+import { asksUser } from "./needsInput";
 import { ModelWizard } from "./ModelWizard";
 import { RightPanel } from "./RightPanel";
 import { defaultRightOpen, loadPanelOpen, savePanelOpen } from "./panelPrefs";
@@ -188,6 +189,10 @@ function App() {
   const configuredPaid = configuredPaidModels(needsSetup ? "" : chat.model, chat.orchestratorOptions, chat.localModelTargets);
 
   const lastAssistant = chat.messages.map(m => m.role).lastIndexOf("assistant");
+  // The orchestrator's latest reply is asking you something: shown in orange, and the box invites an answer.
+  let lastReply = -1;  // the last message that isn't a summary or system note
+  for (let i = chat.messages.length - 1; i >= 0; i--) if (chat.messages[i].role !== "summary" && chat.messages[i].role !== "system") { lastReply = i; break; }
+  const awaitingInput = !chat.running && lastAssistant >= 0 && lastAssistant === lastReply && asksUser(chat.messages[lastAssistant].text);
 
   useEffect(() => {
     // Held back until any trust prompt is resolved -- the backend no-ops
@@ -312,7 +317,7 @@ function App() {
                 <p className="pt-3 text-sm text-mx-green">What are you building?</p>
                 <p className="max-w-md text-xs text-mx-dim">Describe the task in the box below. A plan appears on the right once the work has more than a couple of steps.</p>
               </div>
-            ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} />)}
+            ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} awaitingInput={awaitingInput && i === lastAssistant} />)}
             <div ref={endRef} />
           </div>
           {chat.running && (
@@ -357,8 +362,8 @@ function App() {
             </button>
             <textarea
               rows={3}
-              className="flex-1 resize-none rounded border border-mx-dim bg-mx-panel2 p-2 text-sm"
-              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
+              className={"flex-1 resize-none rounded border bg-mx-panel2 p-2 text-sm " + (awaitingInput ? "border-mx-amber" : "border-mx-dim")}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : awaitingInput ? "Answer localforge's question…" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
               onPaste={onPaste}

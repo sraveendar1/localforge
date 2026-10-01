@@ -43,21 +43,25 @@ export function LeftNav({
               <p className="text-mx-dim italic">No recent projects yet.</p>
             ) : (
               <ul className="space-y-0.5">
-                {recentFolders.map(f => (
-                  <li key={f}>
-                    <button
-                      type="button"
-                      title={f}
-                      onClick={() => onSelectFolder(f)}
-                      className={
-                        "block w-full truncate rounded-sm px-1 py-0.5 text-left hover:bg-mx-dim/40 " +
-                        (f === currentFolder ? "text-mx-bright" : "text-mx-mid")
-                      }
-                    >
-                      {f.split("/").pop() || f}
-                    </button>
-                  </li>
-                ))}
+                {recentFolders.map(f => {
+                  const current = f === currentFolder;
+                  return (
+                    <li key={f}>
+                      <button
+                        type="button"
+                        title={f}
+                        aria-current={current ? "true" : undefined}
+                        onClick={() => onSelectFolder(f)}
+                        className={
+                          "block w-full truncate rounded-sm border-l-2 py-1 pl-2 pr-1 text-left hover:bg-mx-dim/40 " +
+                          (current ? "border-mx-bright bg-mx-dim/30 text-mx-bright" : "border-transparent text-mx-mid")
+                        }
+                      >
+                        {f.split("/").pop() || f}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
             <button
