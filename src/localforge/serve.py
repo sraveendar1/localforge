@@ -328,10 +328,10 @@ def _delegate_options(modality: str) -> dict:
 def _project_goal(root: Path) -> str:
     """AGENTS.md's own "What this project is" section (see cli.py's
     `_print_project_summary`, which surfaces the same text at the start of
-    a terminal session) -- empty if there's no AGENTS.md yet, or one
-    without that section."""
+    a terminal session) or, before there is one, what the user first asked
+    for (recorded by `_maybe_record_goal`) -- empty if neither exists."""
     try:
-        return brief.section(brief.existing_brief(root), ("what this project is",))
+        return brief.project_goal(root)
     except Exception:
         return ""
 
@@ -559,8 +559,12 @@ class StdioServer:
         try:
             result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace, image=image)
             self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats))
-            self._emit_summary(result.stats, "completed")
+            summary = self._emit_summary(result.stats, "completed")
             self._record_usage(result.stats)
+            # Off the worker, so a pending approval for the AGENTS.md change never holds up the next
+            # queued task: it just waits in the approval list until it's answered.
+            self._brief_thread = threading.Thread(target=self._update_agents_md, args=(workspace, text, summary), daemon=True)
+            self._brief_thread.start()
         except Cancelled as exc:
             self.emit("run_cancelled")
             self._emit_summary(getattr(exc, "stats", None), "stopped")
@@ -578,7 +582,7 @@ class StdioServer:
         finally:
             self._start_next_queued()
 
-    def _emit_summary(self, stats, outcome: str, error: str | None = None) -> None:
+    def _emit_summary(self, stats, outcome: str, error: str | None = None) -> dict | None:
         """What the task did and what went wrong, after every task -- the same
         summary the terminal prints. A plain question answered with no tools
         used has nothing to list, so a completed task with no steps sends none;
@@ -586,9 +590,44 @@ class StdioServer:
         try:
             summary = task_summary.build(getattr(stats, "log", None), outcome, error)
             if outcome == "completed" and task_summary.is_empty(summary):
-                return
+                return summary
             self.emit("task_summary", summary=summary)
+            return summary
         except Exception:  # noqa: BLE001, S110 - a nicety after the fact; the run itself already ended
+            return None
+
+    # --- the project goal and its progress log (AGENTS.md) ---------------------------
+
+    def _maybe_record_goal(self, text: str) -> None:
+        """The first real request in a project becomes its goal: kept in the project's
+        localforge folder straight away (shown in Overall goal), and added to AGENTS.md
+        with the first finished task that changes something."""
+        try:
+            if brief.record_goal(self.root, text):
+                self.handle_memory_command("")
+        except Exception:  # noqa: BLE001 - never in the way of the message itself
+            pass
+
+    def _update_agents_md(self, workspace, task: str, summary: dict | None) -> None:
+        """After a task that changed something, add one line to AGENTS.md's Progress log
+        (and the goal section, if AGENTS.md has none yet). It goes through the normal
+        write approval -- the user sees the diff, and "always" covers later ones -- and a
+        decline is respected for the rest of the session. Never fails the task."""
+        if not summary or not summary.get("files") or getattr(self, "_agents_md_declined", False):
+            return
+        try:
+            path = brief.brief_path(self.root)
+            current = path.read_text(errors="replace") if path.is_file() else ""
+            new = brief.with_goal(current, brief.recorded_goal(self.root))
+            new = brief.with_progress(new, brief.progress_line(task, summary["files"]))
+            if new.strip() == current.strip():
+                return
+            result = workspace.write_file(brief.BRIEF_FILE, new)
+            if result.startswith("The user declined"):
+                self._agents_md_declined = True
+                return
+            self.handle_memory_command("")
+        except Exception:  # noqa: BLE001, S110 - bookkeeping after the fact
             pass
 
     def _record_usage(self, stats) -> None:
@@ -691,10 +730,12 @@ class StdioServer:
                 else:
                     self.emit("error", message=f"Unknown command: {cmd}")
             elif self.busy:
+                self._maybe_record_goal(text)
                 with self._queue_lock:
                     self._queue.append((text, image))
                 self._emit_queue()
             else:
+                self._maybe_record_goal(text)
                 self._cancel.clear()
                 self.emit("run_started", text=text)
                 self._worker = threading.Thread(target=self._run_turn, args=(text, image), daemon=True)
@@ -805,7 +846,11 @@ class StdioServer:
         facts = memory.list_facts(self.root)
         narrative = memory.load(self.root)
         goal = _project_goal(self.root)
-        self.emit("memory", facts=facts, narrative=narrative, goal=goal)
+        try:
+            progress = brief.recent_progress(brief.existing_brief(self.root), 5)
+        except Exception:  # noqa: BLE001
+            progress = []
+        self.emit("memory", facts=facts, narrative=narrative, goal=goal, progress=progress)
 
     def handle_scratch_command(self, arg: str):
         if not arg:

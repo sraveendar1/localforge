@@ -28,6 +28,8 @@ old name: still read, and /goals moves it to AGENTS.md.
 
 from __future__ import annotations
 
+import re
+from datetime import date
 from pathlib import Path
 
 BRIEF_FILE = "AGENTS.md"
@@ -216,3 +218,141 @@ def draft(entry, context: str, current_brief: str = "", context_limit: int | Non
     if text and not text.lstrip().startswith("#"):
         text = "# Project brief\n\n" + text
     return text.strip() + "\n" if text else ""
+
+
+# --- the project goal, from the user's first request, and a running progress log ----------------
+#
+# Asked for: "when you start the conversation and the user types what they want to build, that
+# should be recorded as a goal, and appended to AGENTS.md as the project grows with the agents."
+# The first substantive request is kept in the project's localforge folder at once (no approval:
+# it's localforge's own note), and a finished task that changed things adds a line to AGENTS.md's
+# `## Progress log` -- written through the normal diff-and-approval path, never silently. Plain text,
+# no model involved, so it works with no local model and can't drift.
+
+GOAL_FILE = "goal.md"
+GOAL_SECTION = "What this project is"
+PROGRESS_SECTION = "Progress log"
+MAX_GOAL_CHARS = 600
+MAX_PROGRESS_ENTRIES = 40  # the oldest fall off, so the file doesn't grow without bound
+MIN_GOAL_CHARS = 12
+
+
+def goal_path(root: Path) -> Path:
+    from localforge import memory
+
+    return memory.project_dir(root) / GOAL_FILE
+
+
+def recorded_goal(root: Path) -> str:
+    try:
+        return goal_path(root).read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def _tidy_goal(text: str) -> str:
+    one_line = re.sub(r"\s+", " ", text or "").strip()
+    return one_line if len(one_line) <= MAX_GOAL_CHARS else one_line[: MAX_GOAL_CHARS - 1].rstrip() + "…"
+
+
+def worth_recording_as_goal(text: str) -> bool:
+    """A greeting or a one-word reply isn't a goal; wait for a real request."""
+    tidy = _tidy_goal(text)
+    return not tidy.startswith("/") and len(tidy) >= MIN_GOAL_CHARS and len(tidy.split()) >= 3
+
+
+def record_goal(root: Path, text: str) -> bool:
+    """Keep `text` as the project's goal if it has none yet and `text` is a real request.
+    True if it was recorded now."""
+    from localforge import memory
+
+    if recorded_goal(root) or not worth_recording_as_goal(text):
+        return False
+    try:
+        memory.ensure_dir(root)
+        goal_path(root).write_text(_tidy_goal(text) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def project_goal(root: Path) -> str:
+    """What to show as the project's goal: AGENTS.md's own summary when it has one, else
+    what the user first asked for."""
+    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or recorded_goal(root)
+
+
+def _split_sections(text: str) -> list[tuple[str | None, list[str]]]:
+    """[(heading or None for the preamble, its lines including the heading)]."""
+    parts: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in (text or "").splitlines():
+        if line.startswith("## "):
+            parts.append((line[3:].strip(), [line]))
+        else:
+            parts[-1][1].append(line)
+    return parts
+
+
+def _join_sections(parts: list[tuple[str | None, list[str]]]) -> str:
+    chunks = ["\n".join(lines).strip("\n") for _, lines in parts]
+    return "\n\n".join(c for c in chunks if c).strip() + "\n"
+
+
+def with_goal(text: str, goal: str) -> str:
+    """`text` (AGENTS.md's content) with a `## What this project is` section holding `goal`,
+    added at the top if it has none. A section already there is left alone."""
+    goal = _tidy_goal(goal)
+    if not goal or section(text, (GOAL_SECTION.lower(),)):
+        return text
+    if not (text or "").strip():
+        return f"# Project brief\n\n## {GOAL_SECTION}\n\n{goal}\n"
+    parts = _split_sections(text)
+    new = (GOAL_SECTION, [f"## {GOAL_SECTION}", "", goal])
+    # an empty section of that name is replaced in place; otherwise it goes right after the title
+    for i, (name, _) in enumerate(parts):
+        if name and name.lower() == GOAL_SECTION.lower():
+            parts[i] = new
+            return _join_sections(parts)
+    parts.insert(1, new)
+    return _join_sections(parts)
+
+
+def progress_entries(text: str) -> list[str]:
+    return [ln[2:].strip() for ln in section(text, (PROGRESS_SECTION.lower(),)).splitlines() if ln.startswith("- ")]
+
+
+def recent_progress(text: str, n: int = 5) -> list[str]:
+    return progress_entries(text)[-n:]
+
+
+def with_progress(text: str, entry: str, today: date | None = None) -> str:
+    """`text` with one line added to `## Progress log` (created at the end if missing).
+    The same line twice in a row isn't added again; only the newest MAX_PROGRESS_ENTRIES stay."""
+    entry = re.sub(r"\s+", " ", entry or "").strip()
+    if not entry:
+        return text
+    line = f"{(today or date.today()).isoformat()} — {entry}"
+    entries = progress_entries(text)
+    if entries and entries[-1].split(" — ", 1)[-1] == entry:
+        return text
+    entries = (entries + [line])[-MAX_PROGRESS_ENTRIES:]
+    body = [f"## {PROGRESS_SECTION}", ""] + [f"- {e}" for e in entries]
+    parts = _split_sections(text or "")
+    for i, (name, _) in enumerate(parts):
+        if name and name.lower() == PROGRESS_SECTION.lower():
+            parts[i] = (name, body)
+            return _join_sections(parts)
+    parts.append((PROGRESS_SECTION, body))
+    return _join_sections(parts)
+
+
+def progress_line(task: str, files: list[dict], limit: int = 90) -> str:
+    """One line for the log: the request, and what it changed ("created a.py, updated b.py, +2 more")."""
+    ask = re.sub(r"\s+", " ", task or "").strip()
+    ask = ask if len(ask) <= limit else ask[: limit - 1].rstrip() + "…"
+    shown, extra = files[:4], max(0, len(files) - 4)
+    verbs = {"create": "created", "update": "updated", "delete": "deleted", "move": "moved"}
+    bits = [f"{verbs.get(str(f.get('action', '')).lower().rstrip('d'), str(f.get('action', 'changed')).lower())} {f.get('path', '')}".strip() for f in shown]
+    if extra:
+        bits.append(f"+{extra} more")
+    return f"{ask} ({', '.join(bits)})" if bits else ask

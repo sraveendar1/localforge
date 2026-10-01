@@ -87,19 +87,34 @@ export function ApprovalPanel({ approvals, onDecide }: { approvals: Approval[]; 
   );
 }
 
-export function TodoList({ todos }: { todos: Todo[] }) {
-  if (todos.length === 0) {
-    return <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>;
-  }
+// The plan is the current task's own steps; requests typed while it runs wait in the queue and
+// are listed under it as "Up next", so nothing sent is ever out of sight.
+export function TodoList({ todos, queued = [] }: { todos: Todo[]; queued?: string[] }) {
   return (
-    <ul className="space-y-1 text-sm">
-      {todos.map((todo, i) => (
-        <li key={i} className="flex gap-2">
-          <span className={todo.status === "pending" ? "text-mx-dim" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
-          <span className={todo.status === "completed" ? "line-through text-mx-dim" : ""}>{todo.content}</span>
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-2" data-testid="plan">
+      {todos.length === 0 ? (
+        <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>
+      ) : (
+        <ul className="space-y-1 text-sm">
+          {todos.map((todo, i) => (
+            <li key={i} className="flex gap-2">
+              <span className={todo.status === "pending" ? "text-mx-dim" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
+              <span className={todo.status === "completed" ? "line-through text-mx-dim" : ""}>{todo.content}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {queued.length > 0 && (
+        <div data-testid="plan-up-next">
+          <h3 className="text-[11px] uppercase tracking-wide text-mx-mid">Up next ({queued.length})</h3>
+          <ul className="mt-1 space-y-1 text-xs">
+            {queued.map((q, i) => (
+              <li key={i} className="flex gap-2 text-mx-dim"><span aria-hidden>{i + 1}.</span><span className="min-w-0 break-words">{q}</span></li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }
 

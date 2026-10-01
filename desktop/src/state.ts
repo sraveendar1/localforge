@@ -35,7 +35,7 @@ export type SystemStats = {
   ramTotalGb: number;
 };
 export type MemoryFact = { name: string; description?: string; content?: string; type?: string };
-export type MemoryState = { facts: MemoryFact[]; narrative: string; goal: string };
+export type MemoryState = { facts: MemoryFact[]; narrative: string; goal: string; progress: string[] };
 export type ScratchFile = { path: string; size: number };
 export type UsageTotals = {
   frontierPromptTokens: number;
@@ -186,7 +186,7 @@ export const initialState: ChatState = {
   localModelTargets: {},
   delegateOptions: {},
   systemStats: null,
-  memory: { facts: [], narrative: "", goal: "" },
+  memory: { facts: [], narrative: "", goal: "", progress: [] },
   scratchFiles: [],
   queue: [],  // Initialize queue to an empty array
   streamOutput: false,  // Initialize streamOutput to false
@@ -442,7 +442,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "system_stats":
       return { ...state, systemStats: { hardware: ev.hardware ?? {}, cpuPercent: Number(ev.cpu_percent ?? 0), ramUsedGb: Number(ev.ram_used_gb ?? 0), ramTotalGb: Number(ev.ram_total_gb ?? 0) } };
     case "memory":
-      return { ...state, memory: { facts: Array.isArray(ev.facts) ? ev.facts : [], narrative: String(ev.narrative ?? ""), goal: String(ev.goal ?? "") } };
+      return { ...state, memory: { facts: Array.isArray(ev.facts) ? ev.facts : [], narrative: String(ev.narrative ?? ""), goal: String(ev.goal ?? ""), progress: Array.isArray(ev.progress) ? ev.progress.map(String) : [] } };
     case "scratch":
       return { ...state, scratchFiles: Array.isArray(ev.files) ? ev.files : [] };
     case "session_reset":

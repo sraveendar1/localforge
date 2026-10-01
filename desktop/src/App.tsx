@@ -365,7 +365,23 @@ function App() {
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
         <RightPanel open={rightOpen} onToggle={toggleRight}>
           <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
-          <Curtain title="Plan"><TodoList todos={chat.todos} /></Curtain>
+          <Curtain title="Plan"><TodoList todos={chat.todos} queued={chat.queue} /></Curtain>
+          <Curtain title={chat.queue.length ? `Queue (${chat.queue.length})` : "Queue"}>
+            <div data-testid="queue-panel">
+              {chat.queue.length === 0 ? (
+                <p className="text-xs text-mx-dim italic">Nothing waiting. What you send while a task runs lines up here and starts when it finishes.</p>
+              ) : (
+                <>
+                  <ol className="space-y-1 text-xs">
+                    {chat.queue.map((q, i) => (
+                      <li key={i} className="flex gap-2 text-mx-mid"><span className="text-mx-dim" aria-hidden>{i + 1}.</span><span className="min-w-0 break-words">{q}</span></li>
+                    ))}
+                  </ol>
+                  <button className="mt-2 rounded-sm border border-mx-red bg-transparent px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_clear" })}>Clear queue</button>
+                </>
+              )}
+            </div>
+          </Curtain>
           <Curtain title="Active LLMs">
             <ActiveModelsPanel
               usage={chat.usage}
