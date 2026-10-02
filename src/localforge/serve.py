@@ -377,6 +377,22 @@ def _hardware():
     return detect_hardware().model_dump()
 
 
+def _usage_text(previous, total) -> str:
+    def line(label: str, t) -> str:
+        if not t:
+            return f"{label}: nothing yet."
+        d = _jsonable_stats(t) or {}
+        local = d.get("local_tokens_generated", 0) or 0
+        frontier = (d.get("frontier_prompt_tokens", 0) or 0) + (d.get("frontier_completion_tokens", 0) or 0)
+        share = f"{local * 100 / (local + frontier):.0f}% written locally" if local + frontier else "no tokens yet"
+        billed, plan = d.get("frontier_cost_usd", 0) or 0, d.get("subscription_cost_usd", 0) or 0
+        money = f"${billed:.2f} billed" if billed else (f"~${plan:.2f} in your plan (not charged)" if plan else "no cost")
+        n = d.get("tasks", 0) or 0
+        return f"{label}: {n} task{'' if n == 1 else 's'} · {share} · {money}"
+
+    return "Usage for this project\n" + line("Previous session", previous) + "\n" + line("All time", total) + "\nThis session's numbers are in the Usage and cost panel."
+
+
 _hardware_cache: tuple[float, dict] | None = None
 HARDWARE_CACHE_SECONDS = 30.0  # the static facts (cores, RAM, GPU) don't change; free disk barely does
 
@@ -417,6 +433,25 @@ def _system_stats() -> dict:
     except Exception:  # noqa: BLE001
         cpu_percent, ram_used_gb, ram_total_gb = 0, 0, 0
     return {"hardware": hardware, "cpu_percent": cpu_percent, "ram_used_gb": ram_used_gb, "ram_total_gb": ram_total_gb}
+
+# Terminal-only commands: say where each one lives in the app instead of "Unknown command".
+_TERMINAL_ONLY = {
+    "/goals": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log. (`/goals` drafting is a terminal command.)",
+    "/init": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log.",
+    "/tasks": "Unfinished tasks from earlier sessions are a terminal feature (`/tasks`). Here, what you send while a task runs waits in the Queue section.",
+    "/upgrade": "Model upgrades are done in the terminal (`localforge upgrade`). To change a model here use Models → Change models…",
+    "/setup": "Open Models → Accounts & keys… to add a key or sign in, and Change models… to choose models.",
+    "/theme": "Colour themes are a terminal feature (`localforge theme`); the app has one look.",
+    "/delete": "Deleting downloaded models is a terminal command (`localforge delete`). `/installed` lists what is on disk.",
+    "/exit": "Close the window to leave. Your memory and usage are saved when the session ends.",
+    "/quit": "Close the window to leave. Your memory and usage are saved when the session ends.",
+}
+
+
+def _unknown_command_message(cmd: str) -> str:
+    hint = _TERMINAL_ONLY.get(cmd)
+    return f"{cmd} isn't available in the app. {hint}" if hint else f"Unknown command: {cmd}. Type /help to see the list."
+
 
 NOTE_PREFIX = "Note from the user: "
 
@@ -696,19 +731,19 @@ class StdioServer:
                 cmd, arg = text.split(" ", 1) if " " in text else (text, "")
                 cmd = cmd.lower()
                 if cmd == "/memory":
-                    self.handle_memory_command(arg)
+                    self.handle_memory_command(arg, say=True)
                 elif cmd == "/scratch":
-                    self.handle_scratch_command(arg)
+                    self.handle_scratch_command(arg, say=True)
                 elif cmd == "/queue":
-                    self.handle_queue_command(arg)
+                    self.handle_queue_command(arg, say=True)
                 elif cmd == "/stop":
-                    self.handle_stop_command()
+                    self.handle_stop_command(say=True)
                 elif cmd == "/clear" or cmd == "/new":
                     self.handle_clear_command()
                 elif cmd == "/usage":
-                    self.handle_usage_command(arg)
+                    self.handle_usage_command(arg, say=True)
                 elif cmd == "/models" or cmd == "/installed" or cmd == "/catalog" or cmd == "/doctor" or cmd == "/scan":
-                    self.handle_catalog_command(cmd)
+                    self.handle_catalog_command(cmd, say=True)
                 elif cmd == "/model":
                     self.handle_model_command(arg)
                 elif cmd == "/budget":
@@ -732,7 +767,7 @@ class StdioServer:
                 elif cmd == "/stream":
                     self.handle_stream_command(arg)
                 else:
-                    self.emit("error", message=f"Unknown command: {cmd}")
+                    self.emit("error", message=_unknown_command_message(cmd))
             elif self.busy:
                 self._maybe_record_goal(text)
                 with self._queue_lock:
@@ -839,14 +874,22 @@ class StdioServer:
             self.emit("error", message=f"Unknown message type: {message_type}")
         return True
 
-    def handle_memory_command(self, arg: str):
+    def handle_memory_command(self, arg: str, say: bool = False):
+        said = ""
         if not arg:
             pass
         elif arg.startswith("clear"):
             memory.forget(self.root)
+            said = "Cleared this folder's memory."
         elif arg.startswith("forget"):
-            name = arg.split(" ")[1].strip()
-            memory.forget_fact(self.root, name)
+            bits = arg.split(None, 1)
+            name = bits[1].strip() if len(bits) > 1 else ""
+            if not name:
+                said = "Say which one to forget: /memory forget <name>."
+            else:
+                known = {f.get("name") for f in memory.list_facts(self.root)}
+                memory.forget_fact(self.root, name)
+                said = f"Forgot “{name}”." if name in known else f"There's no remembered fact called “{name}”."
         facts = memory.list_facts(self.root)
         narrative = memory.load(self.root)
         goal = _project_goal(self.root)
@@ -855,12 +898,22 @@ class StdioServer:
         except Exception:  # noqa: BLE001
             progress = []
         self.emit("memory", facts=facts, narrative=narrative, goal=goal, progress=progress)
+        if say:
+            if not said:
+                lines = [f"• {f.get('name')}" + (f": {f.get('description')}" if f.get("description") else "") for f in facts]
+                said = (f"Remembered for this folder ({len(facts)}):\n" + "\n".join(lines)) if facts else "Nothing is remembered for this folder yet."
+                if narrative:
+                    said += f"\nA note from the last session is saved ({len(narrative)} characters); see Overall goal → Last session."
+                said += "\n/memory clear forgets everything; /memory forget <name> forgets one."
+            self.emit("system_text", text=said)
 
-    def handle_scratch_command(self, arg: str):
+    def handle_scratch_command(self, arg: str, say: bool = False):
         if not arg:
             scratchpad = self._scratchpad or Scratchpad(self.root)
             files = [{'path': str(f.relative_to(scratchpad.root)).replace("\\", "/"), 'size': f.stat().st_size} for f in scratchpad.files()]
             self.emit("scratch", files=files)
+            if say:
+                self.emit("system_text", text=("Scratchpad (drafts that aren't in your project):\n" + "\n".join(f"• {f['path']} ({f['size']} bytes)" for f in files)) if files else "The scratchpad is empty. It holds drafts the orchestrator makes outside your project.")
         elif arg.startswith("clear"):
             if self.busy:
                 self.emit("error", message="A run is already in progress.")
@@ -869,21 +922,32 @@ class StdioServer:
                 scratchpad.clear()
                 files = []
                 self.emit("scratch", files=files)
+                if say:
+                    self.emit("system_text", text="Scratchpad cleared.")
 
-    def handle_queue_command(self, arg: str):
+    def handle_queue_command(self, arg: str, say: bool = False):
         if not arg:
             self._emit_queue()
+            if say:
+                with self._queue_lock:
+                    waiting = [text for text, _ in self._queue]
+                self.emit("system_text", text=("Waiting in the queue:\n" + "\n".join(f"{i}. {t}" for i, t in enumerate(waiting, 1))) if waiting else "Nothing is queued. What you send while a task runs waits here.")
         elif arg.startswith("clear"):
             with self._queue_lock:
                 self._queue.clear()
             self._emit_queue()
+            if say:
+                self.emit("system_text", text="Queue cleared.")
 
-    def handle_stop_command(self):
+    def handle_stop_command(self, say: bool = False):
+        was_busy = self.busy
         self._cancel.set()
         with self._queue_lock:
             self._queue.clear()
         self._decline_all_pending()
         self._emit_queue()
+        if say:
+            self.emit("system_text", text="Stopping the running task (and clearing the queue)." if was_busy else "Nothing is running.")
 
     def handle_clear_command(self):
         if self.busy:
@@ -897,7 +961,7 @@ class StdioServer:
                 self._queue.clear()
             self._emit_queue()
 
-    def handle_usage_command(self, arg: str = "") -> None:
+    def handle_usage_command(self, arg: str = "", say: bool = False) -> None:
         if arg:
             command = arg.split(" ")[0]
             if command == "/memory":
@@ -948,8 +1012,10 @@ class StdioServer:
                 previous_session=_jsonable_stats(previous) if previous else None,
                 all_time=_jsonable_stats(total) if total else None,
             )
+            if say:
+                self.emit("system_text", text=_usage_text(previous, total))
 
-    def handle_catalog_command(self, cmd: str):
+    def handle_catalog_command(self, cmd: str, say: bool = False):
         if cmd == "/models":
             self.emit("models", models=_models())
         elif cmd == "/installed":
@@ -960,7 +1026,12 @@ class StdioServer:
             # Off the reader thread: it asks each provider whether its key works.
             threading.Thread(target=lambda: self.emit("doctor", checks=_doctor(self.frontier_model, self.cli_provider)), daemon=True).start()
         elif cmd == "/scan":
-            self.emit("system_stats", **_system_stats())
+            stats = _system_stats()
+            self.emit("system_stats", **stats)
+            if say:
+                hw = stats["hardware"]
+                gpus = ", ".join(f"{g['name']} ({g['vram_gb']} GB)" for g in hw.get("gpus", [])) or "none"
+                self.emit("system_text", text=f"This computer: {hw.get('os')} {hw.get('arch')} · {hw.get('cpu_cores')} cores · {hw.get('ram_gb')} GB memory · GPU {gpus} · {hw.get('free_disk_gb')} GB free disk")
 
     def _emit_orchestrator_options(self):
         try:
@@ -1242,6 +1313,7 @@ class StdioServer:
     def handle_model_command(self, arg: str):
         if not arg:
             self.emit("model", model=self.frontier_model)
+            self.emit("system_text", text=f"The orchestrator (plans and checks the work) is {self.frontier_model}. Switch with /model <id>, or use Models → Change models…")
         else:
             model = arg.strip()
             if not model:
@@ -1249,12 +1321,15 @@ class StdioServer:
             else:
                 if problem := self._switch_orchestrator(model):
                     self.emit("error", message=problem)
+                else:
+                    self.emit("system_text", text=f"Switched the orchestrator to {self.frontier_model}. It applies from the next task.")
                 self.emit("model", model=self.frontier_model)
 
     def handle_advanced_model_command(self, arg: str):
         parts = arg.strip().split(None, 1)
         if not parts:
             self._emit_advanced_model()
+            self.emit("system_text", text=self._advanced_model_text())
             return
         modality = parts[0].lower()
         if len(parts) == 1:
@@ -1262,6 +1337,7 @@ class StdioServer:
                 self.emit("error", message=f"Unknown task type: {modality}. Use coding, docs, general, image, or video.")
                 return
             self._emit_advanced_model()
+            self.emit("system_text", text=f"{modality}: {_advanced_model_snapshot()[modality]['description']}")
             return
         try:
             delegate_target.apply(modality, parts[1])
@@ -1269,6 +1345,12 @@ class StdioServer:
             self.emit("error", message=str(exc))
             return
         self._emit_advanced_model()
+        self.emit("system_text", text=f"{modality} now uses: {_advanced_model_snapshot()[modality]['description']}")
+
+    def _advanced_model_text(self) -> str:
+        snap = _advanced_model_snapshot()
+        names = {"coding": "Coding", "docs": "Writing & docs", "general": "General", "image": "Images", "video": "Video"}
+        return "Models for each kind of work:\n" + "\n".join(f"• {names.get(m, m)}: {v['description']}" for m, v in snap.items()) + "\nChange one with /advanced-model <type> <model|auto>, or Models → Change models…"
 
     def handle_auto_command(self, arg: str):
         arg = arg.strip().lower()
@@ -1281,9 +1363,12 @@ class StdioServer:
             # force off, so a bare "/auto" from the GUI behaves the same way.
             self.auto_approve = not self.auto_approve
         self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        self.emit("system_text", text="Auto-approve is on: file changes and commands go ahead without asking." if self.auto_approve else "Auto-approve is off: you'll be asked before each change or command.")
 
     def handle_run_command(self, arg: str):
-        if self.busy:
+        if not arg.strip():
+            self.emit("system_text", text="Usage: /run <what you want done>. Or just type your request without a slash.")
+        elif self.busy:
             self.emit("error", message="A run is already in progress.")
         else:
             self._cancel.clear()
@@ -1305,6 +1390,8 @@ class StdioServer:
             {"name": "/doctor", "description": "Check everything's configured correctly"},
             {"name": "/scan", "description": "Show detected hardware"},
             {"name": "/model <id>", "description": "Show or switch the orchestrator model"},
+            {"name": "/advanced-model <type> <model|auto>", "description": "Show or set the model for coding, docs, general or image"},
+            {"name": "/budget <provider> <$|off>", "description": "Show or set a monthly limit for paid image generation"},
             {"name": "/auto on|off", "description": "Approve file changes and commands without asking"},
             {"name": "/run <task>", "description": "Work on a task in this folder"},
             {"name": "/help", "description": "Show this list of commands"},
@@ -1358,6 +1445,7 @@ class StdioServer:
         elif arg.lower() == "off":
             self.stream_output = False
         self.emit("settings", auto_approve=self.auto_approve, model=self.frontier_model, busy=self.busy, stream_output=self.stream_output)
+        self.emit("system_text", text="Streaming is on: local model output is shown as it is written." if self.stream_output else "Streaming is off.")
 
     def serve_forever(self) -> None:
         self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output)

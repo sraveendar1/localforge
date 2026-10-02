@@ -1,31 +1,104 @@
 import type { PaidModel } from "./paidModels";
 import { PaidUsage, Usage, UsageTotals } from "./state";
 
-function HistoryRow({ label, totals }: { label: string; totals: UsageTotals }) {
-  const share = totals.localTokensGenerated * 100 / Math.max(totals.localTokensGenerated + totals.frontierPromptTokens + totals.frontierCompletionTokens, 1);
-  const cost = totals.frontierCostUsd ? `$${totals.frontierCostUsd.toFixed(2)}` : totals.subscriptionCostUsd ? `~$${totals.subscriptionCostUsd.toFixed(2)} subscription` : "-";
+const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-dim";
+const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
+
+// 1,381 -> "1.4k": the exact figure is in the tooltip.
+function compact(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n >= 10_000 ? 0 : 1)}k`;
+  return `${(n / 1_000_000).toFixed(1)}M`;
+}
+
+function Stat({ label, value, title, tone = "text-mx-bright" }: { label: string; value: string; title?: string; tone?: string }) {
   return (
-    <div className="flex justify-between gap-2">
-      <span className="text-mx-mid">{label}</span>
-      <span className="text-mx-green tabular-nums">{totals.tasks} task{totals.tasks !== 1 ? "s" : ""} · {share.toFixed(0)}% local · {cost}</span>
+    <div className="min-w-0" title={title}>
+      <div className="text-[10px] uppercase tracking-wide text-mx-dim">{label}</div>
+      <div className={"truncate tabular-nums " + tone}>{value}</div>
     </div>
   );
 }
 
-function cost(u: PaidUsage | undefined): string {
-  if (!u) return "-";
-  if (u.costUsd) return `$${u.costUsd.toFixed(4)}`;
-  if (u.viaSubscription || u.notionalCostUsd) return "included in subscription";
-  return u.runs ? "$0.0000" : "-";
+// What a paid model cost this session. A subscription's usage is never shown as money charged:
+// it is "included", with what it would have cost kept for the history.
+function costText(u: PaidUsage | undefined): { text: string; tone: string } {
+  if (!u || (!u.runs && !u.costUsd && !u.notionalCostUsd)) return { text: "–", tone: "text-mx-dim" };
+  if (u.costUsd) return { text: `$${u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2)}`, tone: "text-mx-amber" };
+  if (u.viaSubscription || u.notionalCostUsd) return { text: "in plan", tone: "text-mx-green" };
+  return { text: "$0.00", tone: "text-mx-bright" };
 }
 
-// Usage and cost: every paid model in play with what it has used this
-// session, then this project's usage history. It used to be one "Frontier
-// model" block for the orchestrator, plus a lump for paid delegates -- but the
-// orchestrator is no longer the only paid model (any task type can go to one,
-// and image generation always does), so each is listed by name with its role:
-// "claude-opus-5 -- orchestrator, coding", "gpt-image-1 -- image". The local
-// side (which models, active/run counts) is in ActiveModelsPanel.tsx.
+function PaidCard({ name, roles, how, u }: { name: string; roles: string[]; how: string; u: PaidUsage | undefined }) {
+  const used = !!u && (u.promptTokens > 0 || u.completionTokens > 0 || u.runs > 0);
+  const c = costText(u);
+  return (
+    <li className={CARD} data-testid={`paid-${name}`}>
+      <div className="break-words font-medium text-mx-bright">{name}</div>
+      <div className="mt-1 flex flex-wrap items-center gap-1">
+        {roles.map(r => (
+          <span key={r} className="rounded-sm border border-mx-amber/60 px-1 text-[10px] uppercase tracking-wide text-mx-amber">{r}</span>
+        ))}
+        {how && <span className="text-[11px] text-mx-dim">{how}</span>}
+      </div>
+      {used ? (
+        <div className="mt-1.5 grid grid-cols-3 gap-2 border-t border-mx-dim pt-1.5">
+          {u!.promptTokens > 0 ? (
+            <>
+              <Stat label="Prompt" value={compact(u!.promptTokens)} title={`${u!.promptTokens.toLocaleString()} tokens`} />
+              <Stat label="Reply" value={compact(u!.completionTokens)} title={`${u!.completionTokens.toLocaleString()} tokens`} />
+            </>
+          ) : (
+            <>
+              <Stat label="Calls" value={String(u!.runs)} />
+              <Stat label="Tokens" value={u!.completionTokens ? compact(u!.completionTokens) : "–"} title={`${u!.completionTokens.toLocaleString()} tokens`} />
+            </>
+          )}
+          <Stat label="Cost" value={c.text} tone={c.tone} title={c.text === "in plan" ? "Included in your subscription: nothing is charged per use" : undefined} />
+        </div>
+      ) : (
+        <div className="mt-1 text-[11px] italic text-mx-dim">Not used yet this session.</div>
+      )}
+    </li>
+  );
+}
+
+function HistoryCard({ label, totals }: { label: string; totals: UsageTotals }) {
+  const frontier = totals.frontierPromptTokens + totals.frontierCompletionTokens;
+  const total = totals.localTokensGenerated + frontier;
+  const share = total > 0 ? (totals.localTokensGenerated * 100) / total : 0;
+  const money = totals.frontierCostUsd
+    ? { text: `$${totals.frontierCostUsd.toFixed(2)}`, note: "billed", tone: "text-mx-amber" }
+    : totals.subscriptionCostUsd
+      ? { text: `~$${totals.subscriptionCostUsd.toFixed(2)}`, note: "in your plan, not charged", tone: "text-mx-green" }
+      : { text: "–", note: "", tone: "text-mx-dim" };
+  return (
+    <div className={CARD} data-testid={`history-${label.toLowerCase().replace(/\s+/g, "-")}`}>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="text-[10px] uppercase tracking-wide text-mx-mid">{label}</span>
+        <span className="tabular-nums text-mx-bright">{totals.tasks} task{totals.tasks === 1 ? "" : "s"}</span>
+      </div>
+      <div className="mt-1.5">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-[11px] text-mx-dim">Written locally</span>
+          <span className="tabular-nums text-mx-bright">{share.toFixed(0)}%</span>
+        </div>
+        <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-sm bg-mx-dim/50" role="progressbar" aria-label="Share written locally" aria-valuenow={Math.round(share)} aria-valuemin={0} aria-valuemax={100}>
+          <div className="h-full bg-mx-green" style={{ width: `${share}%` }} />
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-baseline justify-between gap-2">
+        <span className="text-[11px] text-mx-dim">Cost{money.note && ` · ${money.note}`}</span>
+        <span className={"tabular-nums " + money.tone}>{money.text}</span>
+      </div>
+    </div>
+  );
+}
+
+// Usage and cost: every paid model in play with what it has used this session, then this
+// project's history. Each is a small card like Active LLMs: the model, its role(s) and how it's
+// reached, then its numbers in a row. The local side (which models, active/run counts) is in
+// ActiveModelsPanel.tsx.
 export function UsagePanel({
   usage,
   configuredPaid,
@@ -44,55 +117,26 @@ export function UsagePanel({
     else rows.push({ name, roles: u.roles, how: "" });
   }
   return (
-    <>
+    <div className="space-y-3" data-testid="usage-panel">
       <section>
-        <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">Paid models</h3>
+        <h3 className={SECTION}>Paid models · this session</h3>
         {rows.length === 0 ? (
           <p className="text-mx-dim italic">None in use.</p>
         ) : (
-          <div className="space-y-2" data-testid="paid-models">
-            {rows.map(r => {
-              const u = usage.paidModels[r.name];
-              return (
-                <div key={r.name} data-testid={`paid-${r.name}`}>
-                  <div className="break-words text-mx-bright">{r.name}</div>
-                  <div className="text-mx-dim">{r.roles.join(" · ")}{r.how && ` · ${r.how}`}</div>
-                  {u && u.promptTokens > 0 ? (
-                    <>
-                      <div className="flex justify-between gap-2">
-                        <span className="text-mx-mid">Prompt</span>
-                        <span className="text-mx-green tabular-nums">{u.promptTokens.toLocaleString()}</span>
-                      </div>
-                      <div className="flex justify-between gap-2">
-                        <span className="text-mx-mid">Completion</span>
-                        <span className="text-mx-green tabular-nums">{u.completionTokens.toLocaleString()}</span>
-                      </div>
-                    </>
-                  ) : (
-                    u && u.completionTokens > 0 && (
-                      <div className="flex justify-between gap-2">
-                        <span className="text-mx-mid">Tokens</span>
-                        <span className="text-mx-green tabular-nums">{u.completionTokens.toLocaleString()}</span>
-                      </div>
-                    )
-                  )}
-                  <div className="flex justify-between gap-2">
-                    <span className="text-mx-mid">{u && u.runs > 0 && !u.promptTokens && !u.completionTokens ? `Cost (${u.runs} call${u.runs === 1 ? "" : "s"})` : "Cost"}</span>
-                    <span className="text-mx-green tabular-nums">{cost(u)}</span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ul className="space-y-1.5" data-testid="paid-models">
+            {rows.map(r => <PaidCard key={r.name} name={r.name} roles={r.roles} how={r.how} u={usage.paidModels[r.name]} />)}
+          </ul>
         )}
       </section>
       {(usageHistory.previousSession || usageHistory.allTime) && (
         <section>
-          <h3 className="mb-2 border-b border-mx-dim pb-1 uppercase tracking-wide text-mx-mid">History for this project</h3>
-          {usageHistory.previousSession && <HistoryRow label="Previous session" totals={usageHistory.previousSession} />}
-          {usageHistory.allTime && <HistoryRow label="All time" totals={usageHistory.allTime} />}
+          <h3 className={SECTION}>History for this project</h3>
+          <div className="space-y-1.5">
+            {usageHistory.previousSession && <HistoryCard label="Previous session" totals={usageHistory.previousSession} />}
+            {usageHistory.allTime && <HistoryCard label="All time" totals={usageHistory.allTime} />}
+          </div>
         </section>
       )}
-    </>
+    </div>
   );
 }
