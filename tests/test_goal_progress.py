@@ -164,3 +164,12 @@ def test_a_pending_agents_md_approval_does_not_hold_up_the_next_queued_task(tmp_
     assert _events(out, "approval_request")
     server._decline_all_pending()
     server._brief_thread.join(5)
+
+
+def test_an_older_project_shows_the_goal_from_its_last_session_note(tmp_path, monkeypatch):
+    from localforge import memory
+
+    monkeypatch.setattr(memory, "load", lambda root: "## Goal\nTrack tech stocks and suggest debit spreads.\n\n## Decisions and constraints\n* Python\n")
+    assert brief.project_goal(tmp_path) == "Track tech stocks and suggest debit spreads."
+    brief.record_goal(tmp_path, "Build a stock watchlist dashboard")  # a recorded goal wins over the old note
+    assert brief.project_goal(tmp_path) == "Build a stock watchlist dashboard"

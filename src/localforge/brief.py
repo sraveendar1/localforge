@@ -276,10 +276,26 @@ def record_goal(root: Path, text: str) -> bool:
     return True
 
 
+SESSION_GOAL_CHARS = 500
+
+
+def _session_goal(root: Path) -> str:
+    """The goal the memory keeper wrote down at the end of an earlier session, for a project
+    that predates the goal being recorded from the first request."""
+    from localforge import memory
+
+    try:
+        body = section(memory.load(root), ("goal", "objective", "project goal"))
+    except Exception:  # noqa: BLE001 - a nicety; never in the way
+        return ""
+    body = re.sub(r"\s+", " ", body).strip()
+    return body if len(body) <= SESSION_GOAL_CHARS else body[: SESSION_GOAL_CHARS - 1].rstrip() + "…"
+
+
 def project_goal(root: Path) -> str:
     """What to show as the project's goal: AGENTS.md's own summary when it has one, else
-    what the user first asked for."""
-    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or recorded_goal(root)
+    what the user first asked for, else (an older project) the goal from the last session's note."""
+    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or recorded_goal(root) or _session_goal(root)
 
 
 def _split_sections(text: str) -> list[tuple[str | None, list[str]]]:
