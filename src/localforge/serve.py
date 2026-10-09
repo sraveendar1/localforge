@@ -671,7 +671,7 @@ class StdioServer:
             self._record_usage(result.stats)
             # Off the worker, so a pending approval for the AGENTS.md change never holds up the next
             # queued task: it just waits in the approval list until it's answered.
-            self._brief_thread = threading.Thread(target=self._update_agents_md, args=(workspace, text, summary), daemon=True)
+            self._brief_thread = threading.Thread(target=self._after_task, args=(workspace, text, summary, result.answer, plan_pending), daemon=True)
             self._brief_thread.start()
         except Cancelled as exc:
             self.emit("run_cancelled")
@@ -711,10 +711,46 @@ class StdioServer:
         localforge folder straight away (shown in Overall goal), and added to AGENTS.md
         with the first finished task that changes something."""
         try:
+            if brief.worth_recording_as_goal(text) and not text.lstrip().startswith(NOTE_PREFIX):
+                self._requests = (getattr(self, "_requests", []) + [text])[-8:]
             if brief.record_goal(self.root, text):
                 self.handle_memory_command("")
+                self._refine_goal_later()
         except Exception:  # noqa: BLE001 - never in the way of the message itself
             pass
+
+    def _local_dispatcher(self):
+        """A dispatcher for local-only bookkeeping (no hooks, so nothing shows in the chat). Never pulls a model."""
+        return Dispatcher(detect_hardware(), installed=_installed_model_names(OllamaBackend()))
+
+    def _refine_goal_later(self) -> None:
+        """Restate the recorded request as a goal in plain words, off the reader thread."""
+        def work():
+            try:
+                if brief.refine_goal(self.root, self._local_dispatcher()):
+                    self.handle_memory_command("")
+            except Exception:  # noqa: BLE001, S110 - best-effort
+                pass
+        self._goal_thread = threading.Thread(target=work, daemon=True)
+        self._goal_thread.start()
+
+    def _after_task(self, workspace, task: str, summary: dict | None, answer: str, plan_pending: bool) -> None:
+        """Keep what the panels show true after a finished task: open items it completed move to
+        Completed items, and the goal follows the project when its direction changed (both by the
+        local keeper, best-effort, never a paid model). Then the AGENTS.md progress line."""
+        if not plan_pending:
+            try:
+                dispatcher = self._local_dispatcher()
+                done_steps = [t.get("content", "") for t in self._todos if t.get("status") == "completed"]
+                moved = memory.reconcile_open_items(self.root, task, answer, done_steps, dispatcher)
+                if not brief.goal_is_refined(self.root):
+                    brief.refine_goal(self.root, dispatcher)
+                evolved = brief.evolve_goal(self.root, dispatcher, getattr(self, "_requests", []) or [task], answer)
+                if moved or evolved:
+                    self.handle_memory_command("")
+            except Exception:  # noqa: BLE001, S110 - bookkeeping; the task itself already finished
+                pass
+        self._update_agents_md(workspace, task, summary)
 
     def _update_agents_md(self, workspace, task: str, summary: dict | None) -> None:
         """After a task that changed something, add one line to AGENTS.md's Progress log
@@ -727,6 +763,8 @@ class StdioServer:
             path = brief.brief_path(self.root)
             current = path.read_text(errors="replace") if path.is_file() else ""
             new = brief.with_goal(current, brief.recorded_goal(self.root))
+            if brief.goal_was_evolved(self.root) and brief.section(current, (brief.GOAL_SECTION.lower(),)) != brief.shown_goal(self.root):
+                new = brief.with_goal_replaced(new, brief.shown_goal(self.root))  # the goal moved: so does AGENTS.md's summary of it
             new = brief.with_progress(new, brief.progress_line(task, summary["files"]))
             if new.strip() == current.strip():
                 return
@@ -920,6 +958,18 @@ class StdioServer:
         elif message_type == "queue_to_note":
             self._queue_to_note(message.get("index"))
         elif message_type == "memory_list":
+            self.handle_memory_command('')
+            if not getattr(self, "_goal_refine_started", False) and brief.recorded_goal(self.root) and not brief.goal_is_refined(self.root):
+                self._goal_refine_started = True  # a goal recorded before it was restated: do it once
+                self._refine_goal_later()
+        elif message_type == "memory_item":
+            kind = "done" if message.get("action") == "done" else "open"
+            try:
+                idx = [int(message.get("index"))]
+            except (TypeError, ValueError):
+                idx = []
+            if idx:
+                (memory.complete_items if kind == "done" else memory.reopen_items)(self.root, idx)
             self.handle_memory_command('')
         elif message_type == "memory_forget":
             name = str(message.get('name', '')).strip()

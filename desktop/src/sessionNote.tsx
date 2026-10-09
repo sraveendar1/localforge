@@ -44,7 +44,14 @@ export function Inline({ text }: { text: string }): ReactNode {
 // "Goal" is shown above as the project's goal; the rest are collapsible, closed by default.
 const SKIP = /^(goal|objective|project goal)$/i;
 
-export function SessionNote({ note }: { note: string }) {
+const kindOf = (title: string): "open" | "done" | null => {
+  const t = title.replace(/\s*\(.*\)\s*$/, "").trim().toLowerCase();
+  return t === "open items" || t === "open" ? "open" : t === "completed items" || t === "completed" || t === "done" ? "done" : null;
+};
+
+// `onItem` lets a person tick an open item off (or reopen a finished one) when localforge hasn't
+// noticed it was done; the same move happens by itself after a task that completes an item.
+export function SessionNote({ note, onItem }: { note: string; onItem?: (action: "done" | "reopen", index: number) => void }) {
   const sections = parseNote(note).filter(s => !SKIP.test(s.title));
   if (sections.length === 0) return null;
   return (
@@ -52,19 +59,34 @@ export function SessionNote({ note }: { note: string }) {
       {sections.map((s, i) => {
         const count = s.items.length;
         return (
-          <details key={i} className="rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1">
+          <details key={i} open={kindOf(s.title) === "open" && count > 0 ? true : undefined} className="rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1" data-testid={`note-${kindOf(s.title) ?? "section"}`}>
             <summary className="cursor-pointer select-none text-mx-mid" title={s.title}>
               {(s.title || "Notes").replace(/\s*\(.*\)\s*$/, "")}{count > 0 && <span className="text-mx-dim"> · {count}</span>}
             </summary>
             {s.text && <p className="mt-1 break-words text-mx-dim"><Inline text={s.text} /></p>}
             {count > 0 && (
               <ul className="mt-1 space-y-1">
-                {s.items.map((it, j) => (
-                  <li key={j} className="flex gap-1.5 break-words text-mx-dim">
-                    <span aria-hidden className="text-mx-mid">›</span>
-                    <span className="min-w-0"><Inline text={it} /></span>
-                  </li>
-                ))}
+                {s.items.map((it, j) => {
+                  const kind = kindOf(s.title);
+                  return (
+                    <li key={j} className="flex gap-1.5 break-words text-mx-dim">
+                      <span aria-hidden className={kind === "done" ? "text-mx-green" : "text-mx-mid"}>{kind === "done" ? "✓" : "›"}</span>
+                      <span className={"min-w-0 flex-1 " + (kind === "done" ? "line-through decoration-mx-dim" : "")}><Inline text={it} /></span>
+                      {onItem && kind && (
+                        <button
+                          type="button"
+                          title={kind === "open" ? "Mark this as done" : "Move it back to open items"}
+                          aria-label={kind === "open" ? "Mark done" : "Reopen"}
+                          data-testid={kind === "open" ? "item-done" : "item-reopen"}
+                          onClick={() => onItem(kind === "open" ? "done" : "reopen", j)}
+                          className="h-5 shrink-0 rounded-sm border border-mx-dim px-1 text-[11px] text-mx-mid hover:border-mx-mid hover:text-mx-bright"
+                        >
+                          {kind === "open" ? "✓ Done" : "↺"}
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </details>

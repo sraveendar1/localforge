@@ -59,7 +59,8 @@ Merge the existing memory and the new conversation below into ONE updated memory
 ## Decisions and constraints
 ## Files and commands (paths created or changed, commands run and their results)
 ## Current state
-## Open items
+## Open items (only what is still to do)
+## Completed items (open items the conversation shows are now done: move them here, keep each to one line)
 Keep exact names, paths, versions, commands, errors and user preferences. Drop small talk and anything superseded.
 Stay under 400 words. Output only the memory.
 
@@ -69,6 +70,178 @@ Existing memory:
 New conversation to fold in:
 {transcript}
 """
+
+
+# --- open and completed items in the session note -------------------------------
+#
+# Reported: items under "Open items" stayed there after the work was done, because the
+# note is only rewritten when a session ends. These helpers keep the two lists honest
+# between sessions: finished items move to "Completed items" after each task (decided by
+# the local keeper, or by the user ticking one), without rewriting the rest of the note.
+
+OPEN_TITLE = "Open items"
+DONE_TITLE = "Completed items"
+_HEADING = re.compile(r"^#{1,3}\s+(.*?)\s*$")
+_BULLET = re.compile(r"^(\s*)(?:[*\-•]|\d+[.)])\s+\S")
+
+
+def _section_kind(title: str) -> str | None:
+    t = re.sub(r"\s*\(.*\)\s*$", "", title).strip().lower()
+    return "open" if t in ("open items", "open") else "done" if t in ("completed items", "completed", "done") else None
+
+
+def _parse_sections(note: str) -> list[dict]:
+    """The note as [{"title", "lines"}] -- the text before the first heading has title ""."""
+    sections: list[dict] = [{"title": "", "lines": []}]
+    for line in note.replace("\r", "").split("\n"):
+        m = _HEADING.match(line)
+        if m:
+            sections.append({"title": m.group(1), "lines": []})
+        else:
+            sections[-1]["lines"].append(line)
+    return sections
+
+
+def _render_sections(sections: list[dict]) -> str:
+    out: list[str] = []
+    for sec in sections:
+        if sec["title"]:
+            out.append(f"## {sec['title']}")
+        out.extend(sec["lines"])
+    return "\n".join(out).strip()
+
+
+def _split_items(lines: list[str]) -> list[list[str]]:
+    """Group a section's lines into items: a top-level bullet plus what is indented under it."""
+    bullets = [len(m.group(1)) for line in lines if (m := _BULLET.match(line))]
+    if not bullets:
+        return []
+    top = min(bullets)
+    items: list[list[str]] = []
+    for line in lines:
+        m = _BULLET.match(line)
+        if m and len(m.group(1)) == top:
+            items.append([line])
+        elif items and line.strip():
+            items[-1].append(line)
+    return items
+
+
+def _item_text(item: list[str]) -> str:
+    first = re.sub(r"^\s*(?:[*\-•]|\d+[.)])\s+", "", item[0])
+    rest = [ln.strip() for ln in item[1:]]
+    return " ".join([first.strip(), *rest]).strip()
+
+
+def note_items(note: str, kind: str = "open") -> list[str]:
+    """The items listed under "Open items" ("open") or "Completed items" ("done")."""
+    texts: list[str] = []
+    for sec in _parse_sections(note):
+        if _section_kind(sec["title"]) == kind:
+            texts += [_item_text(i) for i in _split_items(sec["lines"])]
+    return texts
+
+
+def move_items(note: str, indexes: list[int], to: str = "done") -> str:
+    """Move items between the two lists: `indexes` are positions in the list they're leaving
+    (open items when moving to "done", completed items when moving back to "open"). Nothing
+    else in the note changes; a missing target section is created right after the source."""
+    src_kind = "open" if to == "done" else "done"
+    sections = _parse_sections(note)
+    src = next((s for s in sections if _section_kind(s["title"]) == src_kind), None)
+    if src is None:
+        return note
+    items = _split_items(src["lines"])
+    chosen = sorted({i for i in indexes if isinstance(i, int) and 0 <= i < len(items)})
+    if not chosen:
+        return note
+    moved = [items[i] for i in chosen]
+    src["lines"] = [line for line in src["lines"] if not any(line is ln for item in moved for ln in item)]
+    dst = next((s for s in sections if _section_kind(s["title"]) == to), None)
+    if dst is None:
+        dst = {"title": DONE_TITLE if to == "done" else OPEN_TITLE, "lines": []}
+        sections.insert(sections.index(src) + 1, dst)
+    while dst["lines"] and not dst["lines"][-1].strip():
+        dst["lines"].pop()
+    for item in moved:
+        dst["lines"].extend(item)
+    return _render_sections(sections)
+
+
+def complete_items(root: Path, indexes: list[int]) -> int:
+    note = load(root)
+    new = move_items(note, indexes, "done")
+    if new != note:
+        save(root, new)
+        return len({i for i in indexes})
+    return 0
+
+
+def reopen_items(root: Path, indexes: list[int]) -> int:
+    note = load(root)
+    new = move_items(note, indexes, "open")
+    if new != note:
+        save(root, new)
+        return len({i for i in indexes})
+    return 0
+
+
+RECONCILE_PROMPT = """These are the open items in a coding project's working notes:
+{items}
+
+This work has just been finished:
+Request: {task}
+What was done: {done}
+
+Which open items does that work finish? Only include an item if the work clearly completed it;
+when unsure, leave it open. Reply with JSON only: {{"completed": [item numbers]}}"""
+
+_WORD = re.compile(r"[a-z0-9]{4,}")
+
+
+def _title_of(item: str) -> str:
+    plain = re.sub(r"[*`_]", "", item)
+    return plain.split(":", 1)[0]
+
+
+def _overlap_done(item: str, texts: list[str]) -> bool:
+    """Without a local model: an item counts as done when most of its title's words appear in a
+    plan step the orchestrator itself marked completed. Deliberately strict."""
+    words = set(_WORD.findall(_title_of(item).lower()))
+    if len(words) < 2:
+        return False
+    for text in texts:
+        have = set(_WORD.findall(text.lower()))
+        if len(words & have) / len(words) >= 0.75:
+            return True
+    return False
+
+
+def reconcile_open_items(root: Path, task: str, done: str, completed_steps: list[str], dispatcher=None, hooks=None) -> int:
+    """After a finished task, move the open items it completed to "Completed items". The local
+    keeper decides (never a paid model); with none installed, only an item whose title matches a
+    plan step the orchestrator marked completed moves. Returns how many moved."""
+    from localforge.cli_transport import _extract_json
+
+    note = load(root)
+    items = note_items(note, "open")
+    if not items:
+        return 0
+    chosen: list[int] = []
+    entry = keeper(dispatcher) if dispatcher is not None else None
+    if entry is not None:
+        listing = "\n".join(f"{i + 1}. {t[:300]}" for i, t in enumerate(items))
+        prompt = RECONCILE_PROMPT.format(items=listing, task=task[:600], done="; ".join(completed_steps)[:600] + " " + done[:1500])
+        try:
+            result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=dispatcher.context_limit(entry))
+            dispatcher.local_tokens_generated += result.get("tokens", 0)
+            decision = _extract_json(str(result.get("content") or "")) or {}
+            chosen = [int(n) - 1 for n in decision.get("completed") or [] if isinstance(n, (int, float, str)) and str(n).strip().isdigit()]
+        except Exception:  # noqa: BLE001 - best-effort; fall through to the strict matcher
+            chosen = []
+    if not chosen and completed_steps:
+        chosen = [i for i, t in enumerate(items) if _overlap_done(t, completed_steps)]
+    return complete_items(root, chosen) if chosen else 0
 
 
 # --- where it lives ------------------------------------------------------------

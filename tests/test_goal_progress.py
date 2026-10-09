@@ -29,13 +29,13 @@ def test_a_greeting_is_not_a_goal_but_a_real_request_is(tmp_path):
     assert not brief.record_goal(tmp_path, "/memory")
     assert not brief.record_goal(tmp_path, "thanks!")  # too short to say what is wanted
     assert brief.record_goal(tmp_path, "Build a todo app in React with a login page")
-    assert brief.recorded_goal(tmp_path) == "Build a todo app in React with a login page"
+    assert brief.recorded_goal(tmp_path) == "Build a todo app in React with a login page."
 
 
 def test_only_the_first_request_is_the_goal(tmp_path):
     brief.record_goal(tmp_path, "Build a todo app in React")
     assert not brief.record_goal(tmp_path, "Now add dark mode to everything")
-    assert brief.recorded_goal(tmp_path) == "Build a todo app in React"
+    assert brief.recorded_goal(tmp_path) == "Build a todo app in React."
 
 
 def test_a_long_request_is_kept_to_one_tidy_paragraph(tmp_path):
@@ -89,8 +89,8 @@ def test_the_first_message_is_recorded_as_the_goal_and_shown(tmp_path):
     server, out = _server(tmp_path)
     server.handle({"type": "user_message", "text": "Build a todo app in React with a login page"})
     server._worker.join(5)
-    assert brief.recorded_goal(tmp_path) == "Build a todo app in React with a login page"
-    assert _events(out, "memory")[0]["goal"] == "Build a todo app in React with a login page"
+    assert brief.recorded_goal(tmp_path) == "Build a todo app in React with a login page."
+    assert _events(out, "memory")[0]["goal"] == "Build a todo app in React with a login page."
 
 
 def test_a_greeting_first_does_not_take_the_goal(tmp_path):
@@ -172,4 +172,4 @@ def test_an_older_project_shows_the_goal_from_its_last_session_note(tmp_path, mo
     monkeypatch.setattr(memory, "load", lambda root: "## Goal\nTrack tech stocks and suggest debit spreads.\n\n## Decisions and constraints\n* Python\n")
     assert brief.project_goal(tmp_path) == "Track tech stocks and suggest debit spreads."
     brief.record_goal(tmp_path, "Build a stock watchlist dashboard")  # a recorded goal wins over the old note
-    assert brief.project_goal(tmp_path) == "Build a stock watchlist dashboard"
+    assert brief.project_goal(tmp_path) == "Build a stock watchlist dashboard."

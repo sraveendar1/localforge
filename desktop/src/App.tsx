@@ -423,7 +423,7 @@ function App() {
         </main>
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
         {expanded !== "left" && <RightPanel open={rightOpen} onToggle={toggleRight} layout={sideLayout("right")}>
-          <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
+          <Curtain title="Overall goal"><GoalPanel memory={chat.memory} onItem={(action, index) => send({ type: "memory_item", action, index })} /></Curtain>
           <Curtain title="Plan"><TodoList todos={chat.todos} queued={chat.queue} /></Curtain>
           <Curtain title={chat.queue.length ? `Queue (${chat.queue.length})` : "Queue"}>
             <div data-testid="queue-panel">
