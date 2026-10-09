@@ -22,6 +22,7 @@ import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import { Curtain } from "./Curtain";
 import { LeftNav } from "./LeftNav";
 import { GettingStarted } from "./GettingStarted";
+import { VoiceButton } from "./VoiceButton";
 import { addRecentFolder, loadRecentFolders } from "./recentFolders";
 import type { ChatState } from "./state";
 import "./App.css";
@@ -390,6 +391,7 @@ function App() {
             >
               📎
             </button>
+            <VoiceButton value={input} onChange={setInput} disabled={!chat.connected || !!chat.trustRequired} />
             <textarea
               ref={inputRef}
               rows={3}

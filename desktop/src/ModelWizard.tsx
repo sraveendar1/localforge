@@ -200,6 +200,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const pinned = TASKS.filter(([m]) => targets[m] && targets[m].target !== "auto");
   const advanced = wantAdvanced || pinned.length > 0;
 
+  const [confirmReset, setConfirmReset] = useState(false);
   const [picked, setPicked] = useState<string | null>(null);  // the provider tile whose details are showing
   // The review step runs the setup check each time it is reached (a download may have finished since).
   useEffect(() => { if (step === 2) send({ type: "setup_checks_request" }); }, [step]);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -221,9 +222,16 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
 
   const pull = (model: string, use_as: object | undefined, ctx: string) => send({ type: "pull_model", model, use_as, ctx });
 
+  // Switching to Automatic used to silently reset every pinned model at once. Models you chose
+  // are only reset after you confirm it; changing one at a time is done with its own Change button.
   function chooseMode(next: "auto" | "advanced") {
     setOpen(null);
-    if (next === "advanced") return setWantAdvanced(true);
+    if (next === "advanced") { setConfirmReset(false); return setWantAdvanced(true); }
+    if (pinned.length > 0) return setConfirmReset(true);
+    setWantAdvanced(false);
+  }
+  function resetAll() {
+    setConfirmReset(false);
     setWantAdvanced(false);
     for (const [m] of pinned) send({ type: "set_delegate_target", modality: m, target: "auto", inline: true });
   }
@@ -412,6 +420,17 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           <span className="text-mx-dim">choose any model for each kind of work</span>
         </button>
       </div>
+
+      {confirmReset && (
+        <div role="alert" data-testid="confirm-reset" className="rounded-sm border border-mx-amber p-3 text-xs text-mx-amber">
+          Automatic would reset {pinned.length} model{pinned.length === 1 ? "" : "s"} you chose ({pinned.map(([, l]) => l).join(", ")}) to localforge's own picks.
+          To change just one, use its Change button instead.
+          <div className="mt-2 flex gap-2">
+            <button type="button" data-testid="confirm-reset-yes" onClick={resetAll} className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright">Reset them all</button>
+            <button type="button" onClick={() => setConfirmReset(false)} className="rounded-sm border border-mx-dim px-2 py-0.5 text-mx-mid hover:text-mx-bright">Keep my choices</button>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         {TASKS.filter(([m]) => targets[m]).map(([modality, label, blurb]) => {

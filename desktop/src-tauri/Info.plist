@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Voice input in the message box: macOS asks for these the first time the mic button is used. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>LocalForge listens to the microphone only while you use the mic button, to turn what you say into text for your message.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>LocalForge uses speech recognition to turn what you say into text for your message.</string>
+</dict>
+</plist>
