@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { BudgetLine } from "./BudgetLine";
 import { Link, ProviderCard } from "./SetupScreen";
+import { ChecksList, Primary, ProviderTiles, StepStrip } from "./SetupWidgets";
+import type { Tile } from "./SetupWidgets";
 import type { BudgetRow, ChatState, DelegateOptions, PullState } from "./state";
 
 const TASKS: [string, string, string][] = [
@@ -11,7 +13,10 @@ const TASKS: [string, string, string][] = [
   ["video", "Video", "Not available yet"],
 ];
 
-const STEP_TITLES = ["The model that plans", "Who does the work", "Review"];
+const STEP_TITLES = ["Pick the planner", "Choose the writers", "Review & start"] as const;
+const HEADLINES = ["Which model should plan your work?", "Who should write the code?", "Check it, then start building"] as const;
+const MARKS: { [id: string]: string } = { anthropic: "An", openai: "Op", gemini: "Go", local: "Lo" };
+const TAGS: { [id: string]: string } = { anthropic: "Login or API key", openai: "Login or API key", gemini: "API key", local: "Free · runs here" };
 
 function gb(n: number | null | undefined): string {
   return typeof n === "number" ? `${n >= 10 ? n.toFixed(0) : n.toFixed(1)} GB` : "";
@@ -195,6 +200,11 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const pinned = TASKS.filter(([m]) => targets[m] && targets[m].target !== "auto");
   const advanced = wantAdvanced || pinned.length > 0;
 
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);  // the provider tile whose details are showing
+  // The review step runs the setup check each time it is reached (a download may have finished since).
+  useEffect(() => { if (step === 2) send({ type: "setup_checks_request" }); }, [step]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   // Fresh data whenever the wizard opens (a model pulled or key added since).
   useEffect(() => {
     send({ type: "setup_status_request" });
@@ -212,9 +222,16 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
 
   const pull = (model: string, use_as: object | undefined, ctx: string) => send({ type: "pull_model", model, use_as, ctx });
 
+  // Switching to Automatic used to silently reset every pinned model at once. Models you chose
+  // are only reset after you confirm it; changing one at a time is done with its own Change button.
   function chooseMode(next: "auto" | "advanced") {
     setOpen(null);
-    if (next === "advanced") return setWantAdvanced(true);
+    if (next === "advanced") { setConfirmReset(false); return setWantAdvanced(true); }
+    if (pinned.length > 0) return setConfirmReset(true);
+    setWantAdvanced(false);
+  }
+  function resetAll() {
+    setConfirmReset(false);
     setWantAdvanced(false);
     for (const [m] of pinned) send({ type: "set_delegate_target", modality: m, target: "auto", inline: true });
   }
@@ -225,17 +242,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
     send({ type: "delegate_options_request", modality });  // asked each time, so a new download or key is in the list
   }
 
-  const stepper = (
-    <ol className="flex items-center gap-2 text-xs" aria-label="Steps">
-      {STEP_TITLES.map((t, i) => (
-        <li key={t} className={"flex items-center gap-1 " + (i === step ? "text-mx-bright" : i < step ? "text-mx-green" : "text-mx-dim")} aria-current={i === step ? "step" : undefined}>
-          <span className={"flex h-5 w-5 items-center justify-center rounded-full border text-[10px] " + (i === step ? "border-mx-bright" : "border-mx-dim")}>{i < step ? "✓" : i + 1}</span>
-          <span className="hidden sm:inline">{t}</span>
-          {i < STEP_TITLES.length - 1 && <span className="mx-1 text-mx-dim">—</span>}
-        </li>
-      ))}
-    </ol>
-  );
+  const stepper = <StepStrip titles={STEP_TITLES} step={step} />;
 
   // ---- step 1: the orchestrator -------------------------------------------------
   // A provider's models appear right under its own card once it can be used (a key is saved or
@@ -245,15 +252,39 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const modelPlaceholder: { [provider: string]: string } = { anthropic: "claude-sonnet-5-5", openai: "gpt-5", gemini: "gemini/gemini-2.5-pro" };
   const planning = !needsOrchestrator;
 
+  const providerOfModel = (model: string) => setup.providers.find(p => optionsFor(p.id).some(o => o.id === model))?.id ?? (model.startsWith("ollama") ? "local" : null);
+  const planner = planning ? providerOfModel(chat.model) : null;
+  const defaultPick = planner ?? setup.providers.find(p => p.keySet)?.id ?? setup.providers[0]?.id ?? "local";
+  const pickedId = picked ?? defaultPick;
+  const tiles: Tile[] = [
+    ...setup.providers.map<Tile>(p => {
+      const usable = p.keySet || optionsFor(p.id).length > 0;
+      return {
+        id: p.id, mark: MARKS[p.id] ?? p.label.slice(0, 2), label: p.label.replace(/\s*\(.*\)$/, ""), tag: TAGS[p.id] ?? "",
+        status: planner === p.id ? "active" : usable ? "ready" : "off",
+        statusText: planner === p.id ? "planning" : p.keySet ? "key saved" : usable ? "signed in" : "not connected",
+      };
+    }),
+    {
+      id: "local", mark: MARKS.local, label: "Open-weight", tag: TAGS.local,
+      status: planner === "local" ? "active" : ollama.running ? "ready" : "off",
+      statusText: planner === "local" ? "planning" : ollama.running ? "Ollama running" : ollama.installed ? "Ollama stopped" : "needs Ollama",
+    },
+  ];
+  const pickedProvider = setup.providers.find(p => p.id === pickedId);
+
   const stepOrchestrator = (
     <div className="space-y-4">
       <p className="text-sm text-mx-mid">
-        One model plans your work and checks it. It can be a paid one (sign in or paste a key, then pick its model right under it) or an
-        open-weight model that runs on this computer for free. The models that write the code are chosen in the next step.
+        The planner reads your request, writes the plan you approve, delegates the writing and checks the result. A paid model is the safer
+        choice; an open-weight model on this computer is free.
       </p>
 
+      <ProviderTiles tiles={tiles} picked={pickedId} onPick={id => { setPicked(id); setTried(null); }} />
+
       <div className="space-y-3" data-testid="wizard-providers">
-        {setup.providers.map(p => {
+        {pickedProvider && (() => {
+          const p = pickedProvider;
           const opts = optionsFor(p.id);
           return (
             <div key={p.id}>
@@ -278,10 +309,10 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
               )}
             </div>
           );
-        })}
+        })()}
       </div>
 
-      <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-local">
+      {pickedId === "local" && <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-local">
         <div className="font-semibold text-mx-bright">Open-weight models (run on this computer, free)</div>
         {!ollama.installed ? (
           <p className="mt-1 text-xs text-mx-dim">
@@ -361,7 +392,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
             </div>
           </>
         )}
-      </div>
+      </div>}
     </div>
   );
 
@@ -389,6 +420,17 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           <span className="text-mx-dim">choose any model for each kind of work</span>
         </button>
       </div>
+
+      {confirmReset && (
+        <div role="alert" data-testid="confirm-reset" className="rounded-sm border border-mx-amber p-3 text-xs text-mx-amber">
+          Automatic would reset {pinned.length} model{pinned.length === 1 ? "" : "s"} you chose ({pinned.map(([, l]) => l).join(", ")}) to localforge's own picks.
+          To change just one, use its Change button instead.
+          <div className="mt-2 flex gap-2">
+            <button type="button" data-testid="confirm-reset-yes" onClick={resetAll} className="rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright">Reset them all</button>
+            <button type="button" onClick={() => setConfirmReset(false)} className="rounded-sm border border-mx-dim px-2 py-0.5 text-mx-mid hover:text-mx-bright">Keep my choices</button>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         {TASKS.filter(([m]) => targets[m]).map(([modality, label, blurb]) => {
@@ -445,9 +487,10 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   );
 
   // ---- step 3: review ----------------------------------------------------------------
+  const fix = (which: "planner" | "writers") => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(which === "planner" ? 0 : 1); };
   const stepReview = (
     <div className="space-y-4">
-      <p className="text-sm text-mx-mid">This is what {mode === "edit" ? "this project uses" : "will be saved for this project"}. You can change it any time from Models in the left panel.</p>
+      <p className="text-sm text-mx-mid">This is what {mode === "edit" ? "this project uses" : "will be saved for this project"}. You can change it any time with Change models in the left panel.</p>
       <dl className="space-y-2 rounded-sm border border-mx-dim bg-mx-panel2 p-3 text-xs" data-testid="wizard-review">
         <div>
           <dt className="text-mx-mid">Plans and checks the work</dt>
@@ -460,6 +503,14 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           </div>
         ))}
       </dl>
+      <section aria-label="Setup check" className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-checks">
+        <div className="mb-2 flex items-center justify-between">
+          <h2 className="text-[11px] uppercase tracking-wide text-mx-mid">Does it all work?</h2>
+          <button type="button" onClick={() => send({ type: "setup_checks_request" })} className="text-[11px] text-mx-green underline hover:text-mx-bright" data-testid="recheck">Check again</button>
+        </div>
+        <ChecksList checks={chat.setupChecks} onFix={fix} />
+      </section>
+      <p className="text-xs text-mx-dim">Before anything is built you'll see a plan and approve it, even with Auto-approve on.</p>
       {anyPull && <p className="text-xs text-mx-amber">A download is still running. You can start now; it carries on in the background.</p>}
     </div>
   );
@@ -472,7 +523,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
         <div className="flex items-start justify-between gap-3">
           <div>
             <h1 className="text-lg font-semibold uppercase tracking-widest text-mx-bright glow">{mode === "edit" ? "Change models" : "Choose your models"}</h1>
-            <div className="mt-2">{stepper}</div>
+            <div className="mt-2 w-[min(32rem,70vw)]">{stepper}</div>
           </div>
           <button type="button" onClick={onClose} aria-label="Close" title="Close" data-testid="wizard-x"
             className="shrink-0 rounded-sm border border-mx-dim px-2 text-mx-mid hover:border-mx-mid hover:text-mx-bright">✕</button>
@@ -485,6 +536,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
         )}
       </div>
 
+      <h2 className="-mb-2 text-base text-mx-bright" data-testid="wizard-headline">{HEADLINES[step]}</h2>
       {steps[step]}
 
       {step === 0 && needsOrchestrator && setup.orchestrator.reason && (
@@ -495,22 +547,20 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
         <button type="button" onClick={onClose} className="rounded-sm border border-mx-dim px-3 py-1 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">
           {mode === "edit" ? "Close" : "Skip for now"}
         </button>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {step === 0 && needsOrchestrator && <span className="hidden text-[11px] text-mx-dim sm:inline" data-testid="next-hint">Choose a planner to continue</span>}
           {step > 0 && (
-            <button type="button" onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step - 1); }} className="rounded-sm border border-mx-dim px-3 py-1 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">Back</button>
+            <button type="button" onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step - 1); }} className="rounded-sm border border-mx-dim px-3 py-1.5 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">← Back</button>
           )}
           {step < 2 ? (
-            <button type="button" data-testid="wizard-next" disabled={step === 0 && needsOrchestrator}
-              title={step === 0 && needsOrchestrator ? "Choose the model that plans first" : undefined}
-              onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step + 1); if (step === 0) send({ type: "advanced_model_request" }); }}
-              className="rounded-sm border border-mx-mid px-4 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
-              Next
-            </button>
+            <Primary testId="wizard-next" disabled={step === 0 && needsOrchestrator}
+              onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step + 1); if (step === 0) send({ type: "advanced_model_request" }); }}>
+              {step === 0 ? "Next: choose the writers →" : "Next: review →"}
+            </Primary>
           ) : (
-            <button type="button" data-testid="wizard-finish" onClick={onFinish}
-              className="rounded-sm border border-mx-mid px-4 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright">
-              {mode === "edit" ? "Save" : "Start"}
-            </button>
+            <Primary testId="wizard-finish" onClick={onFinish}>
+              {mode === "edit" ? "Save" : chat.setupChecks && !chat.setupChecks.ok ? "Start anyway" : "Start building"}
+            </Primary>
           )}
         </div>
       </div>

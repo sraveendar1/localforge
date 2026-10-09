@@ -175,6 +175,70 @@ def _setup_status(model: str, cli_provider: str | None) -> dict:
     }
 
 
+DISK_WARN_MARGIN_GB = 2.0
+
+
+def _setup_checks(model: str, cli_provider: str | None, root: Path) -> list[dict]:
+    """A plain pass/warn/fail list for the setup review ("Check my setup"): can the planner run,
+    is Ollama up, is each kind of work covered and on disk, and is there room for what's still to
+    download. `state` is "ok", "warn" (works, but something will happen on first use) or "fail"
+    (a task would stop). `fix` names the wizard step that resolves it. Never raises."""
+    checks: list[dict] = []
+
+    def add(id: str, label: str, state: str, detail: str, fix: str | None = None) -> None:
+        checks.append({"id": id, "label": label, "state": state, "detail": detail, "fix": fix})
+
+    add("folder", "This folder is trusted", "ok", str(root))
+    try:
+        ready, reason = _orchestrator_readiness(model, cli_provider)
+        add("planner", "A model plans and checks the work", "ok" if ready else "fail", model if ready else reason, None if ready else "planner")
+    except Exception as exc:  # noqa: BLE001
+        add("planner", "A model plans and checks the work", "fail", str(exc), "planner")
+    try:
+        running = OllamaBackend().is_running()
+        sizes = model_fit.installed_sizes() if running else None
+        snapshot = _advanced_model_snapshot()
+        hardware = detect_hardware()
+    except Exception as exc:  # noqa: BLE001
+        add("ollama", "Local models can run", "warn", f"couldn't check: {exc}")
+        return checks
+    names = {"coding": "Coding", "docs": "Writing & docs", "general": "General"}
+    needs_local = model.startswith(local_transport.PREFIXES)
+    to_download_gb = 0.0
+    for m in delegate_target.MODALITIES:
+        row = snapshot.get(m) or {}
+        target = delegate_target.get(m)
+        label = f"{names[m]} is covered"
+        if target.is_cloud:
+            add(f"writer-{m}", label, "ok", row.get("description", "a paid model"))
+            continue
+        needs_local = True
+        name = target.model if target.kind == "ollama" else row.get("auto_model")
+        if not name:
+            add(f"writer-{m}", label, "fail", "no open-weight model fits this computer for it; pick a paid model", "writers")
+            continue
+        installed = sizes is not None and name in sizes
+        if installed:
+            why = model_fit.selection_problem(name, hardware, sizes, fetch_sizes=False)
+            add(f"writer-{m}", label, "fail" if why else "ok", f"{name}: {why}" if why else f"{name} (on this computer)", "writers" if why else None)
+        else:
+            gb = float(row.get("disk_gb") or 0)
+            to_download_gb += gb
+            add(f"writer-{m}", label, "warn", f"{name} isn't downloaded yet" + (f" ({gb:.1f} GB)" if gb else "") + "; you'll be asked the first time it's needed", "writers")
+    if needs_local:
+        if not shutil.which("ollama"):
+            add("ollama", "Ollama (runs local models)", "fail", "isn't installed: https://ollama.com/download")
+        elif not running:
+            add("ollama", "Ollama (runs local models)", "fail", "is installed but not running; open the Ollama app")
+        else:
+            add("ollama", "Ollama (runs local models)", "ok", "running")
+    if to_download_gb:
+        free = hardware.free_disk_gb
+        ok = free >= to_download_gb + DISK_WARN_MARGIN_GB
+        add("disk", "Room for the downloads", "ok" if ok else "warn", f"{free:.0f} GB free, {to_download_gb:.1f} GB to download")
+    return checks
+
+
 MAX_UNFIT_SUGGESTIONS = 4
 
 
@@ -962,6 +1026,11 @@ class StdioServer:
             if not getattr(self, "_goal_refine_started", False) and brief.recorded_goal(self.root) and not brief.goal_is_refined(self.root):
                 self._goal_refine_started = True  # a goal recorded before it was restated: do it once
                 self._refine_goal_later()
+        elif message_type == "setup_checks_request":
+            def _checks():
+                checks = _setup_checks(self.frontier_model, self.cli_provider, self.root)
+                self.emit("setup_checks", checks=checks, ok=not any(c["state"] == "fail" for c in checks))
+            threading.Thread(target=_checks, daemon=True).start()  # may ask Ollama; never on the reader thread
         elif message_type == "memory_item":
             kind = "done" if message.get("action") == "done" else "open"
             try:
