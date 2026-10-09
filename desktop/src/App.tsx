@@ -21,6 +21,7 @@ import { SystemPanel } from "./SystemPanel";
 import { SlashMenu, matchSlashCommands } from "./SlashMenu";
 import { Curtain } from "./Curtain";
 import { LeftNav } from "./LeftNav";
+import { GettingStarted } from "./GettingStarted";
 import { addRecentFolder, loadRecentFolders } from "./recentFolders";
 import type { ChatState } from "./state";
 import "./App.css";
@@ -43,6 +44,7 @@ function App() {
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashMatches = matchSlashCommands(input.trim());
 
   useEffect(() => {
@@ -202,7 +204,7 @@ function App() {
     setChat(s => setWizard(s, "active"));
   };
   const closeWizard = () => setChat(s => setWizard(s, "done"));
-  const finishWizard = () => { send({ type: "finish_project_setup" }); closeWizard(); };
+  const finishWizard = () => { send({ type: "finish_project_setup" }); closeWizard(); setTimeout(() => inputRef.current?.focus(), 0); };
   // Once something works, forget having skipped setup: if it stops working later, that
   // should start from the banner.
   useEffect(() => { if (!needsSetup) setSetupSkipped(false); }, [needsSetup]);
@@ -333,12 +335,15 @@ function App() {
             ) : inlineSetup && chat.setup ? (
               <SetupScreen status={chat.setup} result={chat.setupResult} connected={chat.connected} send={send} onSkip={() => setSetupSkipped(true)} />
             ) : chat.messages.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center text-mx-mid">
-                <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-bright glow">localforge</h1>
-                <p className="text-xs text-mx-dim">A frontier model plans. Local models do the writing.</p>
-                <p className="pt-3 text-sm text-mx-green">What are you building?</p>
-                <p className="max-w-md text-xs text-mx-dim">Describe the task in the box below. A plan appears on the right once the work has more than a couple of steps.</p>
-              </div>
+              <GettingStarted
+                folderName={(folder ?? "").split("/").filter(Boolean).pop() ?? "this folder"}
+                checks={chat.setupChecks}
+                connected={chat.connected && !chat.trustRequired}
+                onRequestChecks={() => send({ type: "setup_checks_request" })}
+                onFix={which => openWizard(which === "planner" ? 0 : 1)}
+                onExample={text => { setInput(text); inputRef.current?.focus(); }}
+                onOpenWizard={() => openWizard(0)}
+              />
             ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} awaitingInput={awaitingInput && i === lastAssistant} onPlan={i === lastAssistant && chat.planPending ? action => send({ type: "plan_response", action }) : undefined} />)}
             <div ref={endRef} />
           </div>
@@ -386,9 +391,10 @@ function App() {
               📎
             </button>
             <textarea
+              ref={inputRef}
               rows={3}
               className={"flex-1 resize-none rounded border bg-mx-panel2 p-2 text-sm " + (awaitingInput || chat.planPending ? "border-mx-amber" : "border-mx-dim")}
-              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.planPending ? "Approve the plan, or say what to change…" : awaitingInput ? "Answer localforge's question…" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.planPending ? "Approve the plan, or say what to change…" : awaitingInput ? "Answer localforge's question…" : chat.connected ? (chat.messages.length === 0 ? "Describe what you want to build or change…  (type / for commands; paste or drop an image)" : "Ask localforge, or type / for commands. Paste or drop an image to attach it…") : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
               onPaste={onPaste}

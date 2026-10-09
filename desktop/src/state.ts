@@ -80,6 +80,10 @@ export type SetupStatus = {
     suggested: { name: string; diskGb: number; qualityTier: number; modality: string; problem: string | null }[];
   };
 };
+// One line of "Check my setup": ok, warn (works, but something happens on first use) or fail
+// (a task would stop). `fix` names the wizard step that resolves it.
+export type SetupCheck = { id: string; label: string; state: "ok" | "warn" | "fail"; detail: string; fix: "planner" | "writers" | null };
+export type SetupChecks = { checks: SetupCheck[]; ok: boolean };
 // A model download in progress, or its outcome. `blocked` = refused before any download
 // because the model isn't recommended for this machine.
 // `ctx` says where the download was asked for ("orchestrator", a task type, "auto"), so its progress or refusal shows only there.
@@ -116,6 +120,7 @@ export type ChatState = {
   trustDeclined: boolean;
   budgets: BudgetRow[];
   setup: SetupStatus | null;
+  setupChecks: SetupChecks | null;
   setupResult: SetupResult | null;
   pulls: { [model: string]: PullState };
   wizard: WizardState;
@@ -182,6 +187,7 @@ export const initialState: ChatState = {
   trustDeclined: false,
   budgets: [],
   setup: null,
+  setupChecks: null,
   setupResult: null,
   pulls: {},
   wizard: "unknown",
@@ -569,6 +575,13 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
         },
       };
       return { ...state, setup };
+    }
+    case "setup_checks": {
+      const checks: SetupCheck[] = (Array.isArray(ev.checks) ? ev.checks : []).map((c: any) => ({
+        id: String(c.id ?? ""), label: String(c.label ?? ""), state: c.state === "fail" ? "fail" : c.state === "warn" ? "warn" : "ok",
+        detail: String(c.detail ?? ""), fix: c.fix === "planner" || c.fix === "writers" ? c.fix : null,
+      }));
+      return { ...state, setupChecks: { checks, ok: !!ev.ok } };
     }
     case "pull_progress": {
       const name = String(ev.model ?? "");
