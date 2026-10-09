@@ -1,5 +1,6 @@
 import type { Approval, DelegateItem, Item, Message, NoteItem, TaskSummary, Todo, ToolItem } from "./state";
 import { ActivityStream } from "./ActivityStream";
+import { RichText, renderInline } from "./RichText";
 
 export function ToolCard({ item }: { item: ToolItem }) {
   return (
@@ -206,7 +207,27 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
   );
 }
 
-export function MessageView({ message, thinking, awaitingInput = false }: { message: Message; thinking: boolean; awaitingInput?: boolean }) {
+// A plan the orchestrator proposes before building anything. Shown even with Auto-approve on:
+// nothing is built until it's approved here (or by replying "go ahead").
+export function PlanCard({ text, onAction }: { text: string; onAction?: (action: "approve" | "cancel") => void }) {
+  const lines = text.split("\n").filter((l, i) => !(i === 0 && /proposed plan/i.test(l)));
+  const inline = (line: string) => renderInline(line);
+  return (
+    <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="plan-card">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">{onAction ? "● Proposed plan — approve before anything is built" : "● Plan"}</div>
+      <div className="space-y-0.5 leading-relaxed">{lines.map((l, i) => (l.trim() ? <div key={i} className="whitespace-pre-wrap">{inline(l)}</div> : null))}</div>
+      {onAction && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button className="rounded-sm border border-mx-green px-3 py-1 text-xs font-semibold text-mx-green hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("approve")}>Approve &amp; build</button>
+          <span className="text-[11px] text-mx-dim">or type what to change in the box below</span>
+          <button className="ml-auto rounded-sm border border-mx-red px-2 py-1 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("cancel")}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MessageView({ message, thinking, awaitingInput = false, onPlan }: { message: Message; thinking: boolean; awaitingInput?: boolean; onPlan?: (action: "approve" | "cancel") => void }) {
   switch (message.role) {
     case "user":
       return (
@@ -222,7 +243,7 @@ export function MessageView({ message, thinking, awaitingInput = false }: { mess
     case "error":
       return (
         <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red" role="alert">
-          {message.text}
+          <RichText text={message.text} />
           {message.detail && (
             <details className="text-mx-dim">
               <summary className="cursor-pointer text-[11px]">Details</summary>
@@ -233,7 +254,7 @@ export function MessageView({ message, thinking, awaitingInput = false }: { mess
       );
     case "system":
       return (
-        <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid">{message.text}</div>
+        <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid"><RichText text={message.text} /></div>
       );
     case "summary":
       return message.summary ? <TaskSummaryCard summary={message.summary} /> : null;
@@ -241,14 +262,16 @@ export function MessageView({ message, thinking, awaitingInput = false }: { mess
       return (
         <div className="my-2 max-w-[90%]">
           <ActivityStream items={message.items} open={thinking} round={message.round} />
-          {message.text && awaitingInput ? (
+          {message.text && message.plan ? (
+            <PlanCard text={message.text} onAction={onPlan} />
+          ) : message.text && awaitingInput ? (
             <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="needs-input">
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your input</div>
-              <div className="whitespace-pre-wrap leading-relaxed text-mx-amber">{message.text}</div>
+              <RichText className="leading-relaxed text-mx-amber" text={message.text} />
               <div className="mt-1 text-[11px] text-mx-dim">Type your answer in the box below.</div>
             </div>
           ) : (
-            message.text && <div className="mt-1 whitespace-pre-wrap leading-relaxed">{message.text}</div>
+            message.text && <RichText className="mt-1 leading-relaxed" text={message.text} />
           )}
           {!message.text && thinking && <div className="animate-pulse text-sm text-mx-dim">Thinking…{message.round ? ` round ${message.round}` : ""}</div>}
         </div>

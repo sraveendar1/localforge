@@ -11,7 +11,7 @@ const CLAMP = 220;  // characters of the goal shown before "Show more"
 // Recent progress is the last few lines of AGENTS.md's "Progress log". "Last session" is the
 // memory model's note, read into collapsible sections instead of shown as raw markdown.
 // The plan (below) is different: it is only the current task's steps.
-export function GoalPanel({ memory }: { memory: MemoryState }) {
+export function GoalPanel({ memory, onItem }: { memory: MemoryState; onItem?: (action: "done" | "reopen", index: number) => void }) {
   const [more, setMore] = useState(false);
   const long = memory.goal.length > CLAMP;
   const goal = long && !more ? memory.goal.slice(0, CLAMP).replace(/\s+\S*$/, "") + "…" : memory.goal;
@@ -42,7 +42,7 @@ export function GoalPanel({ memory }: { memory: MemoryState }) {
       {memory.narrative && (
         <div>
           <h3 className="mb-1 text-[11px] uppercase tracking-wide text-mx-mid">Last session</h3>
-          <SessionNote note={memory.narrative} />
+          <SessionNote note={memory.narrative} onItem={onItem} />
         </div>
       )}
     </div>

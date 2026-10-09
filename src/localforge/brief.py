@@ -261,19 +261,234 @@ def worth_recording_as_goal(text: str) -> bool:
     return not tidy.startswith("/") and len(tidy) >= MIN_GOAL_CHARS and len(tidy.split()) >= 3
 
 
+# Reported: "the overall goal is just like how I wrote the prompt" -- the panel showed the
+# first message verbatim, greeting and typos included ("Hi The Overall goal of the project is...").
+# What is shown is now a short statement of the goal: cleaned of greetings and "my goal is"
+# lead-ins straight away (no model needed), and rewritten in plain words by the local keeper when
+# one is installed. The user's own words are kept beside it (`goal-request.md`) as the source.
+
+REQUEST_FILE = "goal-request.md"
+REFINED_FILE = "goal.refined"
+SHOWN_GOAL_CHARS = 280
+_LEAD_INS = re.compile(
+    r"^(?:(?:hi|hello|hey|hiya|good (?:morning|afternoon|evening))\b[\s,!.:-]*)?"
+    r"(?:(?:please|so|ok(?:ay)?|well)\b[\s,:-]*)?"
+    r"(?:the\s+)?(?:overall\s+|main\s+|end\s+)?(?:goal|objective|aim|purpose)\s+(?:of\s+(?:the|this|my)\s+project\s+)?(?:is|was)\s+(?:to\s+)?"
+    r"|^(?:i(?:'d| would)? (?:want|like|need)|i am|i'm|we(?:'d| would)? (?:want|like|need)|we are|we're|let'?s|can you|could you|please)\s+(?:you\s+)?(?:to\s+)?(?:build|create|make|write|develop)?\s*",
+    re.I,
+)
+
+
+def clean_goal(text: str) -> str:
+    """The user's first request read as a goal: greeting and "the goal is" lead-ins dropped,
+    the first couple of sentences kept, capitalised and ended. Plain text; no model."""
+    t = re.sub(r"\s+", " ", text or "").strip()
+    t = re.sub(r"^(?:hi|hello|hey|hiya)\b[\s,!.:-]*", "", t, flags=re.I)
+    stripped = _LEAD_INS.sub("", t, count=1).strip()
+    t = stripped if len(stripped.split()) >= 3 else t
+    sentences = re.split(r"(?<=[.!?])\s+", t)
+    out = ""
+    for sent in sentences:
+        if out and len(out) + len(sent) > SHOWN_GOAL_CHARS:
+            break
+        out = f"{out} {sent}".strip()
+    if len(out) > SHOWN_GOAL_CHARS:
+        out = out[: SHOWN_GOAL_CHARS - 1].rstrip(" ,;:") + "…"
+    if out:
+        out = out[0].upper() + out[1:]
+        if out[-1] not in ".!?…":
+            out += "."
+    return out
+
+
+def request_text(root: Path) -> str:
+    from localforge import memory
+
+    try:
+        return (memory.project_dir(root) / REQUEST_FILE).read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def goal_is_refined(root: Path) -> bool:
+    from localforge import memory
+
+    return (memory.project_dir(root) / REFINED_FILE).is_file()
+
+
 def record_goal(root: Path, text: str) -> bool:
     """Keep `text` as the project's goal if it has none yet and `text` is a real request.
-    True if it was recorded now."""
+    True if it was recorded now. The request itself is kept as the source; what's shown is
+    the cleaned-up statement of it."""
     from localforge import memory
 
     if recorded_goal(root) or not worth_recording_as_goal(text):
         return False
     try:
-        memory.ensure_dir(root)
-        goal_path(root).write_text(_tidy_goal(text) + "\n")
+        folder = memory.ensure_dir(root)
+        (folder / REQUEST_FILE).write_text(_tidy_goal(text) + "\n")
+        goal_path(root).write_text((clean_goal(text) or _tidy_goal(text)) + "\n")
     except OSError:
         return False
     return True
+
+
+GOAL_PROMPT = """Write the overall goal of a software project in one or two plain sentences, from the user's
+first request below. Rules: say what is being built and what it is for; fix typos and grammar; no greeting,
+no "the goal is", no first person; do not invent details that aren't in the request. Output only the sentences.
+
+Request:
+{request}
+"""
+
+
+def refine_goal(root: Path, dispatcher) -> bool:
+    """Have the local memory keeper restate the recorded request as a goal, once. Best-effort:
+    with no local model, or an unusable reply, the cleaned-up text stays. True if rewritten."""
+    from localforge import memory
+    from localforge.backends import BACKENDS
+
+    request = request_text(root)
+    if not request or goal_is_refined(root):
+        return False
+    entry = memory.keeper(dispatcher)
+    if entry is None:
+        return False
+    try:
+        result = BACKENDS[entry.runtime].generate(
+            entry.name, GOAL_PROMPT.format(request=request), context_limit=dispatcher.context_limit(entry)
+        )
+        dispatcher.local_tokens_generated += result.get("tokens", 0)
+    except Exception:  # noqa: BLE001 - a nicety
+        return False
+    text = re.sub(r"\s+", " ", str(result.get("content") or "")).strip().strip('"')
+    if not 15 <= len(text) <= SHOWN_GOAL_CHARS * 2 or text.lower().startswith(("sure", "here", "i ")):
+        return False
+    try:
+        goal_path(root).write_text(text + "\n")
+        (memory.project_dir(root) / REFINED_FILE).write_text("1\n")
+    except OSError:
+        return False
+    return True
+
+
+# Moving targets: the first request is only where a project starts. After a finished task the
+# goal is re-read against what has been asked since, and rewritten when the direction changed
+# (narrowed, widened, pivoted) -- by the local keeper when one is installed; without one, only an
+# explicit "the goal is now..." request changes it.
+
+EVOLVED_FILE = "goal.evolved"
+HISTORY_FILE = "goal-history.md"
+MAX_HISTORY_LINES = 20
+_PIVOT = re.compile(
+    r"\b(?:new goal|the goal is now|change (?:of )?(?:the )?goal|change the (?:direction|scope)|instead of (?:that|this|what)|"
+    r"forget (?:that|what)|actually,? (?:i|let'?s|we) (?:want|need)|pivot|new direction)\b",
+    re.I,
+)
+
+EVOLVE_PROMPT = """You keep the one-paragraph overall goal of a software project up to date.
+
+Current goal:
+{goal}
+
+Recent requests from the user (oldest first):
+{requests}
+
+What was just done: {done}
+
+Decide whether the project's goal has changed: the user may have narrowed it, widened it, or switched to something
+different. A single bug fix, tweak or question is NOT a change of goal. If it did change, write the new goal in one or two
+plain sentences (what is being built and what it is for; no greeting, no first person, no invented details). If not,
+keep the current goal exactly.
+Reply with JSON only: {{"changed": true or false, "goal": "the goal"}}"""
+
+
+def _note_history(root: Path, old: str) -> None:
+    from localforge import memory
+
+    try:
+        path = memory.project_dir(root) / HISTORY_FILE
+        lines = path.read_text(errors="replace").splitlines() if path.is_file() else []
+        lines.append(f"{date.today().isoformat()} — {old}")
+        path.write_text("\n".join(lines[-MAX_HISTORY_LINES:]) + "\n")
+    except OSError:
+        pass
+
+
+def _set_goal(root: Path, new: str) -> bool:
+    from localforge import memory
+
+    old = shown_goal(root)
+    new = re.sub(r"\s+", " ", new).strip()
+    if not new or new == old:
+        return False
+    try:
+        folder = memory.ensure_dir(root)
+        _note_history(root, old)
+        goal_path(root).write_text(new + "\n")
+        (folder / REFINED_FILE).write_text("1\n")
+        (folder / EVOLVED_FILE).write_text("1\n")
+    except OSError:
+        return False
+    return True
+
+
+def evolve_goal(root: Path, dispatcher, requests: list[str], done: str = "") -> bool:
+    """Re-read the goal against the latest requests. True if it was rewritten. Never downloads or
+    calls a paid model; any failure leaves the goal as it was."""
+    from localforge import memory
+    from localforge.backends import BACKENDS
+    from localforge.cli_transport import _extract_json
+
+    requests = [_tidy_goal(r) for r in requests if worth_recording_as_goal(r)][-6:]
+    if not requests or not shown_goal(root):
+        return False
+    entry = memory.keeper(dispatcher) if dispatcher is not None else None
+    if entry is None:
+        # no local model: only a plainly stated change of direction counts
+        latest = requests[-1]
+        return bool(_PIVOT.search(latest)) and _set_goal(root, clean_goal(_PIVOT.sub("", latest, count=1)) or clean_goal(latest))
+    prompt = EVOLVE_PROMPT.format(
+        goal=shown_goal(root),
+        requests="\n".join(f"- {r}" for r in requests),
+        done=re.sub(r"\s+", " ", done or "(nothing recorded)")[:600],
+    )
+    try:
+        result = BACKENDS[entry.runtime].generate(entry.name, prompt, context_limit=dispatcher.context_limit(entry))
+        dispatcher.local_tokens_generated += result.get("tokens", 0)
+    except Exception:  # noqa: BLE001 - a nicety
+        return False
+    decision = _extract_json(str(result.get("content") or "")) or {}
+    new = re.sub(r"\s+", " ", str(decision.get("goal") or "")).strip().strip('"')
+    if decision.get("changed") is not True or not 15 <= len(new) <= SHOWN_GOAL_CHARS * 2:
+        return False
+    return _set_goal(root, new)
+
+
+def goal_was_evolved(root: Path) -> bool:
+    from localforge import memory
+
+    return (memory.project_dir(root) / EVOLVED_FILE).is_file()
+
+
+def with_goal_replaced(text: str, goal: str) -> str:
+    """`text` with the body of `## What this project is` replaced by `goal` (added if missing)."""
+    goal = _tidy_goal(goal)
+    if not goal:
+        return text
+    parts = _split_sections(text)
+    for i, (name, _) in enumerate(parts):
+        if name and name.lower() == GOAL_SECTION.lower():
+            parts[i] = (GOAL_SECTION, [f"## {GOAL_SECTION}", "", goal])
+            return _join_sections(parts)
+    return with_goal(text, goal)
+
+
+def shown_goal(root: Path) -> str:
+    """The recorded goal as displayed: refined text as written, otherwise the raw request cleaned up
+    (so a project recorded before this existed reads properly too)."""
+    goal = recorded_goal(root)
+    return goal if goal_is_refined(root) else (clean_goal(request_text(root) or goal) or goal)
 
 
 SESSION_GOAL_CHARS = 500
@@ -295,7 +510,9 @@ def _session_goal(root: Path) -> str:
 def project_goal(root: Path) -> str:
     """What to show as the project's goal: AGENTS.md's own summary when it has one, else
     what the user first asked for, else (an older project) the goal from the last session's note."""
-    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or recorded_goal(root) or _session_goal(root)
+    if goal_was_evolved(root):
+        return shown_goal(root)
+    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or shown_goal(root) or _session_goal(root)
 
 
 def _split_sections(text: str) -> list[tuple[str | None, list[str]]]:

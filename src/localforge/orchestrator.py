@@ -63,6 +63,9 @@ class RunStats:
         # task (task_summary.py). Deliberately not a dataclass field: asdict()
         # and the usage history would otherwise carry every step around.
         self.log = task_summary.TaskLog()
+        # True when the task ended by proposing a plan for the user to approve
+        # (plan_gate, below) rather than by doing the work. Also not a field.
+        self.plan_pending = False
 
     @property
     def frontier_total_tokens(self) -> int:
@@ -196,6 +199,32 @@ NOTE_PREFIX = "[Note from the user, added while you were working]: "
 STEPS_LEFT_PREFIX = "[localforge: step limit] "
 CHECKPOINT_PREFIX = "[localforge: checkpoint] "
 COMPLETION_PREFIX = "[localforge: completion check] "
+# --- plan first -----------------------------------------------------------------
+#
+# Reported: a long task ran with Auto-approve on and nothing said what it was
+# going to do. With `plan_gate` (the desktop app passes it) a task that needs
+# changes must first end with a plan for the user to approve, whatever the
+# approval settings are: Auto-approve skips the per-file prompts, never this.
+# Until the plan is approved (`Conversation.plan_approved`) the tools below are
+# refused; reading, searching and browsing are fine, so the plan can be grounded.
+GATED_TOOLS = frozenset(
+    {"delegate_coding_task", "delegate_docs_task", "delegate_general_task", "generate_image",
+     "edit_file", "run_command", "make_dir", "move_path", "delete_path"}
+)
+PLAN_GATE_MAX_HITS = 3  # refused attempts before localforge presents the plan itself
+PLAN_HEADING = "## Proposed plan"
+PLAN_FIRST = (
+    "\n\nPlan first. The user hasn't approved a plan for this request yet, so you must not change anything: "
+    "delegate_*_task, generate_image, edit_file, run_command, make_dir, move_path and delete_path will be refused. "
+    "You may read, list, search and browse to understand the project. If the request needs changes or commands, "
+    f"finish by replying with the plan as your final answer, starting with the line \"{PLAN_HEADING}\", in this layout:\n"
+    f"{PLAN_HEADING}\n**Goal:** one sentence\n**Steps:**\n1. what will be done, which files, and what the local model will write\n"
+    "2. ...\n**Checks:** how you will verify it (the test/lint commands)\n**Needs your decision:** open questions "
+    "(leave this out if there are none)\n"
+    "Keep it short and in plain English. Don't build anything: the user will approve it or ask for changes, and "
+    "then you build. If the request is only a question, or needs no changes, just answer it."
+)
+_PLAN_MARKER = re.compile(r"^\s*[#*\s]*proposed plan", re.I)
 NUDGE = (
     "You said what you'll do but didn't call any tool, so nothing happened. "
     "Do it now with the tools, or if no action is needed, give your final answer."
@@ -398,6 +427,8 @@ class Conversation:
     facts: str = ""
     brief: str = ""  # the project brief (AGENTS.md), if the project has one
     last_progress: _Progress | None = None  # what the most recent task did, for open-work tracking if it stops
+    plan_required: bool = False  # set by run(): this turn must end in a plan before anything is changed
+    plan_approved: bool = False  # the user approved the plan just proposed; the next run may build
 
     def system_message(self) -> dict:
         content = SYSTEM_PROMPT
@@ -405,6 +436,8 @@ class Conversation:
             content += "\n\n" + self.project_snapshot
         if self.brief:
             content += "\n\nProject brief (from the project itself; trust it over guesswork, and say so if it's wrong):\n" + self.brief
+        if self.plan_required:
+            content += PLAN_FIRST
         if self.facts:
             content += "\n\nRemembered for this project:\n" + self.facts
         if self.memory:
@@ -448,6 +481,7 @@ def run(
     conversation: Conversation | None = None,
     workspace: Workspace | None = None,
     image: dict | None = None,
+    plan_gate: bool = False,
 ) -> RunResult:
     """Run one user message to completion: the frontier model investigates,
     delegates writing to local models, and answers.
@@ -463,6 +497,10 @@ def run(
     passes the same one every time); without it each call starts fresh.
     `workspace` is the project folder the file/command tools act on.
     `hooks` lets the caller show activity live.
+
+    `plan_gate`: a request that needs changes must first end with a proposed
+    plan (`stats.plan_pending` is then True) and nothing is changed until the
+    caller sets `conversation.plan_approved` for the next run.
 
     `image`, if given (`{"mime_type": ..., "data": <base64>}`), is attached
     to this turn's user message for a vision-capable orchestrator. An
@@ -500,6 +538,7 @@ def run(
     compact_at = memory.COMPACT_AT_CHARS_LOCAL if frontier_model.startswith(local_transport.PREFIXES) else memory.COMPACT_AT_CHARS
     if conversation.chars() > compact_at:
         memory.compact(conversation, dispatcher, hooks)
+    conversation.plan_required = bool(plan_gate and not conversation.plan_approved)
     if not conversation.messages:
         conversation.messages.append(conversation.system_message())
     else:
@@ -674,6 +713,9 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
     def _finish() -> None:
         _copy_dispatch_stats(stats, dispatcher)
 
+    gate = conversation.plan_required  # no change before the user approves a plan
+    gate_hits = 0
+
     # Identical tool calls already made in this task -> their result. Small
     # local orchestrators loop, re-issuing the same call after it succeeded
     # (seen live: one file delegated three times); re-running it wastes a
@@ -716,6 +758,13 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
                 nudged = True
                 messages.append({"role": "user", "content": NUDGE})
                 continue
+            if gate and (gate_hits or _PLAN_MARKER.match(message.content or "")):
+                stats.plan_pending = True
+                answer = message.content or ""
+                if not _PLAN_MARKER.match(answer):
+                    answer = f"{PLAN_HEADING}\n\n{answer}"
+                _finish()
+                return RunResult(answer=answer, stats=stats)
             if task.checks < MAX_COMPLETION_CHECKS and (gaps := _completion_gaps(task, message.content or "", conversation.brief)):
                 task.checks += 1
                 if hooks.on_tool is not None:
@@ -729,6 +778,18 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
         for call in message.tool_calls:
             name = call.function.name
             key = (name, _canonical_args(call.function.arguments))
+            if gate and name in GATED_TOOLS:
+                gate_hits += 1
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call.id,
+                        "content": f"Not run: {name} changes things, and the user hasn't approved a plan yet. Finish by "
+                        f"replying with the plan as your final answer, starting with \"{PLAN_HEADING}\". Nothing was changed.",
+                    }
+                )
+                conversation.tool_indices.append(len(messages) - 1)
+                continue
             if key in done_calls and name != "update_todos":
                 result = (
                     f"You already made this exact {name} call in this task and it succeeded; it was not run again. "
@@ -798,6 +859,14 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
 
         _collapse_old_tool_results(messages, conversation.tool_indices)
 
+        if gate and gate_hits >= PLAN_GATE_MAX_HITS:
+            # The model keeps reaching for build tools; present what it has.
+            stats.plan_pending = True
+            plan = _plan_from(task, messages)
+            messages.append({"role": "assistant", "content": plan})
+            _finish()
+            return RunResult(answer=plan, stats=stats)
+
         if round_number % CHECKPOINT_EVERY == 0 and round_number < MAX_ROUNDS:
             if not progress:
                 return _stop(
@@ -820,6 +889,19 @@ def _loop(frontier_model, cli_provider, hooks, conversation, messages, tools, di
             )
 
     return _stop(messages, stats, _finish, f"Stopped after {MAX_ROUNDS} steps without finishing.")
+
+
+def _plan_from(progress: _Progress, messages: list[dict]) -> str:
+    """A plan to show when the orchestrator never wrote one itself: its own
+    todo list if it made one, else the last thing it said."""
+    todos = [t.get("content", "") for t in progress.todos or [] if t.get("content")]
+    if todos:
+        steps = "\n".join(f"{i}. {t}" for i, t in enumerate(todos, 1))
+        return f"{PLAN_HEADING}\n\n**Steps:**\n{steps}"
+    for m in reversed(messages):
+        if m.get("role") == "assistant" and (m.get("content") or "").strip():
+            return f"{PLAN_HEADING}\n\n{m['content'].strip()}"
+    return f"{PLAN_HEADING}\n\nI haven't worked out the steps yet. Tell me what to change, or ask me to try again."
 
 
 # Bookkeeping, not work the user would want listed in the summary.
