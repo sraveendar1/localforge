@@ -1,5 +1,6 @@
 import type { Approval, DelegateItem, Item, Message, NoteItem, TaskSummary, Todo, ToolItem } from "./state";
 import { ActivityStream } from "./ActivityStream";
+import { RichText, renderInline } from "./RichText";
 
 export function ToolCard({ item }: { item: ToolItem }) {
   return (
@@ -210,8 +211,7 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
 // nothing is built until it's approved here (or by replying "go ahead").
 export function PlanCard({ text, onAction }: { text: string; onAction?: (action: "approve" | "cancel") => void }) {
   const lines = text.split("\n").filter((l, i) => !(i === 0 && /proposed plan/i.test(l)));
-  // **bold** is the only markdown the plan layout uses.
-  const inline = (line: string) => line.split(/(\*\*[^*]+\*\*)/g).map((part, j) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? <strong key={j} className="text-mx-bright">{part.slice(2, -2)}</strong> : part));
+  const inline = (line: string) => renderInline(line);
   return (
     <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="plan-card">
       <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">{onAction ? "● Proposed plan — approve before anything is built" : "● Plan"}</div>
@@ -243,7 +243,7 @@ export function MessageView({ message, thinking, awaitingInput = false, onPlan }
     case "error":
       return (
         <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red" role="alert">
-          {message.text}
+          <RichText text={message.text} />
           {message.detail && (
             <details className="text-mx-dim">
               <summary className="cursor-pointer text-[11px]">Details</summary>
@@ -254,7 +254,7 @@ export function MessageView({ message, thinking, awaitingInput = false, onPlan }
       );
     case "system":
       return (
-        <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid">{message.text}</div>
+        <div className="my-2 max-w-[90%] whitespace-pre-wrap rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 font-mono text-xs text-mx-mid"><RichText text={message.text} /></div>
       );
     case "summary":
       return message.summary ? <TaskSummaryCard summary={message.summary} /> : null;
@@ -267,11 +267,11 @@ export function MessageView({ message, thinking, awaitingInput = false, onPlan }
           ) : message.text && awaitingInput ? (
             <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="needs-input">
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your input</div>
-              <div className="whitespace-pre-wrap leading-relaxed text-mx-amber">{message.text}</div>
+              <RichText className="leading-relaxed text-mx-amber" text={message.text} />
               <div className="mt-1 text-[11px] text-mx-dim">Type your answer in the box below.</div>
             </div>
           ) : (
-            message.text && <div className="mt-1 whitespace-pre-wrap leading-relaxed">{message.text}</div>
+            message.text && <RichText className="mt-1 leading-relaxed" text={message.text} />
           )}
           {!message.text && thinking && <div className="animate-pulse text-sm text-mx-dim">Thinking…{message.round ? ` round ${message.round}` : ""}</div>}
         </div>

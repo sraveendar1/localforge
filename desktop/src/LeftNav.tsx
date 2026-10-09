@@ -1,5 +1,7 @@
 import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
+import { ExpandButton, ResizeHandle } from "./PanelResize";
+import type { PanelLayout } from "./PanelResize";
 import type { LocalModelTarget } from "./state";
 
 // A collapsible left rail (chevron-toggled): recently-opened project folders
@@ -20,6 +22,7 @@ export function LeftNav({
   source,
   onChange,
   onManageAccounts,
+  layout,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -33,11 +36,20 @@ export function LeftNav({
   source: "project" | "defaults" | null;
   onChange: (which: "frontier" | string | null) => void;
   onManageAccounts: () => void;
+  layout: PanelLayout;
 }) {
+  const { expanded } = layout;
   return (
-    <div className="flex h-full shrink-0">
+    <div className={"flex h-full " + (expanded ? "min-w-0 flex-1" : "shrink-0")}>
       {open && (
-        <nav className="flex w-64 flex-col gap-3 overflow-y-auto border-r border-mx-dim bg-mx-panel p-3 text-xs">
+        <nav
+          className={"flex flex-col gap-3 overflow-y-auto border-r border-mx-dim bg-mx-panel p-3 text-xs " + (expanded ? "min-w-0 flex-1" : "")}
+          style={expanded ? undefined : { width: layout.width }}
+          data-testid="left-panel"
+          data-expanded={expanded}
+        >
+          <div className="flex justify-end"><ExpandButton expanded={expanded} onToggle={layout.onToggleExpand} label="projects and models" /></div>
+          <div className={"flex flex-col gap-3 " + (expanded ? "mx-auto w-full max-w-3xl" : "")}>
           <Curtain title="Projects">
             {recentFolders.length === 0 ? (
               <p className="text-mx-dim italic">No recent projects yet.</p>
@@ -82,9 +94,11 @@ export function LeftNav({
               onManageAccounts={onManageAccounts}
             />
           </Curtain>
+          </div>
         </nav>
       )}
-      <button
+      {!expanded && open && <ResizeHandle side="left" width={layout.width} onWidth={layout.onWidth} />}
+      {!expanded && <button
         type="button"
         title={open ? "Hide sidebar" : "Show projects & models"}
         onClick={onToggle}
@@ -93,7 +107,7 @@ export function LeftNav({
         <span className="flex h-14 w-5 items-center justify-center rounded-full border border-mx-mid bg-mx-panel text-base font-bold text-mx-green glow group-hover:border-mx-bright group-hover:text-mx-bright">
           {open ? "‹" : "›"}
         </span>
-      </button>
+      </button>}
     </div>
   );
 }

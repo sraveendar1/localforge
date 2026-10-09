@@ -30,3 +30,36 @@ export function defaultRightOpen(): boolean {
     return true;
   }
 }
+
+// How wide each side panel is, and whether one fills the window, are per-viewer
+// conveniences too. Widths are only saved when a drag ends (or a key is pressed).
+export const PANEL_WIDTH = { left: { initial: 256, min: 200, max: 640 }, right: { initial: 288, min: 220, max: 720 } } as const;
+
+export function clampWidth(name: "left" | "right", width: number): number {
+  const { min, max } = PANEL_WIDTH[name];
+  let limit: number = max;
+  try {
+    limit = Math.min(max, Math.floor(window.innerWidth * 0.6));  // never push the chat off the window
+  } catch {
+    /* no window: use the plain max */
+  }
+  return Math.max(min, Math.min(limit, Math.round(width)));
+}
+
+export function loadPanelWidth(name: "left" | "right"): number {
+  try {
+    const raw = Number(localStorage.getItem(KEY + name + ".width"));
+    if (Number.isFinite(raw) && raw > 0) return clampWidth(name, raw);
+  } catch {
+    /* fall through */
+  }
+  return PANEL_WIDTH[name].initial;
+}
+
+export function savePanelWidth(name: "left" | "right", width: number): void {
+  try {
+    localStorage.setItem(KEY + name + ".width", String(Math.round(width)));
+  } catch {
+    /* not remembered; fine */
+  }
+}

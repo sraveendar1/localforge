@@ -8,7 +8,8 @@ import { SetupScreen } from "./SetupScreen";
 import { asksUser } from "./needsInput";
 import { ModelWizard } from "./ModelWizard";
 import { RightPanel } from "./RightPanel";
-import { defaultRightOpen, loadPanelOpen, savePanelOpen } from "./panelPrefs";
+import { defaultRightOpen, loadPanelOpen, loadPanelWidth, savePanelOpen, savePanelWidth } from "./panelPrefs";
+import type { PanelLayout } from "./PanelResize";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
 import { StatusBar } from "./StatusBar";
@@ -31,6 +32,9 @@ function App() {
   const [slashActive, setSlashActive] = useState(0);
   const [leftNavOpen, setLeftNavOpen] = useState(() => loadPanelOpen("left", false));
   const [rightOpen, setRightOpen] = useState(() => loadPanelOpen("right", defaultRightOpen()));
+  const [leftWidth, setLeftWidth] = useState(() => loadPanelWidth("left"));
+  const [rightWidth, setRightWidth] = useState(() => loadPanelWidth("right"));
+  const [expanded, setExpanded] = useState<"left" | "right" | null>(null);  // a side panel filling the whole window
   const [setupSkipped, setSetupSkipped] = useState(false);  // "Skip for now" on the first-run setup screen
   const [manageOpen, setManageOpen] = useState(false);  // Models > Accounts & keys: the same screen, opened on purpose
   const [wizardStart, setWizardStart] = useState<{ key: number; step: number; row: string | null }>({ key: 0, step: 0, row: null });  // where the model screen opens (a fresh key remounts it)
@@ -167,6 +171,23 @@ function App() {
   // remembered: with no choice yet the right panel just starts closed on a narrow window.
   const toggleLeft = () => { const next = !leftNavOpen; setLeftNavOpen(next); savePanelOpen("left", next); };
   const toggleRight = () => { const next = !rightOpen; setRightOpen(next); savePanelOpen("right", next); };
+  const sideLayout = (name: "left" | "right"): PanelLayout => ({
+    width: name === "left" ? leftWidth : rightWidth,
+    expanded: expanded === name,
+    onWidth: (w, commit) => { (name === "left" ? setLeftWidth : setRightWidth)(w); if (commit) savePanelWidth(name, w); },
+    onToggleExpand: () => {
+      if (expanded === name) { setExpanded(null); return; }
+      (name === "left" ? setLeftNavOpen : setRightOpen)(true);  // expanding shows it, whatever it was
+      setExpanded(name);
+    },
+  });
+  // Esc puts the window back; so does opening the model screen, which needs the centre.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setExpanded(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expanded]);
   const needsSetup = !!chat.setup?.needsSetup;
   // The guided model screen takes the centre of the window: automatically for a project
   // with no saved models (right after the trust prompt), and whenever "Change models" is
@@ -257,7 +278,8 @@ function App() {
         </div>
       )}
       <div className="flex min-h-0 flex-1">
-        <LeftNav
+        {expanded !== "right" && <LeftNav
+          layout={sideLayout("left")}
           open={leftNavOpen}
           onToggle={toggleLeft}
           recentFolders={recentFolders}
@@ -270,8 +292,8 @@ function App() {
           source={chat.modelsSource}
           onChange={which => (which && which !== "frontier" ? openWizard(1, which) : openWizard(0))}
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
-        />
-        <main className="flex min-w-0 flex-1 flex-col">
+        />}
+        <main className={"min-w-0 flex-1 flex-col " + (expanded ? "hidden" : "flex")}>
           <div className="flex-1 overflow-y-auto px-4 py-3">
             {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
               <BackendStatus
@@ -400,7 +422,7 @@ function App() {
           </div>
         </main>
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
-        <RightPanel open={rightOpen} onToggle={toggleRight}>
+        {expanded !== "left" && <RightPanel open={rightOpen} onToggle={toggleRight} layout={sideLayout("right")}>
           <Curtain title="Overall goal"><GoalPanel memory={chat.memory} /></Curtain>
           <Curtain title="Plan"><TodoList todos={chat.todos} queued={chat.queue} /></Curtain>
           <Curtain title={chat.queue.length ? `Queue (${chat.queue.length})` : "Queue"}>
@@ -430,7 +452,7 @@ function App() {
           </Curtain>
           <Curtain title="Usage and cost"><UsagePanel usage={chat.usage} configuredPaid={configuredPaid} usageHistory={chat.usageHistory} /></Curtain>
           <Curtain title="System"><SystemPanel stats={chat.systemStats} /></Curtain>
-        </RightPanel>
+        </RightPanel>}
       </div>
       {overlaySetup && chat.setup && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/80 p-6" role="dialog" aria-modal="true" aria-label="Accounts and keys" data-testid="setup-overlay">
