@@ -317,7 +317,7 @@ function App() {
                 <p className="pt-3 text-sm text-mx-green">What are you building?</p>
                 <p className="max-w-md text-xs text-mx-dim">Describe the task in the box below. A plan appears on the right once the work has more than a couple of steps.</p>
               </div>
-            ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} awaitingInput={awaitingInput && i === lastAssistant} />)}
+            ) : chat.messages.map((m, i) => <MessageView key={i} message={m} thinking={chat.running && i === lastAssistant} awaitingInput={awaitingInput && i === lastAssistant} onPlan={i === lastAssistant && chat.planPending ? action => send({ type: "plan_response", action }) : undefined} />)}
             <div ref={endRef} />
           </div>
           {chat.running && (
@@ -330,7 +330,10 @@ function App() {
                 <button className="rounded-sm border border-mx-red bg-transparent px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_clear" })}>Clear</button>
               </div>
               {chat.queue.map((q, i) => (
-                <div key={i} className="truncate text-mx-mid">{q}</div>
+                <div key={i} className="flex items-center gap-2 text-mx-mid">
+                  <span className="min-w-0 flex-1 truncate">{q}</span>
+                  {chat.running && <button className="shrink-0 rounded-sm border border-mx-dim px-1.5 text-[11px] text-mx-mid hover:border-mx-bright hover:text-mx-bright" title="Hand this to the task that's running now" onClick={() => send({ type: "queue_to_note", index: i })}>Send to running task</button>}
+                </div>
               ))}
             </div>
           )}
@@ -362,8 +365,8 @@ function App() {
             </button>
             <textarea
               rows={3}
-              className={"flex-1 resize-none rounded border bg-mx-panel2 p-2 text-sm " + (awaitingInput ? "border-mx-amber" : "border-mx-dim")}
-              placeholder={chat.trustRequired ? "Trust this folder above to start" : awaitingInput ? "Answer localforge's question…" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
+              className={"flex-1 resize-none rounded border bg-mx-panel2 p-2 text-sm " + (awaitingInput || chat.planPending ? "border-mx-amber" : "border-mx-dim")}
+              placeholder={chat.trustRequired ? "Trust this folder above to start" : chat.planPending ? "Approve the plan, or say what to change…" : awaitingInput ? "Answer localforge's question…" : chat.connected ? "Ask localforge, or type / for commands. Paste or drop an image to attach it…" : folder ? (chat.backendExited ? "localforge isn't running" : "Waiting for localforge to start…") : "Open a folder to start"}
               value={input}
               onChange={e => { setInput(e.target.value); setSlashActive(0); }}
               onPaste={onPaste}
@@ -408,7 +411,7 @@ function App() {
                 <>
                   <ol className="space-y-1 text-xs">
                     {chat.queue.map((q, i) => (
-                      <li key={i} className="flex gap-2 text-mx-mid"><span className="text-mx-dim" aria-hidden>{i + 1}.</span><span className="min-w-0 break-words">{q}</span></li>
+                      <li key={i} className="flex gap-2 text-mx-mid"><span className="text-mx-dim" aria-hidden>{i + 1}.</span><span className="min-w-0 flex-1 break-words">{q}</span>{chat.running && <button className="shrink-0 rounded-sm border border-mx-dim px-1.5 text-[11px] text-mx-mid hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_to_note", index: i })}>Send now</button>}</li>
                     ))}
                   </ol>
                   <button className="mt-2 rounded-sm border border-mx-red bg-transparent px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_clear" })}>Clear queue</button>

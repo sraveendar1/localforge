@@ -455,6 +455,56 @@ def _unknown_command_message(cmd: str) -> str:
 
 NOTE_PREFIX = "Note from the user: "
 
+# --- plan first, and messages sent while a task runs --------------------------------
+#
+# Reported: with Auto-approve on, a long task ran with nothing saying what it would
+# do, and a message sent meanwhile ("Lets plan first before execution") just queued
+# behind it, so it could never change the work. Now (1) a task that needs changes
+# first ends with a proposed plan the user approves, whatever Auto-approve says, and
+# (2) a short message sent mid-run goes to the running task as a note.
+_APPROVAL = re.compile(
+    r"^(please\s+)?(ok(ay)?|yes|yep|yeah|sure|approve[d]?( it| the plan)?|go|go ahead|go for it|do it|proceed|"
+    r"looks good|lgtm|sounds good|that works|build it|start|start building|looks good,? go ahead)[\s.!]*$",
+    re.I,
+)
+_STOP = re.compile(r"^(please\s+)?(stop|cancel|abort|halt|never ?mind)\b[\w\s,.!']{0,30}$", re.I)
+_LATER = re.compile(r"^(later|after( that| this)?|next|queue( it)?|then)\b[:,]?\s*", re.I)
+MAX_STEER_WORDS = 40  # longer than this reads as a separate task, not a nudge
+APPROVED_TEXT = (
+    "The user approved the plan. Build it now, exactly as proposed. Keep the plan list current with update_todos "
+    "(one item per step, mark each in_progress when you start it and completed when it's done), so the user can follow along."
+)
+_PLAN_STEP = re.compile(r"^\s*(?:\d+[.)]|[-*•])\s+(.+?)\s*$")
+
+
+def plan_steps(answer: str) -> list[dict]:
+    """The numbered steps of a proposed plan, as plan-list items, so the Plan panel
+    fills in the moment the plan is approved instead of waiting for the orchestrator
+    to write its own list."""
+    steps, in_steps = [], False
+    for line in (answer or "").splitlines():
+        low = line.strip().lower()
+        if low.startswith("**steps"):
+            in_steps = True
+            continue
+        if in_steps and low.startswith("**"):
+            break  # Checks / Needs your decision
+        if in_steps and (m := _PLAN_STEP.match(line)):
+            steps.append(re.sub(r"[*_`]", "", m.group(1)))
+    return [{"content": t, "status": "in_progress" if i == 0 else "pending"} for i, t in enumerate(steps[:12])]
+
+
+def classify_midrun(text: str, has_image: bool = False) -> str:
+    """What a message sent while a task is running means: "stop", "queue" (a separate
+    task for afterwards -- said so, long, or with an image) or "note" (a nudge,
+    question or correction for the task already running)."""
+    t = text.strip()
+    if _STOP.match(t):
+        return "stop"
+    if has_image or _LATER.match(t) or len(t.split()) > MAX_STEER_WORDS:
+        return "queue"
+    return "note"
+
 class StdioServer:
     def __init__(self, root: Path, frontier_model: str, cli_provider: str | None = None,
                  out: IO[str] | None = None, inp: IO[str] | None = None,
@@ -505,6 +555,8 @@ class StdioServer:
         self._queue_lock = threading.Lock()  # Lock for the queue
         self._notes: list[str] = []  # New notes attribute
         self._notes_lock = threading.Lock()  # Lock for the notes attribute
+        self.plan_first = True  # a task that needs changes proposes a plan first (/plan off to skip)
+        self._plan_pending = False  # a plan is on screen waiting for the user
 
         # Add _pending_info attribute
         self._pending_info: dict[str, tuple[str, str, str]] = {}
@@ -585,8 +637,18 @@ class StdioServer:
             on_tool=lambda name, summary: self.emit("tool_call_started", name=name, summary=summary),
             on_tool_result=lambda name, result: self.emit("tool_call_finished", name=name, result=result),
             on_todos=self._on_todos,
-            on_answer_text=lambda text: self.emit("text_delta", text=text)
+            on_answer_text=lambda text: self.emit("text_delta", text=text),
+            poll_notes=self._poll_notes,
         )
+
+    def _poll_notes(self) -> list[str]:
+        """Notes sent while the task runs, handed to it before its next step."""
+        with self._notes_lock:
+            notes = self._notes.copy()
+            self._notes.clear()
+        for note in notes:
+            self.emit("note_delivered", note=note)
+        return notes
 
     def _run_turn(self, text: str, image: dict | None = None) -> None:
         with self._notes_lock:
@@ -596,8 +658,15 @@ class StdioServer:
             text = "\n".join([NOTE_PREFIX + note for note in notes]) + "\n" + text
         workspace = Workspace(self.root, approver=self.approve, scratch=self.scratch_root)
         try:
-            result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace, image=image)
-            self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats))
+            extra = {"plan_gate": True} if self.plan_first else {}
+            result = self.run_fn(text, self.frontier_model, cli_provider=self.cli_provider, hooks=self._hooks(), conversation=self.conversation, workspace=workspace, image=image, **extra)
+            plan_pending = bool(getattr(result.stats, "plan_pending", False))
+            self._plan_pending = plan_pending
+            if plan_pending:
+                self._plan_answer = result.answer
+            if not plan_pending:
+                self._set_plan_approved(False)  # the next request is planned afresh
+            self.emit("run_finished", answer=result.answer, stats=_jsonable_stats(result.stats), plan_pending=plan_pending)
             summary = self._emit_summary(result.stats, "completed")
             self._record_usage(result.stats)
             # Off the worker, so a pending approval for the AGENTS.md change never holds up the next
@@ -694,6 +763,8 @@ class StdioServer:
         self.emit("todos_updated", todos=self._todos)
 
     def _start_next_queued(self) -> None:
+        if self._plan_pending:
+            return  # what's queued waits until the plan is approved or changed
         with self._queue_lock:
             if not self._queue:
                 return
@@ -703,6 +774,61 @@ class StdioServer:
         self.emit("run_started", text=next_text)
         self._worker = threading.Thread(target=self._run_turn, args=(next_text, next_image), daemon=True)
         self._worker.start()
+
+    def _begin_run(self, text: str, image: dict | None = None) -> None:
+        self._cancel.clear()
+        self.emit("run_started", text=text)
+        self._worker = threading.Thread(target=self._run_turn, args=(text, image), daemon=True)
+        self._worker.start()
+
+    def _set_plan_approved(self, value: bool) -> None:
+        if hasattr(self.conversation, "plan_approved"):
+            self.conversation.plan_approved = value
+
+    def _approve_plan(self) -> None:
+        self._plan_pending = False
+        self._set_plan_approved(True)
+        self.emit("plan_approved")
+        if steps := plan_steps(getattr(self, "_plan_answer", "")):
+            self._on_todos(steps)  # the Plan panel shows the approved steps straight away
+        self._begin_run(APPROVED_TEXT)
+
+    def _handle_midrun_message(self, text: str, image: dict | None) -> None:
+        """A message sent while a task runs. A nudge or question reaches the running
+        task before its next step (it used to just sit in the queue); "stop" stops;
+        a separate-looking task waits its turn."""
+        kind = classify_midrun(text, has_image=image is not None)
+        if kind == "stop":
+            self.handle_stop_command(say=True)
+        elif kind == "queue":
+            self._maybe_record_goal(text)
+            with self._queue_lock:
+                self._queue.append((_LATER.sub("", text, count=1).strip() or text, image))
+            self._emit_queue()
+        else:
+            self._send_note(text)
+
+    def _send_note(self, text: str) -> None:
+        with self._notes_lock:
+            self._notes.append(text)
+        self.emit("note_added", note=text)
+        self.emit("system_text", text="Sent to the running task: it will see this before its next step.")
+
+    def _queue_to_note(self, index) -> None:
+        """Turn a queued message into a note for the task that's running now."""
+        try:
+            i = int(index)
+        except (TypeError, ValueError):
+            return
+        with self._queue_lock:
+            if not 0 <= i < len(self._queue):
+                return
+            text, image = self._queue.pop(i)
+        self._emit_queue()
+        if self.busy:
+            self._send_note(text)
+        else:
+            self._begin_run(text, image)
 
     def handle(self, message: dict) -> bool:
         message_type = message.get("type")
@@ -766,19 +892,33 @@ class StdioServer:
                     self.handle_why_command()
                 elif cmd == "/stream":
                     self.handle_stream_command(arg)
+                elif cmd == "/plan":
+                    self.handle_plan_command(arg)
                 else:
                     self.emit("error", message=_unknown_command_message(cmd))
             elif self.busy:
-                self._maybe_record_goal(text)
-                with self._queue_lock:
-                    self._queue.append((text, image))
-                self._emit_queue()
+                self._handle_midrun_message(text, image)
             else:
                 self._maybe_record_goal(text)
-                self._cancel.clear()
-                self.emit("run_started", text=text)
-                self._worker = threading.Thread(target=self._run_turn, args=(text, image), daemon=True)
-                self._worker.start()
+                if self._plan_pending:
+                    # The reply to a proposed plan: "go ahead" approves it; anything else is a change to it.
+                    if _APPROVAL.match(text):
+                        self._approve_plan()
+                        return True
+                    self._plan_pending = False
+                self._begin_run(text, image)
+        elif message_type == "plan_response":
+            if message.get("action") == "approve":
+                if self._plan_pending and not self.busy:
+                    self._approve_plan()
+            elif self._plan_pending:  # cancel
+                self._plan_pending = False
+                self._set_plan_approved(False)
+                self.emit("plan_cancelled")
+                self.emit("system_text", text="Plan dropped. Nothing was changed.")
+                self._start_next_queued()
+        elif message_type == "queue_to_note":
+            self._queue_to_note(message.get("index"))
         elif message_type == "memory_list":
             self.handle_memory_command('')
         elif message_type == "memory_forget":
@@ -1399,7 +1539,8 @@ class StdioServer:
             {"name": "/summary", "description": "Show the session summary"},
             {"name": "/tell <note>", "description": "Append a note for the running task"},
             {"name": "/why", "description": "Explain the pending approval request"},
-            {"name": "/stream [on|off]", "description": "Toggle stream output on or off"}
+            {"name": "/stream [on|off]", "description": "Toggle stream output on or off"},
+            {"name": "/plan on|off", "description": "Propose a plan to approve before anything is built (on by default)"},
         ]
         self.emit("command_help", commands=commands)
 
@@ -1437,6 +1578,21 @@ class StdioServer:
             lines.append(f"Auto-approve is {'on' if self.auto_approve else 'off'}")
             self.emit("why", lines=lines)
 
+    def handle_plan_command(self, arg: str):
+        arg = arg.strip().lower()
+        if arg in ("on", "off"):
+            self.plan_first = arg == "on"
+            if not self.plan_first:
+                self._plan_pending = False
+        elif arg:
+            self.emit("error", message="Usage: /plan on or /plan off.")
+            return
+        self.emit("plan_mode", enabled=self.plan_first)
+        self.emit("system_text", text=(
+            "Plan first is on: for anything that changes your project, a plan is proposed and waits for your approval before anything is built, even with Auto-approve on."
+            if self.plan_first else "Plan first is off: requests are carried out straight away."
+        ))
+
     def handle_stream_command(self, arg: str):
         if not arg:
             self.stream_output = not self.stream_output
@@ -1448,7 +1604,7 @@ class StdioServer:
         self.emit("system_text", text="Streaming is on: local model output is shown as it is written." if self.stream_output else "Streaming is off.")
 
     def serve_forever(self) -> None:
-        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output)
+        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output, plan_first=self.plan_first)
         if not self.trusted:
             self.emit("trust_required", folder=str(self.root))
         try:

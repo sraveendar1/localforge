@@ -18,7 +18,7 @@ export type TaskSummary = {
   problems: { what: string; error: string; recovered: boolean; plain?: string }[];
   plainError?: string | null;
 };
-export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary; detail?: string };
+export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary; detail?: string; plan?: boolean };
 export type Approval = { id: string; kind: string; title: string; detail: string };
 export type Todo = { content: string; status: "pending" | "in_progress" | "completed" };
 export type Gpu = { name: string; vram_gb: number; backend: string };
@@ -131,6 +131,7 @@ export type ChatState = {
   memory: MemoryState;
   scratchFiles: ScratchFile[];
   queue: string[];  // New queue field
+  planPending: boolean;  // a proposed plan is on screen waiting to be approved
   streamOutput: boolean;  // New ChatState field
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
   // What the running task is doing right now, for the live "Forging with X…"
@@ -191,6 +192,7 @@ export const initialState: ChatState = {
   memory: { facts: [], narrative: "", goal: "", progress: [] },
   scratchFiles: [],
   queue: [],  // Initialize queue to an empty array
+  planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
   trustRequired: null,
   activity: null
@@ -378,7 +380,11 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       // beyond the prompt itself.
       return { ...state, trustRequired: null, trustDeclined: !ev.trusted };
     case "run_started":
-      return { ...state, running: true, status: "", messages: [...state.messages, { role: "assistant", text: "", items: [] }] };
+      return { ...state, running: true, planPending: false, status: "", messages: [...state.messages, { role: "assistant", text: "", items: [] }] };
+    case "plan_approved":
+      return addSystemMessage({ ...state, planPending: false }, "Plan approved — building it now.");
+    case "plan_cancelled":
+      return { ...state, planPending: false };
     case "frontier_round":
       return updateAssistant(state, m => ({ ...m, round: ev.round }));
     case "text_delta":
@@ -437,7 +443,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "approval_auto":
       return addItem(state, { kind: "note", text: `Auto-approved: ${ev.title}` });
     case "run_finished":
-      return withStats(updateAssistant({ ...state, running: false, status: "" }, m => (m.text === "" ? { ...m, text: String(ev.answer ?? "") } : m)), ev.stats);
+      return withStats(updateAssistant({ ...state, running: false, status: "", planPending: !!ev.plan_pending }, m => ({ ...(m.text === "" ? { ...m, text: String(ev.answer ?? "") } : m), plan: !!ev.plan_pending })), ev.stats);
     case "run_cancelled":
       return addItem({ ...state, running: false, status: "", approvals: [] }, { kind: "note", text: "Stopped." });
     case "error":

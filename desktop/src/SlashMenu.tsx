@@ -24,6 +24,7 @@ export const SLASH_COMMANDS: { name: string; description: string }[] = [
   { name: "/tell", description: "Append a note for the running task" },
   { name: "/why", description: "Explain the pending approval request" },
   { name: "/stream", description: "Toggle stream output on or off (on|off)" },
+  { name: "/plan", description: "Propose a plan to approve before building (on|off)" },
 ];
 
 export function matchSlashCommands(input: string): { name: string; description: string }[] {

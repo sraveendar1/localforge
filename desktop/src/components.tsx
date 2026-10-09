@@ -206,7 +206,28 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
   );
 }
 
-export function MessageView({ message, thinking, awaitingInput = false }: { message: Message; thinking: boolean; awaitingInput?: boolean }) {
+// A plan the orchestrator proposes before building anything. Shown even with Auto-approve on:
+// nothing is built until it's approved here (or by replying "go ahead").
+export function PlanCard({ text, onAction }: { text: string; onAction?: (action: "approve" | "cancel") => void }) {
+  const lines = text.split("\n").filter((l, i) => !(i === 0 && /proposed plan/i.test(l)));
+  // **bold** is the only markdown the plan layout uses.
+  const inline = (line: string) => line.split(/(\*\*[^*]+\*\*)/g).map((part, j) => (part.startsWith("**") && part.endsWith("**") && part.length > 4 ? <strong key={j} className="text-mx-bright">{part.slice(2, -2)}</strong> : part));
+  return (
+    <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="plan-card">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">{onAction ? "● Proposed plan — approve before anything is built" : "● Plan"}</div>
+      <div className="space-y-0.5 leading-relaxed">{lines.map((l, i) => (l.trim() ? <div key={i} className="whitespace-pre-wrap">{inline(l)}</div> : null))}</div>
+      {onAction && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <button className="rounded-sm border border-mx-green px-3 py-1 text-xs font-semibold text-mx-green hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("approve")}>Approve &amp; build</button>
+          <span className="text-[11px] text-mx-dim">or type what to change in the box below</span>
+          <button className="ml-auto rounded-sm border border-mx-red px-2 py-1 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("cancel")}>Cancel</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function MessageView({ message, thinking, awaitingInput = false, onPlan }: { message: Message; thinking: boolean; awaitingInput?: boolean; onPlan?: (action: "approve" | "cancel") => void }) {
   switch (message.role) {
     case "user":
       return (
@@ -241,7 +262,9 @@ export function MessageView({ message, thinking, awaitingInput = false }: { mess
       return (
         <div className="my-2 max-w-[90%]">
           <ActivityStream items={message.items} open={thinking} round={message.round} />
-          {message.text && awaitingInput ? (
+          {message.text && message.plan ? (
+            <PlanCard text={message.text} onAction={onPlan} />
+          ) : message.text && awaitingInput ? (
             <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="needs-input">
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your input</div>
               <div className="whitespace-pre-wrap leading-relaxed text-mx-amber">{message.text}</div>

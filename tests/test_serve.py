@@ -186,7 +186,8 @@ def test_second_message_while_busy_is_queued(tmp_path):
 
     server, out = make_server(tmp_path, run_fn)
     server.handle({"type": "user_message", "text": "one"})
-    server.handle({"type": "user_message", "text": "two"})
+    # A short message mid-run is a note for the running task; one that says it is for later waits its turn.
+    server.handle({"type": "user_message", "text": "later: two"})
     queued = wait_for(out, "queue")
     assert queued["items"] == ["two"]
     release.set()
