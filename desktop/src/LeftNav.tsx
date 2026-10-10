@@ -15,6 +15,8 @@ export function LeftNav({
   recentFolders,
   currentFolder,
   onSelectFolder,
+  onOpenInNewWindow,
+  openElsewhere,
   onOpenDialog,
   frontier,
   targets,
@@ -29,6 +31,8 @@ export function LeftNav({
   recentFolders: string[];
   currentFolder: string | null;
   onSelectFolder: (path: string) => void;
+  onOpenInNewWindow: (path: string) => void;
+  openElsewhere: string[];
   onOpenDialog: () => void;
   frontier: string;
   targets: { [modality: string]: LocalModelTarget };
@@ -58,19 +62,32 @@ export function LeftNav({
                 {recentFolders.map(f => {
                   const current = f === currentFolder;
                   return (
-                    <li key={f}>
+                    <li key={f} className="group flex items-center gap-1">
                       <button
                         type="button"
                         title={f}
                         aria-current={current ? "true" : undefined}
                         onClick={() => onSelectFolder(f)}
                         className={
-                          "block w-full truncate rounded-sm border-l-2 py-1 pl-2 pr-1 text-left hover:bg-mx-dim/40 " +
+                          "block min-w-0 flex-1 truncate rounded-sm border-l-2 py-1 pl-2 pr-1 text-left hover:bg-mx-dim/40 " +
                           (current ? "border-mx-bright bg-mx-dim/30 text-mx-bright" : "border-transparent text-mx-mid")
                         }
                       >
-                        {f.split("/").pop() || f}
+                        {f.split(/[\\/]/).filter(Boolean).pop() || f}
                       </button>
+                      {!current && openElsewhere.includes(f.toLowerCase()) && <span title="Open in another window" aria-label="Open in another window" data-testid="open-elsewhere" className="text-[10px] text-mx-green">●</span>}
+                      {!current && (
+                        <button
+                          type="button"
+                          title="Open in a new window"
+                          aria-label={`Open ${f.split(/[\\/]/).filter(Boolean).pop() || f} in a new window`}
+                          data-testid="open-new-window"
+                          onClick={() => onOpenInNewWindow(f)}
+                          className="shrink-0 rounded-sm border border-mx-dim px-1 text-[11px] text-mx-dim opacity-0 hover:border-mx-mid hover:text-mx-bright focus:opacity-100 group-hover:opacity-100"
+                        >
+                          ⧉
+                        </button>
+                      )}
                     </li>
                   );
                 })}

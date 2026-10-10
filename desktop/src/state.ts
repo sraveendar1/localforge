@@ -118,6 +118,7 @@ export type ChatState = {
   backendExited: boolean;
   backendStartedAt: number | null;
   trustDeclined: boolean;
+  projectBusy: string | null;  // another window already has this folder open (the backend refused to start)
   budgets: BudgetRow[];
   setup: SetupStatus | null;
   setupChecks: SetupChecks | null;
@@ -185,6 +186,7 @@ export const initialState: ChatState = {
   backendExited: false,
   backendStartedAt: null,
   trustDeclined: false,
+  projectBusy: null,
   budgets: [],
   setup: null,
   setupChecks: null,
@@ -546,6 +548,10 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       };
       return { ...state, messages: [...state.messages, { role: "summary", text: "", items: [], summary }] };
     }
+    case "model_waiting":  // another window's local model call is running; ours is queued behind it
+      return { ...state, status: ev.waiting ? "Waiting for another window's local model to finish…" : (state.status.startsWith("Waiting for another window") ? "" : state.status) };
+    case "project_busy":
+      return { ...state, projectBusy: String(ev.message ?? "This project is already open in another window."), backendExited: true, connected: false };
     case "system_text":
       return addSystemMessage(state, String(ev.text ?? ""));
     case "budget": {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { configuredPaidModels } from "./paidModels";
 import { BackendStatus } from "./BackendStatus";
 import { SetupScreen } from "./SetupScreen";
@@ -41,6 +41,8 @@ function App() {
   const [manageOpen, setManageOpen] = useState(false);  // Models > Accounts & keys: the same screen, opened on purpose
   const [wizardStart, setWizardStart] = useState<{ key: number; step: number; row: string | null }>({ key: 0, step: 0, row: null });  // where the model screen opens (a fresh key remounts it)
   const [wizardEdit, setWizardEdit] = useState(false);  // the model screen was opened on purpose ("Change models"), not shown to a new project
+  const [notice, setNotice] = useState<string | null>(null);  // a banner above the chat: a duplicate open, etc.
+  const [openElsewhere, setOpenElsewhere] = useState<string[]>([]);  // folders open in some window (lower-cased)
   const [recentFolders, setRecentFolders] = useState<string[]>(() => loadRecentFolders());
   const [attachedImage, setAttachedImage] = useState<{ dataUrl: string; mimeType: string; data: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
@@ -48,21 +50,42 @@ function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashMatches = matchSlashCommands(input.trim());
 
+  // Several windows can be open, each with its own backend. Everything here listens on *this* window,
+  // so another window's events never show up in this one.
   useEffect(() => {
+    const win = getCurrentWebviewWindow();
     const ps = [
-      listen<string>("localforge-event", e => {
+      win.listen<string>("localforge-event", e => {
         let ev: any;
         try { ev = JSON.parse(e.payload); } catch { return; }
         setChat(s => applyEvent(s, ev));
       }),
-      listen("localforge-exit", () => setChat(s => backendExited(s))),
+      win.listen("localforge-exit", () => setChat(s => backendExited(s))),
       // Whatever the backend prints to stderr: normally nothing, but a start that
       // fails says why here (a crash, a dyld error) and is shown by BackendStatus.
-      listen<string>("localforge-stderr", e => setChat(s => appendBackendLog(s, String(e.payload ?? "")))),
+      win.listen<string>("localforge-stderr", e => setChat(s => appendBackendLog(s, String(e.payload ?? "")))),
+      // Someone (another window, a second launch, `localforge desktop`) tried to open this project again.
+      win.listen<string>("localforge-duplicate-open", e => {
+        const name = String(e.payload ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "This project";
+        const text = `You tried to open “${name}” again. It's already open here, so this is the window to use.`;
+        setNotice(text);
+        setChat(s => applyEvent(s, { type: "system_text", text }));
+      }),
     ];
     return () => { ps.forEach(p => p.then(f => f())); };
   }, []);
 
+  // Closing a window with a task still running asks first; closing it stops only its own backend.
+  const runningRef = useRef(false);
+  runningRef.current = chat.running;
+  useEffect(() => {
+    const p = getCurrentWebviewWindow().onCloseRequested(async ev => {
+      if (!runningRef.current) return;
+      const ok = await ask("A task is still running in this window. Close it anyway? The task will be stopped.", { title: "Close window?", kind: "warning" }).catch(() => true);
+      if (!ok) ev.preventDefault();
+    });
+    return () => { p.then(f => f()).catch(() => {}); };
+  }, []);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chat.messages]);
 
@@ -81,6 +104,14 @@ function App() {
   );
 
   async function startSessionForFolder(dir: string) {
+    // Another window may already have it: that window is brought forward and told; this one stays as it is.
+    try {
+      if (await invoke<boolean>("folder_open_elsewhere", { folder: dir })) {
+        setNotice(`“${dir.split(/[\\/]/).filter(Boolean).pop() ?? dir}” is already open in another window, so that window was brought forward.`);
+        return;
+      }
+    } catch { /* not in the desktop shell: carry on */ }
+    setNotice(null);
     setFolder(dir);
     setWizardEdit(false);
     setChat({ ...initialState, backendStartedAt: Date.now() });
@@ -88,8 +119,26 @@ function App() {
     try { // No model is passed: the backend uses this project's saved models
       // (.localforge/models.json), else the user's defaults. Carrying the
       // last folder's model over would override the next folder's own.
-      await invoke("start_session", { folder: dir, model: null }); } catch (err) { setChat(s => addError(s, String(err))); }
+      await invoke<string>("start_session", { folder: dir, model: null });
+    } catch (err) { setChat(s => addError(s, String(err))); }
   }
+
+  // Each window is named after its project, and knows which projects are open in windows (for the list).
+  useEffect(() => {
+    getCurrentWebviewWindow().setTitle(folder ? `${folder.split(/[\\/]/).filter(Boolean).pop() ?? folder} — LocalForge` : "LocalForge Desktop").catch(() => {});
+  }, [folder]);
+  const refreshOpenWindows = useCallback(() => {
+    invoke<{ label: string; folder: string }[]>("open_windows").then(rows => setOpenElsewhere(rows.map(r => r.folder.toLowerCase()))).catch(() => {});
+  }, []);
+  useEffect(() => {
+    refreshOpenWindows();
+    const t = setInterval(refreshOpenWindows, 4000);
+    // Another window may have added a recent folder.
+    const onStorage = () => setRecentFolders(loadRecentFolders());
+    window.addEventListener("storage", onStorage);
+    return () => { clearInterval(t); window.removeEventListener("storage", onStorage); };
+  }, [refreshOpenWindows]);
+  const openInNewWindow = (dir: string) => { setRecentFolders(r => addRecentFolder(dir, r)); invoke("open_project_window", { folder: dir }).then(refreshOpenWindows).catch(err => setNotice(String(err))); };
 
   // Set when the app is launched with a folder to open directly (e.g.
   // `localforge desktop`'s hand-off from a terminal session -- see cli.py's
@@ -266,7 +315,14 @@ function App() {
         </button>
         <label className="flex items-center gap-1 text-sm"><input type="checkbox" checked={chat.autoApprove} disabled={!chat.connected} onChange={e => send({ type: "set_auto", enabled: e.target.checked })} />Auto-approve</label>
         <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" onClick={openFolder}>Open folder…</button>
+        <button className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-1 text-sm text-mx-green hover:border-mx-mid hover:text-mx-bright" title="Open another project in its own window" data-testid="new-window" onClick={() => invoke("new_window").catch(err => setNotice(String(err)))}>New window</button>
       </header>
+      {notice && (
+        <div role="status" data-testid="window-notice" className="flex items-center justify-between gap-3 border-b border-mx-amber bg-mx-panel2 px-4 py-1.5 text-xs text-mx-amber">
+          <span>{notice}</span>
+          <button type="button" className="shrink-0 rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={() => setNotice(null)}>OK</button>
+        </div>
+      )}
       {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-dim">{chat.status}</div>}
       {folder && !chat.connected && chat.backendExited && !chat.trustDeclined && chat.messages.length > 0 && (
         <div className="flex items-center gap-3 border-b border-mx-red bg-mx-panel px-4 py-1 text-xs text-mx-red" role="alert" data-testid="backend-lost">
@@ -288,6 +344,8 @@ function App() {
           recentFolders={recentFolders}
           currentFolder={folder}
           onSelectFolder={startSessionForFolder}
+          onOpenInNewWindow={openInNewWindow}
+          openElsewhere={openElsewhere}
           onOpenDialog={openFolder}
           frontier={chat.model}
           targets={chat.localModelTargets}
@@ -298,7 +356,14 @@ function App() {
         />}
         <main className={"min-w-0 flex-1 flex-col " + (expanded ? "hidden" : "flex")}>
           <div className="flex-1 overflow-y-auto px-4 py-3">
-            {!folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
+            {chat.projectBusy ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center" data-testid="project-busy">
+                <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-amber glow">Already open</h1>
+                <p className="max-w-md text-sm text-mx-mid">{chat.projectBusy}</p>
+                <p className="max-w-md text-xs text-mx-dim">A project can be open in only one window at a time. Switch to that window, or close it and try again.</p>
+                <button type="button" className="rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright" onClick={openFolder}>Open a different folder…</button>
+              </div>
+            ) : !folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
               <BackendStatus
                 folder={folder}
                 log={chat.backendLog}

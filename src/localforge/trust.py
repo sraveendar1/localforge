@@ -66,20 +66,24 @@ def is_trusted(folder: Path) -> bool:
 
 
 def trust(folder: Path) -> None:
+    from localforge import locks
+
     folder = str(Path(folder).resolve())
-    folders = trusted_folders()
-    if folder not in folders:
-        folders.append(folder)
-    path = _file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(sorted(folders), indent=2) + "\n")
+    with locks.config_lock():  # another window may be trusting a folder at the same moment
+        folders = trusted_folders()
+        if folder not in folders:
+            folders.append(folder)
+        locks.atomic_write(_file(), json.dumps(sorted(folders), indent=2) + "\n")
 
 
 def untrust(folder: Path) -> bool:
+    from localforge import locks
+
     folder = str(Path(folder).resolve())
-    folders = trusted_folders()
-    if folder not in folders:
-        return False
-    folders.remove(folder)
-    _file().write_text(json.dumps(sorted(folders), indent=2) + "\n")
+    with locks.config_lock():
+        folders = trusted_folders()
+        if folder not in folders:
+            return False
+        folders.remove(folder)
+        locks.atomic_write(_file(), json.dumps(sorted(folders), indent=2) + "\n")
     return True

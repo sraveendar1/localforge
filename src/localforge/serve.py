@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, re, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
+from localforge import brief, cli_transport, locks, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -609,6 +609,8 @@ class StdioServer:
         if self.trusted:
             self._adopt_project_models()
         self._write_lock = threading.Lock()
+        # Another window's local model call is running: say so instead of looking frozen.
+        locks.set_wait_reporter(lambda waiting, owner: self.emit("model_waiting", waiting=waiting, folder=owner.get("folder")))
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._pending: dict[str, tuple[threading.Event, list[str]]] = {}
@@ -1784,6 +1786,15 @@ class StdioServer:
 def serve_stdio(root: Path, frontier_model: str, cli_provider: str | None = None, auto_approve: bool = False, stream_output: bool = False, model_explicit: bool = False) -> None:
     real_stdout = sys.stdout
     sys.stdout = sys.stderr
+    # One backend per project folder: a second window on the same folder is told so instead of
+    # sharing (and corrupting) its memory and settings. The lock is released when this process ends.
+    try:
+        _project_lock = locks.acquire_project(root)
+    except locks.ProjectBusy as busy:
+        real_stdout.write(json.dumps({"type": "project_busy", "folder": str(root), "pid": busy.owner.get("pid"), "message": str(busy)}) + "\n")
+        real_stdout.flush()
+        sys.stdout = real_stdout
+        return
     try:
         server = StdioServer(root, frontier_model, cli_provider, out=real_stdout, inp=sys.stdin, auto_approve=auto_approve, stream_output=stream_output, model_explicit=model_explicit)
         server.serve_forever()
