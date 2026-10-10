@@ -83,9 +83,9 @@ export function LeftNav({
                           aria-label={`Open ${f.split(/[\\/]/).filter(Boolean).pop() || f} in a new window`}
                           data-testid="open-new-window"
                           onClick={() => onOpenInNewWindow(f)}
-                          className="shrink-0 rounded-sm border border-mx-dim px-1 text-[11px] text-mx-dim opacity-0 hover:border-mx-mid hover:text-mx-bright focus:opacity-100 group-hover:opacity-100"
+                          className="shrink-0 rounded-sm border border-mx-dim px-1.5 py-0.5 text-[10px] text-mx-mid hover:border-mx-mid hover:text-mx-bright"
                         >
-                          ⧉
+                          ⧉ New window
                         </button>
                       )}
                     </li>
