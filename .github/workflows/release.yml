@@ -41,7 +41,15 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch: {}
+  # "Run workflow" button: pick the release tag to publish under (created on
+  # the chosen branch's head if it doesn't exist yet). Without this the tag
+  # name would be the branch name ("main") and publishing failed at once.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish, e.g. v0.1.12"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -104,8 +112,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop
-          tagName: ${{ github.ref_name }}
-          releaseName: "LocalForge Desktop ${{ github.ref_name }}"
+          tagName: ${{ inputs.tag || github.ref_name }}
+          commitish: ${{ github.sha }}
+          releaseName: "LocalForge Desktop ${{ inputs.tag || github.ref_name }}"
           releaseBody: "See the [README](https://github.com/${{ github.repository }}/blob/main/README.md#installing-the-desktop-app) for what's new and how to install."
           releaseDraft: true
           prerelease: false
