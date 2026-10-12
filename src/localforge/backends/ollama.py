@@ -11,6 +11,7 @@ from collections.abc import Callable
 import httpx
 
 from localforge.backends.base import BackendResult
+from localforge.locks import model_guard
 
 # Called with each raw progress event Ollama streams back while pulling, e.g.
 # {"status": "pulling manifest"} or
@@ -34,7 +35,7 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 # first one -- exactly what "fire-and-forget, answered whenever it's ready"
 # already promises for a side question, just actually enforced. local_transport.py's
 # own /api/chat calls (a local orchestrator) share this same lock for the same reason.
-GENERATE_LOCK = threading.Lock()
+GENERATE_LOCK = threading.Lock()  # threads of this process; locks.model_guard adds the lock shared with other windows
 
 
 class OllamaNotRunningError(RuntimeError):
@@ -253,7 +254,7 @@ class OllamaBackend:
         weights to load the other, which fails whichever call was already
         mid-stream.
         """
-        with GENERATE_LOCK:
+        with model_guard(GENERATE_LOCK):
             if on_token is not None:
                 return self._generate_streaming(model_name, prompt, on_token, **kwargs)
             options = _with_context(prompt, MAX_QUIET_OUTPUT_TOKENS, kwargs, self.trained_context(model_name), model_name)

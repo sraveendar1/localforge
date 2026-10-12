@@ -48,7 +48,7 @@ def test_desktop_command_uses_macos_open_for_an_app_bundle(monkeypatch, tmp_path
     result = CliRunner().invoke(cli_module.app, ["desktop"])
 
     assert result.exit_code == 0
-    assert calls == [["open", "-a", str(app_bundle), "--args", str(tmp_path.resolve())]]
+    assert calls == [["open", "-n", "-a", str(app_bundle), "--args", str(tmp_path.resolve())]]
 
 
 def test_env_override_takes_priority_and_must_exist(monkeypatch, tmp_path):

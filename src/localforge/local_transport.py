@@ -21,6 +21,7 @@ import httpx
 
 from localforge import cli_transport, content_blocks
 from localforge.answer_stream import AnswerStreamer
+from localforge.locks import model_guard
 from localforge.backends.ollama import (
     CHARS_PER_TOKEN,
     GENERATE_LOCK,
@@ -248,7 +249,7 @@ def complete(frontier_model: str, messages: list[dict], tools: list[dict], on_te
         # GENERATE_LOCK's comment there): a local orchestrator's own turn is
         # just as vulnerable to a concurrent delegate/side-question call
         # evicting its model mid-stream as a delegated generate() call is.
-        with GENERATE_LOCK, httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
+        with model_guard(GENERATE_LOCK), httpx.Client(base_url=OLLAMA_BASE_URL, timeout=TIMEOUT) as client:
             if on_text is None:
                 resp = client.post("/api/chat", json=body)
                 if (error := error_from(resp, name)) is not None:

@@ -238,17 +238,20 @@ def load() -> None:
 
 def save(values: dict[str, str]) -> None:
     """Merge `values` into the saved config file, creating it if needed."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    existing: dict[str, str] = {}
-    if CONFIG_FILE.exists():
-        for line in CONFIG_FILE.read_text().splitlines():
-            if "=" in line and not line.startswith("#"):
-                key, _, val = line.partition("=")
-                existing[key] = val
+    from localforge import locks
 
-    existing.update(values)
-    CONFIG_FILE.write_text("".join(f"{k}={v}\n" for k, v in existing.items()))
-    CONFIG_FILE.chmod(0o600)  # contains API keys
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    # Another window may be saving too: re-read under a lock, then replace the file whole.
+    with locks.config_lock():
+        existing: dict[str, str] = {}
+        if CONFIG_FILE.exists():
+            for line in CONFIG_FILE.read_text().splitlines():
+                if "=" in line and not line.startswith("#"):
+                    key, _, val = line.partition("=")
+                    existing[key] = val
+
+        existing.update(values)
+        locks.atomic_write(CONFIG_FILE, "".join(f"{k}={v}\n" for k, v in existing.items()), mode=0o600)  # contains API keys
     # Apply to this process too: load() never overrides what's already in the
     # environment, so inside a session /setup or /model would otherwise keep
     # using the old values until localforge restarts.

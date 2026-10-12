@@ -3070,7 +3070,9 @@ def _launch_desktop_app(root: Path) -> None:
             "LOCALFORGE_DESKTOP_BIN to its executable path."
         )
     if platform.system() == "Darwin" and binary.suffix == ".app":
-        subprocess.Popen(["open", "-a", str(binary), "--args", str(root)])
+        # -n starts a new process even if the app is running: the app then hands the folder to the running copy
+        # (single-instance), which opens it in a new window. Plain `open -a` would drop the argument.
+        subprocess.Popen(["open", "-n", "-a", str(binary), "--args", str(root)])
     else:
         subprocess.Popen([str(binary), str(root)])
 
