@@ -89,7 +89,7 @@ def test_one_off_run_refuses_an_untrusted_folder_without_a_terminal(tmp_path, mo
     monkeypatch.delenv("LOCALFORGE_AUTH_METHOD", raising=False)
     with patch.object(cli_module, "run_orchestrator") as run:
         result = CliRunner().invoke(cli_module.app, ["run", "t", "-m", "gpt-5"])
-    assert result.exit_code == 1 and "isn't a trusted folder" in result.output
+    assert result.exit_code == 1 and "isn't a trusted folder" in " ".join(result.output.split())  # Rich wraps long paths
     run.assert_not_called()
     with patch.object(cli_module, "run_orchestrator", return_value=RunResult("ok", RunStats())) as run:
         result = CliRunner().invoke(cli_module.app, ["run", "t", "-m", "gpt-5", "--yes"])

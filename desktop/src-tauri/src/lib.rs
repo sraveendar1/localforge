@@ -147,12 +147,31 @@ fn open_in_window(app: &AppHandle, state: &AppState, folder: &str) -> Result<Str
 /// tauri dev` without having built a sidecar at all. Sidecar resolution
 /// only fails when none was bundled for this platform/build, which is
 /// exactly the case the PATH fallback exists for.
+///
+/// The backend is started in the user's home folder, not in the project: on macOS a process
+/// whose working directory is in a protected place (Desktop, Documents, Downloads, iCloud, an
+/// external drive) the app hasn't been granted can't even ask for its own directory, and Python
+/// libraries do that when they are imported ("PermissionError: [Errno 1] Operation not
+/// permitted" at rich/__init__.py, the backend never started). The project folder travels in
+/// LOCALFORGE_PROJECT_DIR and the backend moves into it once it is running.
+fn safe_start_dir() -> String {
+    for var in ["HOME", "USERPROFILE"] {
+        if let Ok(dir) = std::env::var(var) {
+            if !dir.trim().is_empty() && std::path::Path::new(&dir).is_dir() {
+                return dir;
+            }
+        }
+    }
+    std::env::temp_dir().to_string_lossy().to_string()
+}
+
 fn spawn_backend(
     app: &AppHandle,
     args: &[String],
     folder: &str,
 ) -> Result<(tauri::async_runtime::Receiver<CommandEvent>, CommandChild), String> {
     let shell = app.shell();
+    let start_dir = safe_start_dir();
 
     if let Ok(bin) = std::env::var("LOCALFORGE_BIN") {
         let bin = bin.trim();
@@ -160,7 +179,8 @@ fn spawn_backend(
             return shell
                 .command(bin)
                 .args(args)
-                .current_dir(folder)
+                .current_dir(&start_dir)
+                .env("LOCALFORGE_PROJECT_DIR", folder)
                 .spawn()
                 .map_err(|e| format!("could not start {bin}: {e}"));
         }
@@ -169,13 +189,15 @@ fn spawn_backend(
     match shell.sidecar("localforge") {
         Ok(cmd) => cmd
             .args(args)
-            .current_dir(folder)
+            .current_dir(&start_dir)
+            .env("LOCALFORGE_PROJECT_DIR", folder)
             .spawn()
             .map_err(|e| format!("could not start the bundled localforge sidecar: {e}")),
         Err(_) => shell
             .command("localforge")
             .args(args)
-            .current_dir(folder)
+            .current_dir(&start_dir)
+            .env("LOCALFORGE_PROJECT_DIR", folder)
             .spawn()
             .map_err(|e| {
                 format!(
