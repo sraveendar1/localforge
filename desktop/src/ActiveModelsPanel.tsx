@@ -4,7 +4,7 @@ import { splitDescription } from "./describe";
 
 const MODALITY_ORDER = ["coding", "docs", "general"];
 
-const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-dim";
+const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-muted";
 const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
 
 // "Active LLMs at play", split by what each costs: the paid models in use
@@ -40,7 +40,7 @@ export function ActiveModelsPanel({
       <div>
         <div className={SECTION}>Paid models</div>
         {configuredPaid.length === 0 ? (
-          <div className="text-mx-dim italic">None in use.</div>
+          <div className="text-mx-muted italic">None in use.</div>
         ) : (
           <ul className="space-y-1.5" data-testid="active-paid">
             {configuredPaid.map(m => (
@@ -50,7 +50,7 @@ export function ActiveModelsPanel({
                   {m.roles.map(r => (
                     <span key={r} className="rounded-sm border border-mx-amber/60 px-1 text-[10px] uppercase tracking-wide text-mx-amber">{r}</span>
                   ))}
-                  {m.how && <span className="text-[11px] text-mx-dim">{m.how}</span>}
+                  {m.how && <span className="text-[11px] text-mx-muted">{m.how}</span>}
                 </div>
               </li>
             ))}
@@ -82,16 +82,16 @@ export function ActiveModelsPanel({
                   <div className="flex items-center gap-2">
                     {live?.active && <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-mx-green" aria-label="working now" />}
                     <span className="text-[10px] uppercase tracking-wide text-mx-mid">{modality}</span>
-                    {live && <span className="ml-auto shrink-0 tabular-nums text-[11px] text-mx-dim">{live.runs} run{live.runs !== 1 ? "s" : ""}</span>}
+                    {live && <span className="ml-auto shrink-0 tabular-nums text-[11px] text-mx-muted">{live.runs} run{live.runs !== 1 ? "s" : ""}</span>}
                   </div>
                   <div className="break-words font-medium text-mx-bright">{name}</div>
-                  {note && <div className="text-[11px] text-mx-dim">{note}</div>}
+                  {note && <div className="text-[11px] text-mx-muted">{note}</div>}
                 </li>
               );
             })}
           </ul>
         ) : (
-          <div className="text-mx-dim italic">{Object.keys(localModelTargets).length ? "None: the task types use paid models." : "No fitting local model found for this machine."}</div>
+          <div className="text-mx-muted italic">{Object.keys(localModelTargets).length ? "None: the task types use paid models." : "No fitting local model found for this machine."}</div>
         )}
       </div>
 

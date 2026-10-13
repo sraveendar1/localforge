@@ -68,7 +68,7 @@ export function LeftNav({
           <div className={"flex flex-col gap-3 " + (expanded ? "mx-auto w-full max-w-3xl" : "")}>
           <Curtain title="Projects">
             {recentFolders.length === 0 ? (
-              <p className="text-mx-dim italic">No recent projects yet.</p>
+              <p className="text-mx-muted italic">No recent projects yet.</p>
             ) : (
               <ul className="space-y-0.5">
                 {recentFolders.map(f => {

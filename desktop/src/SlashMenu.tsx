@@ -53,7 +53,7 @@ export function SlashMenu({
           onMouseDown={e => { e.preventDefault(); onPick(c.name); }}
         >
           <span className="font-mono font-semibold text-mx-green">{c.name}</span>
-          <span className="truncate text-mx-dim">{c.description}</span>
+          <span className="truncate text-mx-muted">{c.description}</span>
         </div>
       ))}
     </div>

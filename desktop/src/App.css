@@ -5,7 +5,8 @@
   --color-mx-panel: #050a05;
   --color-mx-panel2: #0a140a;
   --color-mx-dim: #0b3d1b;
-  --color-mx-mid: #1f8a4c;
+  --color-mx-mid: #27a35b;
+  --color-mx-muted: #4fb27a;  /* secondary text: readable on black (mx-dim is for borders and fills) */
   --color-mx-green: #00ff41;
   --color-mx-bright: #6bff9a;
   --color-mx-amber: #ffb000;

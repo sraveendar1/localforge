@@ -1090,6 +1090,10 @@ class StdioServer:
             threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
         elif message_type == "upgrade_check":
             threading.Thread(target=self._upgrade_check, daemon=True).start()
+        elif message_type == "goal_set":
+            text = str(message.get("text", "")).strip()[: brief.MAX_GOAL_CHARS]
+            if len(text) >= 8 and brief.set_goal_by_user(self.root, text):
+                self.handle_memory_command("")
         elif message_type == "set_decision_model":
             self._set_decision_model(str(message.get("model", "")))
         elif message_type == "research_models":

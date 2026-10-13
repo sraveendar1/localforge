@@ -1,7 +1,7 @@
 import type { PaidModel } from "./paidModels";
 import { PaidUsage, Usage, UsageTotals } from "./state";
 
-const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-dim";
+const SECTION = "mb-1 text-[10px] uppercase tracking-wide text-mx-muted";
 const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
 
 // 1,381 -> "1.4k": the exact figure is in the tooltip.
@@ -14,7 +14,7 @@ function compact(n: number): string {
 function Stat({ label, value, title, tone = "text-mx-bright" }: { label: string; value: string; title?: string; tone?: string }) {
   return (
     <div className="min-w-0" title={title}>
-      <div className="text-[10px] uppercase tracking-wide text-mx-dim">{label}</div>
+      <div className="text-[10px] uppercase tracking-wide text-mx-muted">{label}</div>
       <div className={"truncate tabular-nums " + tone}>{value}</div>
     </div>
   );
@@ -23,7 +23,7 @@ function Stat({ label, value, title, tone = "text-mx-bright" }: { label: string;
 // What a paid model cost this session. A subscription's usage is never shown as money charged:
 // it is "included", with what it would have cost kept for the history.
 function costText(u: PaidUsage | undefined): { text: string; tone: string } {
-  if (!u || (!u.runs && !u.costUsd && !u.notionalCostUsd)) return { text: "–", tone: "text-mx-dim" };
+  if (!u || (!u.runs && !u.costUsd && !u.notionalCostUsd)) return { text: "–", tone: "text-mx-muted" };
   if (u.costUsd) return { text: `$${u.costUsd.toFixed(u.costUsd < 1 ? 4 : 2)}`, tone: "text-mx-amber" };
   if (u.viaSubscription || u.notionalCostUsd) return { text: "in plan", tone: "text-mx-green" };
   return { text: "$0.00", tone: "text-mx-bright" };
@@ -39,7 +39,7 @@ function PaidCard({ name, roles, how, u }: { name: string; roles: string[]; how:
         {roles.map(r => (
           <span key={r} className="rounded-sm border border-mx-amber/60 px-1 text-[10px] uppercase tracking-wide text-mx-amber">{r}</span>
         ))}
-        {how && <span className="text-[11px] text-mx-dim">{how}</span>}
+        {how && <span className="text-[11px] text-mx-muted">{how}</span>}
       </div>
       {used ? (
         <div className="mt-1.5 grid grid-cols-3 gap-2 border-t border-mx-dim pt-1.5">
@@ -57,7 +57,7 @@ function PaidCard({ name, roles, how, u }: { name: string; roles: string[]; how:
           <Stat label="Cost" value={c.text} tone={c.tone} title={c.text === "in plan" ? "Included in your subscription: nothing is charged per use" : undefined} />
         </div>
       ) : (
-        <div className="mt-1 text-[11px] italic text-mx-dim">Not used yet this session.</div>
+        <div className="mt-1 text-[11px] italic text-mx-muted">Not used yet this session.</div>
       )}
     </li>
   );
@@ -71,7 +71,7 @@ function HistoryCard({ label, totals }: { label: string; totals: UsageTotals }) 
     ? { text: `$${totals.frontierCostUsd.toFixed(2)}`, note: "billed", tone: "text-mx-amber" }
     : totals.subscriptionCostUsd
       ? { text: `~$${totals.subscriptionCostUsd.toFixed(2)}`, note: "in your plan, not charged", tone: "text-mx-green" }
-      : { text: "–", note: "", tone: "text-mx-dim" };
+      : { text: "–", note: "", tone: "text-mx-muted" };
   return (
     <div className={CARD} data-testid={`history-${label.toLowerCase().replace(/\s+/g, "-")}`}>
       <div className="flex items-baseline justify-between gap-2">
@@ -80,7 +80,7 @@ function HistoryCard({ label, totals }: { label: string; totals: UsageTotals }) 
       </div>
       <div className="mt-1.5">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[11px] text-mx-dim">Written locally</span>
+          <span className="text-[11px] text-mx-muted">Written locally</span>
           <span className="tabular-nums text-mx-bright">{share.toFixed(0)}%</span>
         </div>
         <div className="mt-0.5 h-1.5 w-full overflow-hidden rounded-sm bg-mx-dim/50" role="progressbar" aria-label="Share written locally" aria-valuenow={Math.round(share)} aria-valuemin={0} aria-valuemax={100}>
@@ -88,7 +88,7 @@ function HistoryCard({ label, totals }: { label: string; totals: UsageTotals }) 
         </div>
       </div>
       <div className="mt-1.5 flex items-baseline justify-between gap-2">
-        <span className="text-[11px] text-mx-dim">Cost{money.note && ` · ${money.note}`}</span>
+        <span className="text-[11px] text-mx-muted">Cost{money.note && ` · ${money.note}`}</span>
         <span className={"tabular-nums " + money.tone}>{money.text}</span>
       </div>
     </div>
@@ -121,7 +121,7 @@ export function UsagePanel({
       <section>
         <h3 className={SECTION}>Paid models · this session</h3>
         {rows.length === 0 ? (
-          <p className="text-mx-dim italic">None in use.</p>
+          <p className="text-mx-muted italic">None in use.</p>
         ) : (
           <ul className="space-y-1.5" data-testid="paid-models">
             {rows.map(r => <PaidCard key={r.name} name={r.name} roles={r.roles} how={r.how} u={usage.paidModels[r.name]} />)}

@@ -135,7 +135,7 @@ export function CodeBlock({ text, lang }: { text: string; lang: string }) {
   return (
     <div className="my-2 overflow-hidden rounded-sm border border-mx-dim bg-black" data-testid="code-block">
       <div className="flex items-center justify-between border-b border-mx-dim bg-mx-panel2 px-2 py-0.5">
-        <span className="text-[11px] uppercase tracking-wide text-mx-dim">{lang || "code"}</span>
+        <span className="text-[11px] uppercase tracking-wide text-mx-muted">{lang || "code"}</span>
         <CopyButton text={text} />
       </div>
       <pre className="overflow-x-auto p-2 font-mono text-xs leading-snug text-mx-bright"><code>{text}</code></pre>

@@ -12,6 +12,7 @@ import { defaultRightOpen, loadPanelOpen, loadPanelWidth, savePanelOpen, savePan
 import type { PanelLayout } from "./PanelResize";
 import { ApprovalPanel, MessageView, TodoList } from "./components";
 import { UsagePanel } from "./UsagePanel";
+import { Logo } from "./Logo";
 import { StatusBar } from "./StatusBar";
 import { ForgingIndicator } from "./ForgingIndicator";
 import { GoalPanel } from "./GoalPanel";
@@ -298,9 +299,9 @@ function App() {
   return (
     <div className="flex h-full flex-col bg-mx-bg text-mx-mid">
       <header className="flex items-center gap-3 border-b border-mx-dim px-4 py-2">
-        <span className="font-semibold glow">localforge</span>
+        <span className="flex items-center gap-2" data-testid="brand"><Logo /><span className="font-semibold glow">localforge</span></span>
         <span className={"h-2 w-2 rounded-full " + (chat.connected ? "bg-mx-bright" : "bg-mx-dim")} title={chat.connected ? "Connected" : "Not connected"} />
-        <span className="min-w-0 flex-1 truncate text-sm text-mx-dim" title={folder ?? ""}>{folder ?? "No folder"}</span>
+        <span className="min-w-0 flex-1 truncate text-sm text-mx-muted" title={folder ?? ""}>{folder ?? "No folder"}</span>
         <button
           type="button"
           disabled={!chat.connected}
@@ -323,7 +324,7 @@ function App() {
           <button type="button" className="shrink-0 rounded-sm border border-mx-amber px-2 py-0.5 hover:text-mx-bright" onClick={() => setNotice(null)}>OK</button>
         </div>
       )}
-      {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-dim">{chat.status}</div>}
+      {chat.status && <div className="border-b border-mx-dim px-4 py-1 text-xs text-mx-muted">{chat.status}</div>}
       {folder && !chat.connected && chat.backendExited && !chat.trustDeclined && chat.messages.length > 0 && (
         <div className="flex items-center gap-3 border-b border-mx-red bg-mx-panel px-4 py-1 text-xs text-mx-red" role="alert" data-testid="backend-lost">
           <span>The localforge backend stopped, so nothing more will run.{chat.backendLog.length ? ` Last message: ${chat.backendLog[chat.backendLog.length - 1].slice(0, 160)}` : ""}</span>
@@ -366,10 +367,10 @@ function App() {
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center" data-testid="project-busy">
                 <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-amber glow">Already open</h1>
                 <p className="max-w-md text-sm text-mx-mid">{chat.projectBusy}</p>
-                <p className="max-w-md text-xs text-mx-dim">A project can be open in only one window at a time. Switch to that window, or close it and try again.</p>
+                <p className="max-w-md text-xs text-mx-muted">A project can be open in only one window at a time. Switch to that window, or close it and try again.</p>
                 <button type="button" className="rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright" onClick={openFolder}>Open a different folder…</button>
               </div>
-            ) : !folder ? <div className="flex h-full items-center justify-center text-mx-dim">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
+            ) : !folder ? <div className="flex h-full items-center justify-center text-mx-muted">Open a folder to start.</div> : !chat.connected && !chat.trustRequired && chat.messages.length === 0 ? (
               <BackendStatus
                 folder={folder}
                 log={chat.backendLog}
@@ -381,7 +382,7 @@ function App() {
             ) : chat.trustRequired ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
                 <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-amber glow">Trust this folder?</h1>
-                <p className="max-w-md font-mono text-xs text-mx-dim">{chat.trustRequired}</p>
+                <p className="max-w-md font-mono text-xs text-mx-muted">{chat.trustRequired}</p>
                 <p className="max-w-md text-xs text-mx-mid">
                   localforge hasn't run here before. Trusting it lets the orchestrator read, create, change, move
                   and delete files in this folder and run commands in it -- each change still asks for approval
@@ -441,7 +442,7 @@ function App() {
           {attachedImage && (
             <div className="mx-3 mt-2 flex items-center gap-2 rounded-sm border border-mx-dim bg-mx-panel2 p-2">
               <img src={attachedImage.dataUrl} alt="attached" className="h-14 w-14 rounded-sm border border-mx-dim object-cover" />
-              <span className="text-xs text-mx-dim">Image attached</span>
+              <span className="text-xs text-mx-muted">Image attached</span>
               <button
                 type="button"
                 className="ml-auto rounded-sm border border-mx-red px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright"
@@ -458,7 +459,7 @@ function App() {
               title="Attach an image (or paste or drop one into the box). Needs a vision-capable orchestrator."
               disabled={!chat.connected || !!chat.trustRequired}
               onClick={pickImage}
-              className="self-end rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+              className="self-end rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted"
             >
               📎
             </button>
@@ -497,22 +498,22 @@ function App() {
               }}
             />
             {chat.running && <button className="self-end rounded-sm border border-mx-red bg-transparent px-4 py-2 text-sm text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "cancel" })}>Stop</button>}
-            <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim" disabled={!chat.connected || !!chat.trustRequired || !input.trim()} onClick={submit}>Send</button>
+            <button className="self-end rounded-sm border border-mx-mid bg-transparent px-4 py-2 text-sm text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted" disabled={!chat.connected || !!chat.trustRequired || !input.trim()} onClick={submit}>Send</button>
           </div>
         </main>
         {/* Requested order: Overall goal, pending task (plan), active LLMs, usage and cost. */}
         {expanded !== "left" && <RightPanel open={rightOpen} onToggle={toggleRight} layout={sideLayout("right")}>
-          <Curtain title="Overall goal"><GoalPanel memory={chat.memory} onItem={(action, index) => send({ type: "memory_item", action, index })} /></Curtain>
+          <Curtain title="Overall goal"><GoalPanel memory={chat.memory} onItem={(action, index) => send({ type: "memory_item", action, index })} onGoal={text => send({ type: "goal_set", text })} /></Curtain>
           <Curtain title="Plan"><TodoList todos={chat.todos} queued={chat.queue} /></Curtain>
           <Curtain title={chat.queue.length ? `Queue (${chat.queue.length})` : "Queue"}>
             <div data-testid="queue-panel">
               {chat.queue.length === 0 ? (
-                <p className="text-xs text-mx-dim italic">Nothing waiting. What you send while a task runs lines up here and starts when it finishes.</p>
+                <p className="text-xs text-mx-muted italic">Nothing waiting. What you send while a task runs lines up here and starts when it finishes.</p>
               ) : (
                 <>
                   <ol className="space-y-1 text-xs">
                     {chat.queue.map((q, i) => (
-                      <li key={i} className="flex gap-2 text-mx-mid"><span className="text-mx-dim" aria-hidden>{i + 1}.</span><span className="min-w-0 flex-1 break-words">{q}</span>{chat.running && <button className="shrink-0 rounded-sm border border-mx-dim px-1.5 text-[11px] text-mx-mid hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_to_note", index: i })}>Send now</button>}</li>
+                      <li key={i} className="flex gap-2 text-mx-mid"><span className="text-mx-muted" aria-hidden>{i + 1}.</span><span className="min-w-0 flex-1 break-words">{q}</span>{chat.running && <button className="shrink-0 rounded-sm border border-mx-dim px-1.5 text-[11px] text-mx-mid hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_to_note", index: i })}>Send now</button>}</li>
                     ))}
                   </ol>
                   <button className="mt-2 rounded-sm border border-mx-red bg-transparent px-2 py-0.5 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => send({ type: "queue_clear" })}>Clear queue</button>

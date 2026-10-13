@@ -40,7 +40,7 @@ function PullStatus({ pull }: { pull: PullState | undefined }) {
       <div className="h-1.5 w-full overflow-hidden rounded-sm bg-mx-dim/50">
         <div className="h-full bg-mx-green transition-all" style={{ width: `${pct ?? 3}%` }} />
       </div>
-      <div className="mt-0.5 text-[11px] text-mx-dim">
+      <div className="mt-0.5 text-[11px] text-mx-muted">
         {pull.status === "starting" || !pull.status ? "Starting the download…" : pull.status}
         {pct !== null && ` · ${pct}%`}
         {pull.total ? ` · ${gb((pull.completed ?? 0) / 1e9)} of ${gb(pull.total / 1e9)}` : ""}
@@ -99,7 +99,7 @@ function TypedModel({
         <button
           type="submit"
           disabled={disabled || !name.trim()}
-          className="shrink-0 rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+          className="shrink-0 rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted"
         >
           {buttonLabel}
         </button>
@@ -138,7 +138,7 @@ function ProviderModels({
       <div className="font-semibold text-mx-bright">Pick the model that plans</div>
       {vias.map(via => (
         <div key={via} className="mt-1">
-          {vias.length > 1 && <div className="text-[10px] uppercase tracking-wide text-mx-dim">{via === "login" ? "With your login" : "With your API key"}</div>}
+          {vias.length > 1 && <div className="text-[10px] uppercase tracking-wide text-mx-muted">{via === "login" ? "With your login" : "With your API key"}</div>}
           {options.filter(o => o.via === via).map(o => (
             <button
               key={o.id}
@@ -202,6 +202,10 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const advanced = wantAdvanced || pinned.length > 0;
 
   const [confirmReset, setConfirmReset] = useState(false);
+  // How changes are approved. A new project has to answer this (nothing is pre-selected); changing
+  // models later shows the current setting.
+  const [approval, setApproval] = useState<"manual" | "auto" | null>(mode === "edit" ? (chat.autoApprove ? "auto" : "manual") : null);
+  const chooseApproval = (value: "manual" | "auto") => { setApproval(value); send({ type: "set_auto", enabled: value === "auto" }); };
   const [picked, setPicked] = useState<string | null>(null);  // the provider tile whose details are showing
   // The review step runs the setup check each time it is reached (a download may have finished since).
   useEffect(() => { if (step === 2) send({ type: "setup_checks_request" }); }, [step]);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -216,7 +220,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  if (!setup) return <div className="p-6 text-sm text-mx-dim">Looking at this computer…</div>;
+  if (!setup) return <div className="p-6 text-sm text-mx-muted">Looking at this computer…</div>;
 
   const needsOrchestrator = setup.needsSetup;
   const ollama = setup.ollama;
@@ -316,20 +320,20 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
       {pickedId === "local" && <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-local">
         <div className="font-semibold text-mx-bright">Open-weight models (run on this computer, free)</div>
         {!ollama.installed ? (
-          <p className="mt-1 text-xs text-mx-dim">
+          <p className="mt-1 text-xs text-mx-muted">
             They run through <Link url="https://ollama.com/download">Ollama</Link>, which isn't installed. Install it, open it once, then come back.
           </p>
         ) : !ollama.running ? (
-          <p className="mt-1 text-xs text-mx-dim">Ollama is installed but not running. Open the Ollama app (or run <span className="font-mono">ollama serve</span>), then come back.</p>
+          <p className="mt-1 text-xs text-mx-muted">Ollama is installed but not running. Open the Ollama app (or run <span className="font-mono">ollama serve</span>), then come back.</p>
         ) : (
           <>
-            <p className="mt-1 text-xs text-mx-dim">
+            <p className="mt-1 text-xs text-mx-muted">
               Small models are often unreliable at planning; a paid model is the safer choice. A model that isn't recommended for this
               computer won't be downloaded; you'll be told why if you pick one.
             </p>
             {localOptions.length > 0 && (
               <div className="mt-2" data-testid="wizard-local-installed">
-                <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-dim">Already on this computer</div>
+                <div className="mb-0.5 text-[10px] uppercase tracking-wide text-mx-muted">Already on this computer</div>
                 {localOptions.map(o => (
                   <div key={o.id}>
                     <button
@@ -354,7 +358,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
             )}
             {ollama.suggested.length > 0 && (
               <div className="mt-3">
-                <div className="mb-1 text-[10px] uppercase tracking-wide text-mx-dim">Download one</div>
+                <div className="mb-1 text-[10px] uppercase tracking-wide text-mx-muted">Download one</div>
                 <ul className="space-y-2 text-xs">
                   {ollama.suggested.map(m => {
                     const p = pullOf(chat.pulls, m.name, "orchestrator");
@@ -362,13 +366,13 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
                       <li key={m.name} data-testid={`suggested-${m.name}`}>
                         <div className="flex items-center gap-2">
                           <span className="min-w-0 flex-1 truncate text-mx-mid">
-                            {m.name} <span className="text-mx-dim">· {gb(m.diskGb)}</span>
+                            {m.name} <span className="text-mx-muted">· {gb(m.diskGb)}</span>
                           </span>
                           <button
                             type="button"
                             disabled={disabled || isPulling(p)}
                             onClick={() => pull(m.name, { orchestrator: true }, "orchestrator")}
-                            className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+                            className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted"
                           >
                             {isPulling(p) ? "Downloading…" : "Download & use"}
                           </button>
@@ -401,7 +405,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const rowDescription = (modality: string): React.ReactNode => {
     const t = targets[modality];
     if (!t) return null;
-    return <span className={modality === "video" || (modality === "image" && t.target === "auto") ? "text-mx-dim italic" : "text-mx-bright"}>{t.description}</span>;
+    return <span className={modality === "video" || (modality === "image" && t.target === "auto") ? "text-mx-muted italic" : "text-mx-bright"}>{t.description}</span>;
   };
 
   const stepWriters = (
@@ -413,12 +417,12 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
         <button type="button" aria-pressed={!advanced} onClick={() => chooseMode("auto")} data-testid="mode-auto"
           className={"flex-1 px-3 py-2 text-left " + (!advanced ? "bg-mx-dim/60 text-mx-bright" : "text-mx-mid hover:text-mx-bright")}>
           <span className="block font-semibold">Automatic</span>
-          <span className="text-mx-dim">localforge picks, and downloads what's missing</span>
+          <span className="text-mx-muted">localforge picks, and downloads what's missing</span>
         </button>
         <button type="button" aria-pressed={advanced} onClick={() => chooseMode("advanced")} data-testid="mode-advanced"
           className={"flex-1 border-l border-mx-dim px-3 py-2 text-left " + (advanced ? "bg-mx-dim/60 text-mx-bright" : "text-mx-mid hover:text-mx-bright")}>
           <span className="block font-semibold">Advanced</span>
-          <span className="text-mx-dim">choose any model for each kind of work</span>
+          <span className="text-mx-muted">choose any model for each kind of work</span>
         </button>
       </div>
 
@@ -443,7 +447,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <div className="font-semibold text-mx-bright">{label}</div>
-                  <div className="text-[11px] text-mx-dim">{blurb}</div>
+                  <div className="text-[11px] text-mx-muted">{blurb}</div>
                 </div>
                 {advanced && modality !== "video" && (
                   <button type="button" disabled={!connected} aria-expanded={open === modality} onClick={() => toggleRow(modality)}
@@ -457,14 +461,14 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
               {!advanced && t.autoModel && t.installed === false && (
                 <div className="mt-2">
                   <button type="button" disabled={disabled || isPulling(autoPull)} onClick={() => pull(t.autoModel!, undefined, "auto")}
-                    className="rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
+                    className="rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted">
                     {isPulling(autoPull) ? "Downloading…" : `Download now (${gb(t.diskGb)})`}
                   </button>
-                  <span className="ml-2 text-[11px] text-mx-dim">or it asks the first time it's needed</span>
+                  <span className="ml-2 text-[11px] text-mx-muted">or it asks the first time it's needed</span>
                   <PullStatus pull={autoPull} />
                 </div>
               )}
-              {modality === "image" && !advanced && <p className="mt-1 text-[11px] text-mx-dim">Choose Advanced to turn on paid image generation.</p>}
+              {modality === "image" && !advanced && <p className="mt-1 text-[11px] text-mx-muted">Choose Advanced to turn on paid image generation.</p>}
               {modality === "image" && t.target.startsWith("api:") && (() => {
                 const row: BudgetRow | undefined = chat.budgets.find(b => b.provider === t.target.split(":")[1]);
                 return row ? <BudgetLine row={row} send={send} /> : null;
@@ -484,7 +488,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
             </div>
             {modality === "general" && (
               <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="task-decision">
-                <div className="mb-1 text-[11px] text-mx-dim">A small, fast model (“System 1”, like TypeSafe's Jev) that makes the pass/fail call on delegated work. Not for writing.</div>
+                <div className="mb-1 text-[11px] text-mx-muted">A small, fast model (“System 1”, like TypeSafe's Jev) that makes the pass/fail call on delegated work. Not for writing.</div>
                 <DecisionRow
                   decision={chat.decision}
                   localModels={(setup?.ollama.models ?? []).map(m => m.name)}
@@ -505,6 +509,29 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
   const fix = (which: "planner" | "writers") => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(which === "planner" ? 0 : 1); };
   const stepReview = (
     <div className="space-y-4">
+      <section aria-label="Approvals" className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="approval-choice">
+        <h2 className="mb-2 text-[11px] uppercase tracking-wide text-mx-mid">How should changes be approved?</h2>
+        <div role="radiogroup" aria-label="Approval mode" className="grid gap-2 sm:grid-cols-2">
+          {([
+            ["manual", "Ask me each time", "You see every file change and command first and say yes or no. Safest while you get to know it."],
+            ["auto", "Auto-approve", "Files are written and commands run without asking. Deleting files still asks. Fastest."],
+          ] as const).map(([value, title, blurb]) => (
+            <button
+              key={value}
+              type="button"
+              role="radio"
+              aria-checked={approval === value}
+              data-testid={`approval-${value}`}
+              onClick={() => chooseApproval(value)}
+              className={"rounded-sm border p-2 text-left " + (approval === value ? "border-mx-bright bg-mx-dim/30" : "border-mx-dim hover:border-mx-mid")}
+            >
+              <div className={approval === value ? "font-semibold text-mx-bright" : "font-semibold text-mx-green"}>{approval === value ? "● " : "○ "}{title}</div>
+              <div className="mt-0.5 text-[11px] text-mx-muted">{blurb}</div>
+            </button>
+          ))}
+        </div>
+        <p className="mt-2 text-[11px] text-mx-muted">Either way you approve a plan before anything is built. Change this any time with the Auto-approve box at the top.</p>
+      </section>
       <p className="text-sm text-mx-mid">This is what {mode === "edit" ? "this project uses" : "will be saved for this project"}. You can change it any time with Change models in the left panel.</p>
       <dl className="space-y-2 rounded-sm border border-mx-dim bg-mx-panel2 p-3 text-xs" data-testid="wizard-review">
         <div>
@@ -533,7 +560,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
         </div>
         <ChecksList checks={chat.setupChecks} onFix={fix} />
       </section>
-      <p className="text-xs text-mx-dim">Before anything is built you'll see a plan and approve it, even with Auto-approve on.</p>
+      <p className="text-xs text-mx-muted">Before anything is built you'll see a plan and approve it, even with Auto-approve on.</p>
       {anyPull && <p className="text-xs text-mx-amber">A download is still running. You can start now; it carries on in the background.</p>}
     </div>
   );
@@ -571,7 +598,8 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           {mode === "edit" ? "Close" : "Skip for now"}
         </button>
         <div className="flex items-center gap-2">
-          {step === 0 && needsOrchestrator && <span className="hidden text-[11px] text-mx-dim sm:inline" data-testid="next-hint">Choose a planner to continue</span>}
+          {step === 0 && needsOrchestrator && <span className="hidden text-[11px] text-mx-muted sm:inline" data-testid="next-hint">Choose a planner to continue</span>}
+          {step === 2 && approval === null && <span className="text-[11px] text-mx-amber" data-testid="approval-hint">Choose how changes are approved</span>}
           {step > 0 && (
             <button type="button" onClick={() => { setOpen(null); setDismissedN(result?.n ?? 0); setStep(step - 1); }} className="rounded-sm border border-mx-dim px-3 py-1.5 text-xs text-mx-mid hover:border-mx-mid hover:text-mx-bright">← Back</button>
           )}
@@ -581,7 +609,7 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
               {step === 0 ? "Next: choose the writers →" : "Next: review →"}
             </Primary>
           ) : (
-            <Primary testId="wizard-finish" onClick={onFinish}>
+            <Primary testId="wizard-finish" disabled={approval === null} onClick={onFinish}>
               {mode === "edit" ? "Save" : chat.setupChecks && !chat.setupChecks.ok ? "Start anyway" : "Start building"}
             </Primary>
           )}
@@ -612,7 +640,7 @@ function TaskChoices({
   onNeedKey: () => void;
 }) {
   const [tried, setTried] = useState<string | null>(null);  // an installed model that was picked but can't run here
-  if (!options) return <div className="mt-2 text-xs italic text-mx-dim">Loading options…</div>;
+  if (!options) return <div className="mt-2 text-xs italic text-mx-muted">Loading options…</div>;
   const isImage = modality === "image";
   const row = "block w-full rounded-sm px-2 py-1 text-left text-xs ";
   return (
@@ -623,7 +651,7 @@ function TaskChoices({
       </button>
 
       {isImage && options.cloud.length === 0 && (
-        <p className="px-2 text-xs text-mx-dim">
+        <p className="px-2 text-xs text-mx-muted">
           Image generation needs an OpenAI or Gemini API key.{" "}
           <button type="button" className="text-mx-green underline hover:text-mx-bright" onClick={onNeedKey}>Add one in step 1</button>.
         </p>
@@ -631,7 +659,7 @@ function TaskChoices({
 
       {options.local.length > 0 && (
         <div>
-          <div className="mb-0.5 px-2 text-[10px] uppercase tracking-wide text-mx-dim">Open-weight, on this computer (free)</div>
+          <div className="mb-0.5 px-2 text-[10px] uppercase tracking-wide text-mx-muted">Open-weight, on this computer (free)</div>
           {options.local.map(m => {
             const p = pullOf(pulls, m.name, modality);
             const current = options.current === `ollama:${m.name}`;
@@ -640,12 +668,12 @@ function TaskChoices({
                 <div className="flex items-center gap-2">
                   <button type="button" disabled={disabled || !m.installed}
                     onClick={() => { if (m.problem) return setTried(m.name); setTried(null); onPick(m.name); }}
-                    className={row + "min-w-0 flex-1 truncate " + (m.installed ? "hover:bg-mx-dim/40 " + (current ? "text-mx-green" : "text-mx-mid") : "cursor-default text-mx-dim")}>
-                    {current ? "● " : ""}{m.name} <span className="text-mx-dim">· {m.installed ? "installed" : `${gb(m.disk_gb)} to download`}</span>
+                    className={row + "min-w-0 flex-1 truncate " + (m.installed ? "hover:bg-mx-dim/40 " + (current ? "text-mx-green" : "text-mx-mid") : "cursor-default text-mx-muted")}>
+                    {current ? "● " : ""}{m.name} <span className="text-mx-muted">· {m.installed ? "installed" : `${gb(m.disk_gb)} to download`}</span>
                   </button>
                   {!m.installed && (
                     <button type="button" disabled={disabled || isPulling(p)} onClick={() => onPull(m.name)}
-                      className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim">
+                      className="shrink-0 rounded-sm border border-mx-mid px-2 py-0.5 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted">
                       {isPulling(p) ? "Downloading…" : "Download & use"}
                     </button>
                   )}
@@ -660,14 +688,14 @@ function TaskChoices({
 
       {options.cloud.length > 0 && (
         <div>
-          <div className="mb-0.5 px-2 text-[10px] uppercase tracking-wide text-mx-dim">{isImage ? "Image models (billed per image to your API key)" : "Paid (costs money)"}</div>
+          <div className="mb-0.5 px-2 text-[10px] uppercase tracking-wide text-mx-muted">{isImage ? "Image models (billed per image to your API key)" : "Paid (costs money)"}</div>
           {options.cloud.map(c => {
             const value = `${c.kind}:${c.provider}:${c.model}`;
             return (
               <button key={value} type="button" disabled={disabled} onClick={() => onPick(value)}
                 className={row + "break-words hover:bg-mx-dim/40 " + (options.current === value ? "text-mx-amber" : "text-mx-mid")}>
-                {c.provider} · {c.model.replace(/^gemini\//, "")} <span className="text-mx-dim">· {c.kind === "api" ? "API key" : "login"}</span>
-                {typeof c.priceUsd === "number" && <span className="text-mx-dim"> · ~${c.priceUsd.toFixed(3)}/image</span>}
+                {c.provider} · {c.model.replace(/^gemini\//, "")} <span className="text-mx-muted">· {c.kind === "api" ? "API key" : "login"}</span>
+                {typeof c.priceUsd === "number" && <span className="text-mx-muted"> · ~${c.priceUsd.toFixed(3)}/image</span>}
               </button>
             );
           })}

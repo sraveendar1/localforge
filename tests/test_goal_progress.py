@@ -130,7 +130,7 @@ def test_a_chat_answer_with_no_changes_does_not_touch_agents_md(tmp_path):
     server.handle({"type": "user_message", "text": "why is the sky blue anyway"})
     server._worker.join(5)
     assert not (tmp_path / "AGENTS.md").exists()
-    assert brief.recorded_goal(tmp_path)  # but the goal was still kept
+    assert not brief.recorded_goal(tmp_path)  # a question isn't a goal, so none was recorded
 
 
 def test_the_goal_panel_prefers_agents_md_once_it_has_a_summary(tmp_path):

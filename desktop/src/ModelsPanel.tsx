@@ -11,7 +11,7 @@ const MODALITIES: [string, string][] = [
 ];
 
 const LABEL = "text-[10px] uppercase tracking-wide text-mx-mid";
-const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1.5";
+const CARD = "rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1";
 
 // A compact, read-only summary of the models in use. Choosing and changing them
 // (and every refusal or download that goes with it) happens in the centre of the
@@ -71,7 +71,7 @@ export function ModelsPanel({
       </div>
 
       {rows.length === 0 ? (
-        <div className="text-mx-dim italic">No fitting local model found for this machine.</div>
+        <div className="text-mx-muted italic">No fitting local model found for this machine.</div>
       ) : (
         rows.map(([modality, label]) => {
           const t = targets[modality];
@@ -81,14 +81,13 @@ export function ModelsPanel({
             : splitDescription(t.description);
           return (
             <Fragment key={modality}>
-            <div className={CARD} title={t.description}>
+            <div className={CARD} title={[t.description, note].filter(Boolean).join(" · ").replace(/via your CLI login/, "via your login")}>
               <div className="flex items-center justify-between gap-2">
                 <span className={LABEL}>{label}</span>
                 {modality !== "video" && changeButton(modality, `Change the ${label.toLowerCase()} model`)}
               </div>
-              <div className={"break-words " + (off ? "italic text-mx-dim" : "font-medium text-mx-bright")}>{off ? name.replace(/\s+--.*$/, "") : name}</div>
-              {!off && note && <div className="text-[11px] text-mx-dim">{note.replace(/via your CLI login/, "via your login")}</div>}
-              {off && modality === "image" && <div className="text-[11px] text-mx-dim">pick a paid image model with Change</div>}
+              <div className={"break-words " + (off ? "italic text-mx-muted" : "font-medium text-mx-bright")}>{off ? name.replace(/\s+--.*$/, "") : name}</div>
+
             </div>
             {modality === "general" && onDecision && decision && (
               <DecisionRow decision={decision} localModels={localModels ?? []} pulls={pulls} connected={connected} onDecision={onDecision} />
@@ -112,8 +111,8 @@ export function ModelsPanel({
       )}
 
       {source && (
-        <p className="px-0.5 text-[11px] text-mx-dim" data-testid="models-source">
-          {source === "project" ? "Saved for this project (.localforge/models.json)." : "Using your defaults; not saved for this project yet."}
+        <p className="px-0.5 text-[11px] text-mx-muted" data-testid="models-source">
+          {source === "project" ? "Saved for this project." : "Your defaults; not saved for this project yet."}
         </p>
       )}
       <div className="grid grid-cols-1 gap-1.5 pt-0.5">
@@ -134,7 +133,7 @@ export function ModelsPanel({
           className="rounded-sm border border-mx-dim px-2 py-1 text-center text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
         >
           Accounts &amp; keys…
-          <span className="block text-[10px] text-mx-dim">Add an API key or sign in</span>
+          <span className="block text-[10px] text-mx-muted">Add an API key or sign in</span>
         </button>
       </div>
     </div>
@@ -177,7 +176,7 @@ function UpgradeCard({
         </button>
       </div>
       {!plan && !result && downloading.length === 0 && (
-        <div className="text-[11px] text-mx-dim">Checks whether a better open-weight model fits this machine.</div>
+        <div className="text-[11px] text-mx-muted">Checks whether a better open-weight model fits this machine.</div>
       )}
       {plan && !plan.ok && <div className="text-[11px] text-mx-amber" data-testid="upgrade-problem">{plan.message}</div>}
       {plan?.ok && plan.empty && !plan.blocked && <div className="text-[11px] text-mx-green">Your local models are already the best fit for this machine.</div>}
@@ -187,12 +186,12 @@ function UpgradeCard({
           {plan.upgrades.map(u => (
             <li key={u.new}>{u.modalities.join(", ")}: {u.old} → <span className="text-mx-bright">{u.new}</span> (~{u.disk_gb} GB)</li>
           ))}
-          {plan.remove.map(n => <li key={n} className="text-mx-dim">then remove {n}</li>)}
-          {plan.freed_gb > 0 && <li className="text-mx-dim">frees ~{plan.freed_gb} GB afterwards</li>}
+          {plan.remove.map(n => <li key={n} className="text-mx-muted">then remove {n}</li>)}
+          {plan.freed_gb > 0 && <li className="text-mx-muted">frees ~{plan.freed_gb} GB afterwards</li>}
         </ul>
       )}
       {plan?.ok && plan.unused_own.length > 0 && (
-        <div className="mt-1 text-[11px] text-mx-dim">Not installed by LocalForge, so left alone: {plan.unused_own.join(", ")}</div>
+        <div className="mt-1 text-[11px] text-mx-muted">Not installed by LocalForge, so left alone: {plan.unused_own.join(", ")}</div>
       )}
       {downloading.map(([name, p]) => (
         <div key={name} className="mt-1 text-[11px] text-mx-mid">Downloading {name}{pct(p) !== null ? ` ${pct(p)}%` : "…"}</div>
@@ -221,14 +220,14 @@ function UpgradeCard({
         >
           {research?.running ? "Researching…" : "Research newer models online"}
         </button>
-        {research?.running && <div className="mt-1 break-words text-[11px] text-mx-dim" data-testid="research-progress">{research.progress}</div>}
+        {research?.running && <div className="mt-1 break-words text-[11px] text-mx-muted" data-testid="research-progress">{research.progress}</div>}
         {research && !research.running && research.ok === false && <div className="mt-1 text-[11px] text-mx-red" data-testid="research-problem">{research.message}</div>}
-        {research && !research.running && research.ok && research.suggestions.length === 0 && <div className="mt-1 text-[11px] text-mx-dim">{research.message}</div>}
+        {research && !research.running && research.ok && research.suggestions.length === 0 && <div className="mt-1 text-[11px] text-mx-muted">{research.message}</div>}
         {research?.suggestions.map(s => (
           <ResearchRow key={s.name} s={s} outcome={research.adopted[s.name]} pull={pulls?.[s.name]} onAdopt={onAdopt} />
         ))}
         {research && research.rejected.length > 0 && (
-          <details className="mt-1 text-[11px] text-mx-dim">
+          <details className="mt-1 text-[11px] text-mx-muted">
             <summary className="cursor-pointer">Dropped by the checks ({research.rejected.length})</summary>
             <ul className="mt-0.5 space-y-0.5">{research.rejected.map(r => <li key={r.name}>{r.name}: {r.reason}</li>)}</ul>
           </details>
@@ -245,10 +244,10 @@ function ResearchRow({ s, outcome, pull, onAdopt }: { s: Suggestion; outcome?: {
   const downloading = !!pull && !pull.done && pull.ctx === "research";
   return (
     <div className="mt-1.5 rounded-sm border border-mx-dim px-1.5 py-1" data-testid="research-row">
-      <div className="break-words text-mx-bright">{s.name} <span className="text-[10px] text-mx-dim">· {s.modality} · ~{s.size_gb} GB</span></div>
+      <div className="break-words text-mx-bright">{s.name} <span className="text-[10px] text-mx-muted">· {s.modality} · ~{s.size_gb} GB</span></div>
       {s.why && <div className="text-[11px] text-mx-mid">{s.why}</div>}
       {s.replaces && (
-        <label className="mt-0.5 flex items-start gap-1 text-[11px] text-mx-dim">
+        <label className="mt-0.5 flex items-start gap-1 text-[11px] text-mx-muted">
           <input type="checkbox" checked={deleteOld} onChange={e => setDeleteOld(e.target.checked)} data-testid="research-delete-old" />
           <span>Remove {s.replaces} afterwards to free space{s.replaces_managed ? "" : " (you installed it yourself)"}</span>
         </label>
@@ -285,7 +284,7 @@ export function DecisionRow({ decision, localModels, pulls, connected, onDecisio
   const pulling = Object.entries(pulls ?? {}).filter(([, p]) => p.ctx === "decision");
   const auto = decision.model === "auto";
   return (
-    <div className={CARD} data-testid="decision-row">
+    <div className={CARD} data-testid="decision-row" title={auto ? "Automatic: a dedicated judge if one is installed, otherwise another local model makes the pass/fail call on delegated work." : decision.model}>
       <div className="flex items-center justify-between gap-2">
         <span className={LABEL}>Decision (System 1)</span>
         <button
@@ -298,12 +297,10 @@ export function DecisionRow({ decision, localModels, pulls, connected, onDecisio
           {editing ? "Close" : "Change"}
         </button>
       </div>
-      <div className={"break-words " + (auto ? "italic text-mx-dim" : "font-medium text-mx-bright")} data-testid="decision-current">
+      <div className={"break-words " + (auto ? "italic text-mx-muted" : "font-medium text-mx-bright")} data-testid="decision-current">
         {auto ? "automatic" : decision.model}
       </div>
-      <div className="text-[11px] text-mx-dim">
-        {auto ? "a dedicated judge if installed, else another local model" : decision.installed ? "installed" : "not installed"}
-      </div>
+      {!auto && !decision.installed && <div className="text-[11px] text-mx-amber">not installed</div>}
       {editing && (
         <div className="mt-1.5 space-y-1.5">
           <select
@@ -321,7 +318,7 @@ export function DecisionRow({ decision, localModels, pulls, connected, onDecisio
               onChange={e => setTyped(e.target.value)}
               placeholder="a model to download, e.g. atla/selene-mini"
               data-testid="decision-typed"
-              className="min-w-0 flex-1 rounded-sm border border-mx-dim bg-mx-panel px-1 py-0.5 text-[11px] text-mx-bright placeholder:text-mx-dim"
+              className="min-w-0 flex-1 rounded-sm border border-mx-dim bg-mx-panel px-1 py-0.5 text-[11px] text-mx-bright placeholder:text-mx-muted"
             />
             <button
               type="button"

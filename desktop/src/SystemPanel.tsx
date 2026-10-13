@@ -30,7 +30,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 // the app is connected.
 export function SystemPanel({ stats }: { stats: SystemStats | null }) {
   if (!stats) {
-    return <div className="text-mx-dim italic" data-testid="system-waiting">Reading this computer…</div>;
+    return <div className="text-mx-muted italic" data-testid="system-waiting">Reading this computer…</div>;
   }
   const hw = stats.hardware ?? ({} as SystemStats["hardware"]);
   const gpus = Array.isArray(hw.gpus) ? hw.gpus : [];

@@ -8,11 +8,11 @@ export function ToolCard({ item }: { item: ToolItem }) {
       <span className="font-mono font-semibold text-mx-green">{item.name}</span>
       <span className="text-mx-mid ml-2 break-all">{item.summary}</span>
       {item.result === undefined ? (
-        <span className="ml-2 animate-pulse text-mx-dim">…</span>
+        <span className="ml-2 animate-pulse text-mx-muted">…</span>
       ) : (
         <details className="mt-1">
-          <summary className="cursor-pointer text-xs text-mx-dim">Result</summary>
-          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-mx-dim">{item.result}</pre>
+          <summary className="cursor-pointer text-xs text-mx-muted">Result</summary>
+          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap font-mono text-[10px] text-mx-muted">{item.result}</pre>
         </details>
       )}
     </div>
@@ -26,20 +26,20 @@ export function DelegateCard({ item }: { item: DelegateItem }) {
     <div className="rounded-sm border border-mx-dim bg-mx-panel2 px-3 py-2 text-sm my-1" data-testid="delegate-card">
       <span className="text-mx-mid">{paid ? "Paid model " : "Local model "}</span>
       <span className={"font-mono font-semibold " + (paid ? "text-mx-amber" : "text-mx-green")}>{item.model}</span>
-      {paid && <span className="ml-2 text-xs text-mx-dim">{`${provider} ${item.runtime === "cli" ? "login" : "API key"}`.trim()}</span>}
-      <span className={"text-xs text-mx-dim ml-2" + (item.done ? "" : " animate-pulse")}>
+      {paid && <span className="ml-2 text-xs text-mx-muted">{`${provider} ${item.runtime === "cli" ? "login" : "API key"}`.trim()}</span>}
+      <span className={"text-xs text-mx-muted ml-2" + (item.done ? "" : " animate-pulse")}>
         {item.done ? `done · ${item.tokens ?? 0} tokens · ${(item.seconds ?? 0).toFixed(1)} s` : `writing…`}
       </span>
       <details>
-        <summary className="cursor-pointer text-xs text-mx-dim">Output</summary>
-        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-mx-dim">{item.output}</pre>
+        <summary className="cursor-pointer text-xs text-mx-muted">Output</summary>
+        <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-mx-muted">{item.output}</pre>
       </details>
     </div>
   );
 }
 
 export function NoteLine({ item }: { item: NoteItem }) {
-  return <div className="my-1 text-xs italic text-mx-dim">{item.text}</div>;
+  return <div className="my-1 text-xs italic text-mx-muted">{item.text}</div>;
 }
 
 export function ItemView({ item }: { item: Item }) {
@@ -54,11 +54,11 @@ export function ItemView({ item }: { item: Item }) {
 }
 
 function diffLineClass(line: string): string {
-  if (line.startsWith("+++") || line.startsWith("---")) return "text-mx-dim";
+  if (line.startsWith("+++") || line.startsWith("---")) return "text-mx-muted";
   if (line.startsWith("+")) return "bg-mx-panel2 text-mx-bright";
   if (line.startsWith("-")) return "bg-mx-panel text-mx-red";
   if (line.startsWith("@@")) return "text-mx-mid";
-  return "text-mx-dim";
+  return "text-mx-muted";
 }
 
 export function DiffView({ text }: { text: string }) {
@@ -80,7 +80,7 @@ export function ApprovalPanel({ approvals, onDecide }: { approvals: Approval[]; 
       <div className="flex items-center">
         <span className="font-semibold text-mx-amber">{a.title}</span>
         <span className="ml-2 rounded-sm border border-mx-amber bg-mx-bg px-1.5 py-0.5 text-xs text-mx-amber">{a.kind}</span>
-        {approvals.length > 1 && <span className="text-xs text-mx-dim ml-auto">+{approvals.length - 1} more pending</span>}
+        {approvals.length > 1 && <span className="text-xs text-mx-muted ml-auto">+{approvals.length - 1} more pending</span>}
       </div>
       {a.detail && <div className="mt-2"><DiffView text={a.detail} /></div>}
       <div className="mt-3 flex gap-2">
@@ -98,13 +98,13 @@ export function TodoList({ todos, queued = [] }: { todos: Todo[]; queued?: strin
   return (
     <div className="space-y-2" data-testid="plan">
       {todos.length === 0 ? (
-        <p className="text-xs text-mx-dim">No plan yet — it appears once a task has more than a couple of steps.</p>
+        <p className="text-xs text-mx-muted">No plan yet — it appears once a task has more than a couple of steps.</p>
       ) : (
         <ul className="space-y-1 text-sm">
           {todos.map((todo, i) => (
             <li key={i} className="flex gap-2">
-              <span className={todo.status === "pending" ? "text-mx-dim" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
-              <span className={todo.status === "completed" ? "line-through text-mx-dim" : ""}>{todo.content}</span>
+              <span className={todo.status === "pending" ? "text-mx-muted" : todo.status === "in_progress" ? "text-mx-amber" : "text-mx-green"}>{todo.status === "completed" ? "●" : todo.status === "in_progress" ? "◐" : "○"}</span>
+              <span className={todo.status === "completed" ? "line-through text-mx-muted" : ""}>{todo.content}</span>
             </li>
           ))}
         </ul>
@@ -114,7 +114,7 @@ export function TodoList({ todos, queued = [] }: { todos: Todo[]; queued?: strin
           <h3 className="text-[11px] uppercase tracking-wide text-mx-mid">Up next ({queued.length})</h3>
           <ul className="mt-1 space-y-1 text-xs">
             {queued.map((q, i) => (
-              <li key={i} className="flex gap-2 text-mx-dim"><span aria-hidden>{i + 1}.</span><span className="min-w-0 break-words">{q}</span></li>
+              <li key={i} className="flex gap-2 text-mx-muted"><span aria-hidden>{i + 1}.</span><span className="min-w-0 break-words">{q}</span></li>
             ))}
           </ul>
         </div>
@@ -144,34 +144,34 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
       <div className="mt-1 space-y-1 text-xs text-mx-mid">
         {s.files.length > 0 && (
           <div>
-            <div className="text-mx-dim">Files changed</div>
+            <div className="text-mx-muted">Files changed</div>
             <ul className="ml-3 list-disc font-mono">
               {s.files.map((f, i) => (
-                <li key={i}>{f.action.toLowerCase()} {f.path}{f.by && <span className="text-mx-dim"> (written by {f.by})</span>}</li>
+                <li key={i}>{f.action.toLowerCase()} {f.path}{f.by && <span className="text-mx-muted"> (written by {f.by})</span>}</li>
               ))}
             </ul>
           </div>
         )}
-        {s.delegations.length > 0 && <div><span className="text-mx-dim">Delegated to </span>{Object.entries(byModel).map(([m, n]) => `${m} ×${n}`).join(", ")}</div>}
+        {s.delegations.length > 0 && <div><span className="text-mx-muted">Delegated to </span>{Object.entries(byModel).map(([m, n]) => `${m} ×${n}`).join(", ")}</div>}
         {s.commands.length > 0 && (
           <div>
-            <div className="text-mx-dim">Commands run</div>
+            <div className="text-mx-muted">Commands run</div>
             <ul className="ml-3 font-mono">
               {s.commands.map((c, i) => (
-                <li key={i} className={c.ok ? "" : "text-mx-red"}>{c.ok ? "✓" : "✗"} {c.command}</li>
+                <li key={i} className={"truncate " + (c.ok ? "" : "text-mx-red")} title={c.command}>{c.ok ? "✓" : "✗"} {c.command}</li>
               ))}
             </ul>
           </div>
         )}
-        {looked.length > 0 && <div className="text-mx-dim">Also {looked.join(" and ")}.</div>}
+        {looked.length > 0 && <div className="text-mx-muted">Also {looked.join(" and ")}.</div>}
         {s.declined.length > 0 && (
           <div>
-            <div className="text-mx-dim">You declined</div>
+            <div className="text-mx-muted">You declined</div>
             <ul className="ml-3 list-disc font-mono">{s.declined.map((d, i) => <li key={i}>{d.what}</li>)}</ul>
           </div>
         )}
         {s.steps > 0 && s.files.length === 0 && s.commands.length === 0 && s.delegations.length === 0 && looked.length === 0 && (
-          <div className="text-mx-dim">No files were changed and no commands were run.</div>
+          <div className="text-mx-muted">No files were changed and no commands were run.</div>
         )}
         {s.problems.some(p => !p.advisory) && (
           <div data-testid="summary-problems">
@@ -179,9 +179,9 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
             <ul className="ml-3 space-y-1 text-mx-red">
               {s.problems.filter(p => !p.advisory).map((p, i) => (
                 <li key={i} className="whitespace-pre-wrap">
-                  ✗ {p.plain ?? `${p.what}: ${p.error}`}{p.recovered && <span className="text-mx-dim"> (recovered)</span>}
+                  ✗ {p.plain ?? `${p.what}: ${p.error}`}{p.recovered && <span className="text-mx-muted"> (recovered)</span>}
                   {p.plain && (
-                    <details className="text-mx-dim">
+                    <details className="text-mx-muted">
                       <summary className="cursor-pointer text-[11px]">Details</summary>
                       <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{p.what}: {p.error}</pre>
                     </details>
@@ -193,12 +193,12 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
         )}
         {s.problems.some(p => p.advisory) && (
           <div data-testid="summary-notes">
-            <div className="text-mx-amber">Review notes <span className="text-mx-dim">(the checking model's opinion; the files were still written)</span></div>
+            <div className="text-mx-amber">Review notes <span className="text-mx-muted">(the checking model's opinion; the files were still written)</span></div>
             <ul className="ml-3 space-y-1 text-mx-amber">
               {s.problems.filter(p => p.advisory).map((p, i) => (
                 <li key={i} className="whitespace-pre-wrap">
                   ! {p.plain ?? `${p.what}: ${p.error}`}
-                  <details className="text-mx-dim">
+                  <details className="text-mx-muted">
                     <summary className="cursor-pointer text-[11px]">Details</summary>
                     <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{p.what}: {p.error}</pre>
                   </details>
@@ -211,7 +211,7 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
           <div className="whitespace-pre-wrap text-mx-red" data-testid="summary-error">
             {s.plainError ?? s.error}
             {s.plainError && s.plainError !== s.error && (
-              <details className="text-mx-dim">
+              <details className="text-mx-muted">
                 <summary className="cursor-pointer text-[11px]">Details</summary>
                 <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{s.error}</pre>
               </details>
@@ -235,7 +235,7 @@ export function PlanCard({ text, onAction }: { text: string; onAction?: (action:
       {onAction && (
         <div className="mt-2 flex flex-wrap items-center gap-2">
           <button className="rounded-sm border border-mx-green px-3 py-1 text-xs font-semibold text-mx-green hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("approve")}>Approve &amp; build</button>
-          <span className="text-[11px] text-mx-dim">or type what to change in the box below</span>
+          <span className="text-[11px] text-mx-muted">or type what to change in the box below</span>
           <button className="ml-auto rounded-sm border border-mx-red px-2 py-1 text-xs text-mx-red hover:border-mx-bright hover:text-mx-bright" onClick={() => onAction("cancel")}>Cancel</button>
         </div>
       )}
@@ -261,7 +261,7 @@ export function MessageView({ message, thinking, awaitingInput = false, onPlan }
         <div className="my-2 whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 px-3 py-2 text-sm text-mx-red" role="alert">
           <RichText text={message.text} />
           {message.detail && (
-            <details className="text-mx-dim">
+            <details className="text-mx-muted">
               <summary className="cursor-pointer text-[11px]">Details</summary>
               <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{message.detail}</pre>
             </details>
@@ -284,12 +284,12 @@ export function MessageView({ message, thinking, awaitingInput = false, onPlan }
             <div className="mt-1 rounded-sm border border-mx-amber bg-mx-panel2 px-3 py-2" role="status" data-testid="needs-input">
               <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-mx-amber">● Needs your input</div>
               <RichText className="leading-relaxed text-mx-amber" text={message.text} />
-              <div className="mt-1 text-[11px] text-mx-dim">Type your answer in the box below.</div>
+              <div className="mt-1 text-[11px] text-mx-muted">Type your answer in the box below.</div>
             </div>
           ) : (
             message.text && <RichText className="mt-1 leading-relaxed" text={message.text} />
           )}
-          {!message.text && thinking && <div className="animate-pulse text-sm text-mx-dim">Thinking…{message.round ? ` round ${message.round}` : ""}</div>}
+          {!message.text && thinking && <div className="animate-pulse text-sm text-mx-muted">Thinking…{message.round ? ` round ${message.round}` : ""}</div>}
         </div>
       );
   }

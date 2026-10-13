@@ -61,15 +61,15 @@ export function SessionNote({ note, onItem }: { note: string; onItem?: (action: 
         return (
           <details key={i} open={kindOf(s.title) === "open" && count > 0 ? true : undefined} className="rounded-sm border border-mx-dim bg-mx-panel2 px-2 py-1" data-testid={`note-${kindOf(s.title) ?? "section"}`}>
             <summary className="cursor-pointer select-none text-mx-mid" title={s.title}>
-              {(s.title || "Notes").replace(/\s*\(.*\)\s*$/, "")}{count > 0 && <span className="text-mx-dim"> · {count}</span>}
+              {(s.title || "Notes").replace(/\s*\(.*\)\s*$/, "")}{count > 0 && <span className="text-mx-muted"> · {count}</span>}
             </summary>
-            {s.text && <p className="mt-1 break-words text-mx-dim"><Inline text={s.text} /></p>}
+            {s.text && <p className="mt-1 break-words text-mx-muted"><Inline text={s.text} /></p>}
             {count > 0 && (
               <ul className="mt-1 space-y-1">
                 {s.items.map((it, j) => {
                   const kind = kindOf(s.title);
                   return (
-                    <li key={j} className="flex gap-1.5 break-words text-mx-dim">
+                    <li key={j} className="flex gap-1.5 break-words text-mx-muted">
                       <span aria-hidden className={kind === "done" ? "text-mx-green" : "text-mx-mid"}>{kind === "done" ? "✓" : "›"}</span>
                       <span className={"min-w-0 flex-1 " + (kind === "done" ? "line-through decoration-mx-dim" : "")}><Inline text={it} /></span>
                       {onItem && kind && (

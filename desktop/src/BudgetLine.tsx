@@ -12,7 +12,7 @@ export function BudgetLine({ row, send }: { row: BudgetRow; send: (obj: object) 
     if (Number.isFinite(usd) && usd > 0) { send({ type: "set_budget", provider: row.provider, usd }); setEditing(false); }
   };
   return (
-    <div className="mt-0.5 text-[11px] text-mx-dim" data-testid="budget-line">
+    <div className="mt-0.5 text-[11px] text-mx-muted" data-testid="budget-line">
       <span>
         {row.provider} this month: <span className="text-mx-mid">${row.spent.toFixed(2)}</span>
         {row.limit ? <> of <span className="text-mx-mid">${row.limit.toFixed(2)}</span></> : " · no limit"}
@@ -33,7 +33,7 @@ export function BudgetLine({ row, send }: { row: BudgetRow; send: (obj: object) 
           <input type="number" min="0" step="1" value={value} onChange={e => setValue(e.target.value)} aria-label="Monthly limit in dollars" autoFocus
             className="w-16 rounded-sm border border-mx-dim bg-mx-panel px-1 py-0.5 text-mx-mid" />
           <button type="submit" className="rounded-sm border border-mx-mid px-2 py-0.5 text-mx-green hover:text-mx-bright">Save</button>
-          <button type="button" className="text-mx-dim underline" onClick={() => setEditing(false)}>cancel</button>
+          <button type="button" className="text-mx-muted underline" onClick={() => setEditing(false)}>cancel</button>
         </form>
       )}
     </div>
