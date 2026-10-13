@@ -315,7 +315,7 @@ def test_the_judge_warning_from_the_screenshot_reads_as_a_sentence():
            "delegate again with clearer/simpler instructions]")
     text = ts.explain_error(raw, "delegate_coding_task")
     assert "[WARNING" not in text and "--" not in text and "verify before use" not in text
-    assert "coding model" in text and "request for more information" in text and "ask again" in text
+    assert "coding model" in text and "request for more information" in text and "checks it" in text
 
 
 def test_known_internal_messages_are_explained_and_unknown_ones_are_kept():
@@ -350,3 +350,12 @@ def test_a_rejected_api_key_is_explained_in_plain_words():
     raw = "AuthenticationError: litellm.AuthenticationError: AnthropicException - b'{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}'"
     text = ts.explain_error(raw)
     assert "Anthropic API key was rejected" in text and "Accounts & keys" in text and "litellm" not in text
+
+
+def test_a_judge_flag_is_a_review_note_not_a_problem():
+    log = ts.TaskLog()
+    log.record("delegate_coding_task", "dashboard/index.html", "failed", "[WARNING: the judge model flagged this result (column order) -- verify before use]")
+    summary = ts.build(log)
+    assert summary["problems"][0]["advisory"] is True
+    lines = "\n".join(ts.render_lines(summary))
+    assert "Review notes" in lines and "Problems:" not in lines

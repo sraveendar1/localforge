@@ -14,7 +14,7 @@ export function StepStrip({ titles, step }: { titles: readonly string[]; step: n
         {titles.map((t, i) => (
           <li key={t} aria-current={i === step ? "step" : undefined} className="min-w-0 flex-1">
             <div className={"h-1 rounded-full " + (i < step ? "bg-mx-green" : i === step ? "bg-mx-bright glow" : "bg-mx-dim/60")} />
-            <div className={"mt-1 truncate text-[11px] " + (i === step ? "text-mx-bright" : i < step ? "text-mx-green" : "text-mx-dim")}>
+            <div className={"mt-1 truncate text-[11px] " + (i === step ? "text-mx-bright" : i < step ? "text-mx-green" : "text-mx-muted")}>
               <span aria-hidden>{i < step ? "✓ " : `${i + 1}. `}</span>{t}
             </div>
           </li>
@@ -50,10 +50,10 @@ export function ProviderTiles({ tiles, picked, onPick }: { tiles: Tile[]; picked
           >
             <span aria-hidden className={"flex h-8 w-8 items-center justify-center rounded-sm border font-mono text-sm " + (on ? "border-mx-bright text-mx-bright" : "border-mx-mid text-mx-green")}>{t.mark}</span>
             <span className={"text-xs font-semibold " + (on ? "text-mx-bright" : "text-mx-green")}>{t.label}</span>
-            <span className="text-[10px] text-mx-dim">{t.tag}</span>
+            <span className="text-[10px] text-mx-muted">{t.tag}</span>
             <span
               data-testid={`tile-status-${t.id}`}
-              className={"text-[10px] " + (t.status === "active" ? "text-mx-bright" : t.status === "ready" ? "text-mx-green" : "text-mx-dim")}
+              className={"text-[10px] " + (t.status === "active" ? "text-mx-bright" : t.status === "ready" ? "text-mx-green" : "text-mx-muted")}
             >
               {t.status === "active" ? "● " : t.status === "ready" ? "✓ " : "○ "}{t.statusText}
             </span>
@@ -68,7 +68,7 @@ export function ProviderTiles({ tiles, picked, onPick }: { tiles: Tile[]; picked
 const ICON: Record<SetupCheck["state"], [string, string]> = { ok: ["✓", "text-mx-green"], warn: ["!", "text-mx-amber"], fail: ["✕", "text-mx-red"] };
 
 export function ChecksList({ checks, onFix, loading }: { checks: SetupChecks | null; onFix?: (fix: "planner" | "writers") => void; loading?: boolean }) {
-  if (!checks) return <p className="text-xs text-mx-dim italic" data-testid="checks-loading">{loading === false ? "" : "Checking this computer…"}</p>;
+  if (!checks) return <p className="text-xs text-mx-muted italic" data-testid="checks-loading">{loading === false ? "" : "Checking this computer…"}</p>;
   return (
     <ul className="space-y-1.5" data-testid="checks-list">
       {checks.checks.map(c => {
@@ -79,7 +79,7 @@ export function ChecksList({ checks, onFix, loading }: { checks: SetupChecks | n
             <span className="sr-only">{c.state === "ok" ? "Passed:" : c.state === "warn" ? "Heads up:" : "Needs attention:"}</span>
             <span className="min-w-0 flex-1">
               <span className="text-mx-bright">{c.label}</span>
-              {c.detail && <span className="block break-words text-mx-dim">{c.detail}</span>}
+              {c.detail && <span className="block break-words text-mx-muted">{c.detail}</span>}
             </span>
             {c.fix && onFix && c.state !== "ok" && (
               <button type="button" onClick={() => onFix(c.fix!)} className="shrink-0 rounded-sm border border-mx-dim px-1.5 py-0.5 text-[11px] text-mx-mid hover:border-mx-mid hover:text-mx-bright">
@@ -101,7 +101,7 @@ export function Primary({ children, disabled, onClick, testId, busy }: { childre
       data-testid={testId}
       disabled={disabled}
       onClick={onClick}
-      className="rounded-sm border border-mx-mid bg-mx-dim/20 px-4 py-1.5 text-xs font-semibold text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:bg-transparent disabled:font-normal disabled:text-mx-dim"
+      className="rounded-sm border border-mx-mid bg-mx-dim/20 px-4 py-1.5 text-xs font-semibold text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:bg-transparent disabled:font-normal disabled:text-mx-muted"
     >
       {busy ? "Working…" : children}
     </button>

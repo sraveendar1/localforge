@@ -15,7 +15,7 @@ export type TaskSummary = {
   reads: number;
   web: number;
   declined: { what: string; tool: string }[];
-  problems: { what: string; error: string; recovered: boolean; plain?: string }[];
+  problems: { what: string; error: string; recovered: boolean; plain?: string; advisory?: boolean }[];
   plainError?: string | null;
 };
 export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary; detail?: string; plan?: boolean };
@@ -87,6 +87,18 @@ export type SetupChecks = { checks: SetupCheck[]; ok: boolean };
 // A model download in progress, or its outcome. `blocked` = refused before any download
 // because the model isn't recommended for this machine.
 // `ctx` says where the download was asked for ("orchestrator", a task type, "auto"), so its progress or refusal shows only there.
+// The Decision model: the small local model that makes the pass/fail call on delegated work.
+export type DecisionState = { model: string; installed: boolean; result: { ok: boolean; message: string } | null };
+// Whether a better open-weight model fits this machine (the `/upgrade` check), and how an upgrade ended.
+export type UpgradePlan = {
+  ok: boolean; message?: string;
+  upgrades: { old: string; new: string; modalities: string[]; disk_gb: number }[];
+  remove: string[]; unused_own: string[]; download_gb: number; freed_gb: number; blocked: string | null; empty: boolean;
+};
+export type Suggestion = { name: string; modality: string; why: string; size_gb: number; replaces: string | null; replaces_managed: boolean };
+// Live research for models beyond the catalog: the orchestrator searches the web, LocalForge verifies every name.
+export type ResearchState = { running: boolean; progress: string; message: string; ok: boolean | null; suggestions: Suggestion[]; rejected: { name: string; reason: string }[]; adopted: { [model: string]: { ok: boolean; message: string } } };
+export type UpgradeState = { plan: UpgradePlan | null; result: { ok: boolean; message: string; n: number } | null; research: ResearchState };
 export type PullState = { ctx: string; status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
 // The guided model setup in the centre of the window: "unknown" until the project's models
 // are known, "active" while it is on screen, "done" once finished or closed.
@@ -139,6 +151,9 @@ export type ChatState = {
   queue: string[];  // New queue field
   planPending: boolean;  // a proposed plan is on screen waiting to be approved
   streamOutput: boolean;  // New ChatState field
+  upgrade: UpgradeState;
+  decision: DecisionState;
+  version: string;  // the backend's version (yyyymmdd.N), from the ready event
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
   // What the running task is doing right now, for the live "Forging with X…"
   // strip (the desktop counterpart of the CLI's status line). null when idle.
@@ -202,6 +217,9 @@ export const initialState: ChatState = {
   queue: [],  // Initialize queue to an empty array
   planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
+  decision: { model: "auto", installed: false, result: null },
+  upgrade: { plan: null, result: null, research: { running: false, progress: "", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } },
+  version: "",
   trustRequired: null,
   activity: null
 };
@@ -379,7 +397,7 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
 function applyEventBase(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
-      return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
+      return { ...state, connected: true, version: String(ev.version ?? state.version), model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
     case "trust_required":
       return { ...state, trustRequired: String(ev.folder ?? "") };
     case "trust_result":
@@ -467,7 +485,23 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, version: state.version, upgrade: state.upgrade, decision: state.decision, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+    case "upgrade_plan":
+      return { ...state, upgrade: { ...state.upgrade, plan: { upgrades: [], remove: [], unused_own: [], download_gb: 0, freed_gb: 0, blocked: null, empty: true, ...ev, ok: !!ev.ok } } };
+    case "upgrade_result":
+      return { ...state, upgrade: { ...state.upgrade, result: { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.upgrade.result?.n ?? 0) + 1 } } };
+    case "decision_model":
+      return { ...state, decision: { ...state.decision, model: String(ev.model ?? "auto"), installed: !!ev.installed } };
+    case "decision_result":
+      return { ...state, decision: { ...state.decision, result: { ok: !!ev.ok, message: String(ev.message ?? "") } } };
+    case "research_started":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, running: true, progress: "Starting…", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } } };
+    case "research_progress":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, progress: String(ev.text ?? "") } } };
+    case "research_result":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, running: false, progress: "", ok: !!ev.ok, message: String(ev.message ?? ""), suggestions: Array.isArray(ev.suggestions) ? ev.suggestions : [], rejected: Array.isArray(ev.rejected) ? ev.rejected : [] } } };
+    case "research_adopted":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, adopted: { ...state.upgrade.research.adopted, [String(ev.model)]: { ok: !!ev.ok, message: String(ev.message ?? "") } } } } };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":

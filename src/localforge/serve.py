@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, re, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, locks, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
+from localforge import __version__, brief, cli_transport, locks, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -505,7 +505,6 @@ _TERMINAL_ONLY = {
     "/goals": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log. (`/goals` drafting is a terminal command.)",
     "/init": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log.",
     "/tasks": "Unfinished tasks from earlier sessions are a terminal feature (`/tasks`). Here, what you send while a task runs waits in the Queue section.",
-    "/upgrade": "Model upgrades are done in the terminal (`localforge upgrade`). To change a model here use Models → Change models…",
     "/setup": "Open Models → Accounts & keys… to add a key or sign in, and Change models… to choose models.",
     "/theme": "Colour themes are a terminal feature (`localforge theme`); the app has one look.",
     "/delete": "Deleting downloaded models is a terminal command (`localforge delete`). `/installed` lists what is on disk.",
@@ -980,6 +979,8 @@ class StdioServer:
                     self.handle_model_command(arg)
                 elif cmd == "/budget":
                     self.handle_budget_command(arg)
+                elif cmd == "/upgrade":
+                    self.handle_upgrade_command(arg)
                 elif cmd == "/advanced-model":
                     self.handle_advanced_model_command(arg)
                 elif cmd == "/auto":
@@ -1087,6 +1088,24 @@ class StdioServer:
         elif message_type == "pull_model":
             use_as = message.get("use_as") if isinstance(message.get("use_as"), dict) else None
             threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
+        elif message_type == "upgrade_check":
+            threading.Thread(target=self._upgrade_check, daemon=True).start()
+        elif message_type == "goal_set":
+            text = str(message.get("text", "")).strip()[: brief.MAX_GOAL_CHARS]
+            if len(text) >= 8 and brief.set_goal_by_user(self.root, text):
+                self.handle_memory_command("")
+        elif message_type == "set_decision_model":
+            self._set_decision_model(str(message.get("model", "")))
+        elif message_type == "research_models":
+            threading.Thread(target=self._research_models, daemon=True).start()
+        elif message_type == "research_adopt":
+            threading.Thread(
+                target=self._adopt_researched,
+                args=(str(message.get("model", "")), str(message.get("modality", "")), message.get("replace") or None, bool(message.get("delete_old"))),
+                daemon=True,
+            ).start()
+        elif message_type == "upgrade_apply":
+            threading.Thread(target=self._upgrade_apply, daemon=True).start()
         elif message_type == "finish_project_setup":
             self._finish_project_setup()
         elif message_type == "orchestrator_options_request":
@@ -1455,7 +1474,7 @@ class StdioServer:
                 name = name[len(prefix):]
         return name if ":" in name else f"{name}:latest"
 
-    def _pull_model(self, raw_name: str, use_as: dict | None, ctx: str = "") -> None:
+    def _pull_model(self, raw_name: str, use_as: dict | None, ctx: str = "") -> bool:
         """Download an Ollama model (progress as `pull_progress` events, the end
         as `pull_result`) and, if asked, make it the orchestrator or a task
         type's model. A model that isn't recommended for this machine -- too big
@@ -1468,12 +1487,13 @@ class StdioServer:
 
         name = self._normalize_model_name(raw_name)
 
-        def result(ok: bool, message: str, **extra) -> None:
+        def result(ok: bool, message: str, **extra) -> bool:
             self.emit("pull_result", model=name, ok=ok, message=message, ctx=ctx, **extra)
             self._emit_setup_status()
             self._emit_orchestrator_options()
             if use_as and use_as.get("modality"):
                 self.emit("delegate_options", modality=str(use_as["modality"]), **_delegate_options(str(use_as["modality"])))
+            return ok
 
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-/]*:[A-Za-z0-9._\-]+", name):
             return result(False, f"{raw_name.strip()!r} isn't a model name Ollama understands (like llama3.1:8b).", blocked=True)
@@ -1518,6 +1538,10 @@ class StdioServer:
         if use_as and use_as.get("orchestrator"):
             self._choose_orchestrator(f"ollama/{name}")
             used = " and set as the orchestrator"
+        elif use_as and use_as.get("decision"):
+            project_models.save({config.DECISION_MODEL_ENV_VAR: name})
+            self._emit_decision()
+            used = " and set as the Decision model"
         elif use_as and use_as.get("modality"):
             modality = str(use_as["modality"])
             try:
@@ -1526,7 +1550,208 @@ class StdioServer:
                 return result(False, f"Downloaded {name}, but it can't be used for {modality}: {exc}")
             self._emit_advanced_model()
             used = f" and set for {modality}"
-        result(True, f"Downloaded {name}{used}.")
+        return result(True, f"Downloaded {name}{used}.")
+
+    # --- upgrading the installed open-weight models (the terminal's `localforge upgrade`) -------------
+
+    def _compute_upgrade_plan(self):
+        """(plan, ollama) for this machine, or (None, why) when Ollama can't be asked."""
+        from localforge import upgrades
+
+        ollama = OllamaBackend()
+        if not ollama.is_running():
+            return None, "Ollama isn't running. Open the Ollama app (or run `ollama serve`), then check again."
+        try:
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Couldn't ask Ollama what is installed ({exc})."
+        return upgrades.plan(detect_hardware(), on_disk, keep=upgrades.local_orchestrator()), ollama
+
+    def _upgrade_check(self, say: bool = False) -> None:
+        """Is there a better open-weight model that fits this machine? Compares what is installed
+        with the catalog's balanced pick for this hardware (memory, speed, disk); it doesn't search
+        the internet, so a model that isn't in the catalog is never suggested."""
+        plan, ollama = self._compute_upgrade_plan()
+        if plan is None:
+            self.emit("upgrade_plan", ok=False, message=ollama)
+            if say:
+                self.emit("system_text", text=ollama)
+            return
+        payload = {
+            "upgrades": [{"old": u.old, "new": u.new.name, "modalities": u.modalities, "disk_gb": u.new.disk_gb} for u in plan.upgrades],
+            "remove": plan.remove, "unused_own": plan.unused_own,
+            "download_gb": plan.download_gb, "freed_gb": plan.freed_gb, "blocked": plan.blocked, "empty": plan.empty,
+        }
+        self.emit("upgrade_plan", ok=True, **payload)
+        if not say:
+            return
+        if plan.blocked:
+            self.emit("system_text", text=f"A better model fits, but the upgrade {plan.blocked}. Free some disk space and check again.")
+        if plan.empty and not plan.unused_own:
+            self.emit("system_text", text="Your local models are already the best fit for this machine.")
+            return
+        lines = ["Upgrade plan:"] + [f"• {line}" for line in plan.summary()]
+        if plan.download_gb or plan.freed_gb:
+            lines.append(f"Download ~{plan.download_gb:g} GB; frees ~{plan.freed_gb:g} GB afterwards.")
+        if plan.unused_own:
+            lines.append(f"Not installed by LocalForge and no longer used (left alone): {', '.join(plan.unused_own)}")
+        if not plan.empty:
+            lines.append("Type `/upgrade now`, or press “Upgrade now” under Models, to do it.")
+        self.emit("system_text", text="\n".join(lines))
+
+    def _upgrade_apply(self) -> None:
+        """Download every better model first (each goes through the same memory/disk check as any
+        download), and only then remove the ones LocalForge installed that nothing uses any more.
+        If a download fails, nothing is removed. Removal waits for a quiet moment: a running task may
+        still be using an old model."""
+        from localforge import upgrades
+
+        if getattr(self, "_upgrade_running", False):
+            return self.emit("upgrade_result", ok=False, message="An upgrade is already running.")
+        self._upgrade_running = True
+        try:
+            plan, ollama = self._compute_upgrade_plan()
+            if plan is None:
+                return self.emit("upgrade_result", ok=False, message=ollama)
+            if plan.blocked:
+                return self.emit("upgrade_result", ok=False, message=f"The upgrade {plan.blocked}. Nothing was changed.")
+            if plan.empty:
+                return self.emit("upgrade_result", ok=True, message="Your local models are already the best fit for this machine.")
+            done = []
+            for upgrade in plan.upgrades:
+                if not self._pull_model(upgrade.new.name, None, ctx="upgrade"):
+                    return self.emit("upgrade_result", ok=False, message=f"Upgrade stopped: {upgrade.new.name} couldn't be downloaded. Nothing was removed; your current models still work.")
+                done.append(f"{', '.join(upgrade.modalities)} now uses {upgrade.new.name} (was {upgrade.old}) from the next task")
+            removed, kept = [], []
+            keep = upgrades.local_orchestrator()  # checked now: /model may have changed it during a long download
+            for name in plan.remove:
+                if name in keep:
+                    continue
+                if self.busy:
+                    kept.append(name)
+                    continue
+                try:
+                    ollama.delete(name)
+                except Exception:  # noqa: BLE001 - one failed delete doesn't stop the rest
+                    kept.append(name)
+                    continue
+                upgrades.unmark(name)
+                removed.append(name)
+            parts = done + ([f"removed {', '.join(removed)} (~{plan.freed_gb:g} GB freed)"] if removed else [])
+            if kept:
+                parts.append(f"left {', '.join(kept)} in place for now (a task is running); run /upgrade again when it's idle to remove them")
+            self.emit("upgrade_result", ok=True, message="; ".join(parts).capitalize() + ".")
+            self._emit_setup_status()
+            self._emit_orchestrator_options()
+            self._emit_advanced_model()
+            self._upgrade_check()
+        except Exception as exc:  # noqa: BLE001 - reported, never crashes the reader
+            self.emit("upgrade_result", ok=False, message=f"Upgrade failed: {exc}")
+        finally:
+            self._upgrade_running = False
+
+    # --- live research for models beyond the catalog -----------------------------------------------
+
+    def _research_models(self) -> None:
+        """Ask the user's orchestrator to search the web for newer open-weight models, then keep only
+        what is real (Ollama registry) and fits this machine. A suggestion, never an automatic swap."""
+        from localforge import catalog, research, upgrades
+        from localforge.workspace import Workspace
+
+        if getattr(self, "_research_running", False):
+            return self.emit("research_result", ok=False, message="A research is already running.", suggestions=[], rejected=[])
+        self._research_running = True
+        try:
+            self.emit("research_started", model=self.frontier_model)
+            ollama = OllamaBackend()
+            if not ollama.is_running():
+                return self.emit("research_result", ok=False, message="Ollama isn't running. Open the Ollama app, then research again.", suggestions=[], rejected=[])
+            hardware = detect_hardware()
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+            current = {m: e.name for m, e in catalog.recommendations(hardware, installed=set(on_disk)).items() if e is not None and m in research.TEXT_ROLES}
+            if pin := Dispatcher._decision_pin():
+                current["decision"] = pin
+            hooks = ActivityHooks(
+                on_tool=lambda name, summary: self.emit("research_progress", text=f"{name}: {summary}"),
+                on_answer_text=lambda text: None,
+            )
+            task = research.task_text(hardware, set(on_disk), current)
+            result = self.run_fn(task, self.frontier_model, cli_provider=self.cli_provider, hooks=hooks, conversation=Conversation(), workspace=Workspace(self.root))
+            outcome = research.verify(
+                research.parse(result.answer), hardware, set(on_disk), current, upgrades.managed(),
+                registry_size=model_fit.registry_size_gb, fit_problem=lambda n: model_fit.download_problem(n, hardware, {k: v / 1e9 for k, v in on_disk.items()}),
+            )
+            self._record_usage(result.stats)
+            self.emit("research_result", ok=True, message=outcome.note, suggestions=[s.as_dict() for s in outcome.suggestions], rejected=outcome.rejected)
+        except Exception as exc:  # noqa: BLE001 - reported in the card, never crashes the reader
+            message, _ = _friendly_failure(exc, self.frontier_model, self.cli_provider)
+            self.emit("research_result", ok=False, message=f"The research failed: {message}", suggestions=[], rejected=[])
+        finally:
+            self._research_running = False
+
+    def _adopt_researched(self, model: str, modality: str, replace: str | None, delete_old: bool) -> None:
+        """Download the researched model (same fit refusal as any download), make it the model for its
+        role, and then -- only then -- remove the one it replaces, to give the space back."""
+        from localforge import catalog, upgrades
+
+        name = self._normalize_model_name(model)
+        if modality not in delegate_target.MODALITIES + ("decision",):
+            return self.emit("research_adopted", model=name, ok=False, message=f"{modality!r} isn't a role LocalForge can set.")
+        use_as = {"decision": True} if modality == "decision" else {"modality": modality}
+        if not self._pull_model(name, use_as, ctx="research"):
+            return self.emit("research_adopted", model=name, ok=False, message=f"{name} wasn't adopted; see the message under it. Nothing was removed.")
+        message = f"{name} is now the {'Decision' if modality == 'decision' else modality} model, from the next task."
+        old = self._normalize_model_name(replace) if replace else None
+        if old and old != name:
+            message += " " + self._remove_replaced(old, modality, delete_old)
+        self._emit_setup_status()
+        self._emit_advanced_model()
+        self.emit("research_adopted", model=name, ok=True, message=message)
+
+    def _remove_replaced(self, old: str, modality: str, allowed: bool) -> str:
+        """Delete the model that was replaced, unless it is still needed. Returns what happened."""
+        from localforge import catalog, upgrades
+
+        if not allowed:
+            return f"{old} was left installed (you didn't ask to remove it)."
+        if old in upgrades.local_orchestrator():
+            return f"{old} is your local orchestrator, so it stays."
+        if self.busy:
+            return f"{old} stays for now because a task is running; remove it later under /installed."
+        ollama = OllamaBackend()
+        try:
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+        except Exception:  # noqa: BLE001
+            return f"{old} stays (couldn't ask Ollama what is installed)."
+        if old not in on_disk:
+            return ""
+        # Still needed if another role uses it: pinned there, or it is what 'auto' picks there.
+        others = [m for m in delegate_target.MODALITIES if m != modality]
+        recs = catalog.recommendations(detect_hardware(), installed=set(on_disk) - {old})
+        for other in others:
+            target = delegate_target.get(other)
+            uses = target.model if target.kind == "ollama" else (recs.get(other).name if recs.get(other) else None)
+            if target.kind == "auto":
+                uses = None  # with `old` gone, auto picks something else; only a pin keeps it
+            if uses == old:
+                return f"{old} stays because the {other} role still uses it."
+        try:
+            ollama.delete(old)
+        except Exception as exc:  # noqa: BLE001
+            return f"Couldn't remove {old}: {exc}"
+        upgrades.unmark(old)
+        return f"Removed {old}, freeing ~{on_disk[old] / 1e9:.1f} GB."
+
+    def handle_upgrade_command(self, arg: str = "") -> None:
+        if arg.strip().lower() in ("research", "online", "web"):
+            self.emit("system_text", text="Researching newer open-weight models on the web with your orchestrator (this uses it for a few steps)…")
+            threading.Thread(target=self._research_models, daemon=True).start()
+        elif arg.strip().lower() in ("now", "apply", "go"):
+            self.emit("system_text", text="Upgrading local models… downloads show under Models.")
+            threading.Thread(target=self._upgrade_apply, daemon=True).start()
+        else:
+            self.emit("system_text", text="Checking whether a better open-weight model fits this machine…")
+            threading.Thread(target=self._upgrade_check, args=(True,), daemon=True).start()
 
     def _finish_project_setup(self) -> None:
         """Save the models chosen on the setup screen to this project's own file
@@ -1548,6 +1773,28 @@ class StdioServer:
 
     def _emit_advanced_model(self) -> None:
         self.emit("advanced_model", targets=_advanced_model_snapshot(), source=project_models.source())
+        self._emit_decision()
+
+    def _emit_decision(self) -> None:
+        """The Decision model (the small local model that makes the pass/fail call on delegated work)."""
+        pinned = Dispatcher._decision_pin()
+        installed = bool(pinned and pinned in (model_fit.installed_sizes() or {}))
+        self.emit("decision_model", model=pinned or "auto", installed=installed)
+
+    def _set_decision_model(self, raw: str) -> None:
+        """Pick the Decision model from what is installed (or "auto"). A model that isn't on disk is
+        downloaded through the usual refusal-checked path instead (`pull_model` with use_as decision)."""
+        value = (raw or "").strip()
+        if value.lower() in ("", "auto"):
+            project_models.save({config.DECISION_MODEL_ENV_VAR: "auto"})
+            self._emit_decision()
+            return self.emit("decision_result", ok=True, message="The Decision model is automatic: a dedicated judge if one is installed, otherwise another installed local model.")
+        name = self._normalize_model_name(value)
+        if name not in (model_fit.installed_sizes() or {}):
+            return self.emit("decision_result", ok=False, message=f"{name} isn't downloaded. Use “Download & use” to fetch it (it is checked against your machine first).")
+        project_models.save({config.DECISION_MODEL_ENV_VAR: name})
+        self._emit_decision()
+        self.emit("decision_result", ok=True, message=f"{name} now makes the pass/fail call on delegated work, from the next task.")
 
     def _switch_orchestrator(self, model: str) -> str | None:
         """Make `model` this project's orchestrator, the way `/model` does in
@@ -1654,6 +1901,7 @@ class StdioServer:
             {"name": "/scan", "description": "Show detected hardware"},
             {"name": "/model <id>", "description": "Show or switch the orchestrator model"},
             {"name": "/advanced-model <type> <model|auto>", "description": "Show or set the model for coding, docs, general or image"},
+            {"name": "/upgrade [now|research]", "description": "Check for better open-weight models that fit this machine; `/upgrade now` replaces them, `/upgrade research` searches the web for newer ones"},
             {"name": "/budget <provider> <$|off>", "description": "Show or set a monthly limit for paid image generation"},
             {"name": "/auto on|off", "description": "Approve file changes and commands without asking"},
             {"name": "/run <task>", "description": "Work on a task in this folder"},
@@ -1727,7 +1975,7 @@ class StdioServer:
         self.emit("system_text", text="Streaming is on: local model output is shown as it is written." if self.stream_output else "Streaming is off.")
 
     def serve_forever(self) -> None:
-        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output, plan_first=self.plan_first)
+        self.emit("ready", version=__version__, root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output, plan_first=self.plan_first)
         if not self.trusted:
             self.emit("trust_required", folder=str(self.root))
         try:

@@ -15,6 +15,7 @@ export const SLASH_COMMANDS: { name: string; description: string }[] = [
   { name: "/scan", description: "Show detected hardware" },
   { name: "/model", description: "Show or switch the orchestrator model" },
   { name: "/advanced-model", description: "Show or override coding/docs/general/image (auto, a local model, or a paid cloud one)" },
+  { name: "/upgrade", description: "Check for better open-weight models that fit this machine (/upgrade now replaces them, /upgrade research searches the web)" },
   { name: "/budget", description: "Show or set a monthly limit for paid image generation" },
   { name: "/auto", description: "Approve file changes and commands without asking (on|off)" },
   { name: "/run", description: "Work on a task in this folder" },
@@ -52,7 +53,7 @@ export function SlashMenu({
           onMouseDown={e => { e.preventDefault(); onPick(c.name); }}
         >
           <span className="font-mono font-semibold text-mx-green">{c.name}</span>
-          <span className="truncate text-mx-dim">{c.description}</span>
+          <span className="truncate text-mx-muted">{c.description}</span>
         </div>
       ))}
     </div>

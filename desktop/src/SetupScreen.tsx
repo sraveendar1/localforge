@@ -53,13 +53,13 @@ export function ProviderCard({
               {checkingLogin ? "Checking your login…" : `Use my ${provider.cli.command} login`}
             </button>
           ) : (
-            <span className="text-mx-dim">
+            <span className="text-mx-muted">
               Have a subscription? The <span className="font-mono">{provider.cli.command}</span> app isn't installed on this computer.{" "}
               <Link url={provider.cli.installHint}>How to get it</Link>
             </span>
           )}
           {provider.cli.installed && (
-            <span className="ml-2 text-mx-dim">uses your subscription, no API key needed</span>
+            <span className="ml-2 text-mx-muted">uses your subscription, no API key needed</span>
           )}
         </div>
       )}
@@ -88,20 +88,20 @@ export function ProviderCard({
         <button
           type="submit"
           disabled={disabled || !key.trim()}
-          className="shrink-0 rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-dim"
+          className="shrink-0 rounded-sm border border-mx-mid px-3 py-1 text-xs text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:border-mx-dim disabled:text-mx-muted"
         >
           {savingKey ? "Checking…" : "Save key"}
         </button>
       </form>
       {provider.id === "gemini" && (
-        <div className="mt-1 text-xs text-mx-dim" data-testid="gemini-credit-note">
+        <div className="mt-1 text-xs text-mx-muted" data-testid="gemini-credit-note">
           A Google AI Pro subscription doesn't make API calls free, but it includes $10 a month in Google Cloud credits that can pay for
           them once activated (<Link url="https://developers.google.com/program">how</Link>). Gemini image generation has no free tier; you can set a
           monthly limit in Models so it never goes past that.
         </div>
       )}
       {provider.keyUrl && (
-        <div className="mt-1 text-xs text-mx-dim">
+        <div className="mt-1 text-xs text-mx-muted">
           No key yet? <Link url={provider.keyUrl}>Get one</Link>. It's checked with {provider.label.split(" ")[0]} and stored only on this computer.
         </div>
       )}
@@ -180,13 +180,13 @@ export function SetupScreen({
       <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="setup-local">
         <div className="font-semibold text-mx-bright">Or run everything on this computer (free)</div>
         {!status.ollama.installed ? (
-          <p className="mt-1 text-xs text-mx-dim">
+          <p className="mt-1 text-xs text-mx-muted">
             This needs <Link url="https://ollama.com/download">Ollama</Link>, which isn't installed. Install it, open it once, then come back.
           </p>
         ) : !status.ollama.running ? (
-          <p className="mt-1 text-xs text-mx-dim">Ollama is installed but not running. Open the Ollama app (or run <span className="font-mono">ollama serve</span>), then come back.</p>
+          <p className="mt-1 text-xs text-mx-muted">Ollama is installed but not running. Open the Ollama app (or run <span className="font-mono">ollama serve</span>), then come back.</p>
         ) : usable.length === 0 && status.ollama.models.length === 0 ? (
-          <p className="mt-1 text-xs text-mx-dim">
+          <p className="mt-1 text-xs text-mx-muted">
             Ollama is running but has no models yet. In a terminal, <span className="font-mono">ollama pull llama3.1:8b</span> gets a good small one, then come back.
           </p>
         ) : (
@@ -198,14 +198,14 @@ export function SetupScreen({
                   disabled={anyBusy || !!m.problem}
                   title={m.problem ?? undefined}
                   onClick={() => { setBusy(`local:${m.name}`); send({ type: "setup_choose_orchestrator", model: `ollama/${m.name}` }); }}
-                  className={"rounded-sm border px-3 py-1 " + (m.problem ? "cursor-not-allowed border-mx-dim text-mx-dim line-through" : "border-mx-mid text-mx-green hover:border-mx-bright hover:text-mx-bright") + " disabled:opacity-60"}
+                  className={"rounded-sm border px-3 py-1 " + (m.problem ? "cursor-not-allowed border-mx-dim text-mx-muted line-through" : "border-mx-mid text-mx-green hover:border-mx-bright hover:text-mx-bright") + " disabled:opacity-60"}
                 >
                   Use {m.name}
                 </button>
                 {m.problem && <span className="ml-2 text-mx-red">Can't run here: {m.problem}.</span>}
               </li>
             ))}
-            <li className="text-mx-dim">Small local models are often unreliable at planning; a paid model above is the safer choice.</li>
+            <li className="text-mx-muted">Small local models are often unreliable at planning; a paid model above is the safer choice.</li>
           </ul>
         )}
       </div>
@@ -221,7 +221,7 @@ export function SetupScreen({
         </p>
       )}
 
-      <div className="flex items-center justify-between text-xs text-mx-dim">
+      <div className="flex items-center justify-between text-xs text-mx-muted">
         <span>{mode === "manage" ? "Models (left panel) is where you choose which one does what." : "You can change all of this later in Models (left panel)."}</span>
         <button type="button" onClick={onSkip} className="rounded-sm border border-mx-dim px-3 py-1 text-mx-mid hover:border-mx-mid hover:text-mx-bright">
           {skipLabel}

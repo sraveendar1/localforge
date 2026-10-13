@@ -270,3 +270,23 @@ def test_exclude_tracks_whichever_model_actually_wrote_the_output_after_a_crash_
     # attempt, then again as the stand-in judge -- proving `small`, the
     # real writer, was correctly excluded rather than grading itself.
     assert local.calls == ["big", "small", "big"]
+
+
+def test_a_paid_writer_is_not_judged_by_a_weaker_local_model(monkeypatch):
+    """Reported: a local stand-in judge kept 'rejecting' a paid Haiku's output over fine details."""
+    from localforge.tools import Dispatcher
+
+    d = Dispatcher.__new__(Dispatcher)
+    d._last_delegate_cloud = True
+    d.judge = lambda exclude=None: (_ for _ in ()).throw(AssertionError("must not even look for a judge"))
+    assert d._judge_check("add a column", "<table/>", exclude="claude-haiku") is None
+
+
+def test_the_judge_can_be_switched_off(monkeypatch):
+    from localforge.tools import Dispatcher
+
+    monkeypatch.setenv("LOCALFORGE_JUDGE", "off")
+    d = Dispatcher.__new__(Dispatcher)
+    d._last_delegate_cloud = False
+    d.judge = lambda exclude=None: (_ for _ in ()).throw(AssertionError("must not even look for a judge"))
+    assert d._judge_check("x", "y") is None

@@ -68,7 +68,7 @@ export function ForgingIndicator({
       <span className="truncate">
         Forging with <span className="text-mx-bright">{activity.who || "a model"}</span>…{" "}
         <span className="text-mx-mid">({parts.join(" · ")})</span>
-        {queued > 0 && <span className="text-mx-dim"> · queue: {queued}</span>}
+        {queued > 0 && <span className="text-mx-muted"> · queue: {queued}</span>}
       </span>
     </div>
   );

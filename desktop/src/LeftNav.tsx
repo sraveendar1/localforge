@@ -2,7 +2,7 @@ import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
 import { ExpandButton, ResizeHandle } from "./PanelResize";
 import type { PanelLayout } from "./PanelResize";
-import type { LocalModelTarget } from "./state";
+import type { DecisionState, LocalModelTarget, PullState, UpgradeState } from "./state";
 
 // A collapsible left rail (chevron-toggled): recently-opened project folders
 // (so switching projects doesn't mean the native file dialog every time) and
@@ -24,6 +24,12 @@ export function LeftNav({
   source,
   onChange,
   onManageAccounts,
+  upgrade,
+  decision,
+  localModels,
+  onDecision,
+  pulls,
+  onUpgrade,
   layout,
 }: {
   open: boolean;
@@ -40,6 +46,12 @@ export function LeftNav({
   source: "project" | "defaults" | null;
   onChange: (which: "frontier" | string | null) => void;
   onManageAccounts: () => void;
+  upgrade?: UpgradeState;
+  decision?: DecisionState;
+  localModels?: string[];
+  onDecision?: (action: "set" | "download", model: string) => void;
+  pulls?: { [model: string]: PullState };
+  onUpgrade?: (action: "check" | "apply" | "research" | "adopt", extra?: { [key: string]: unknown }) => void;
   layout: PanelLayout;
 }) {
   const { expanded } = layout;
@@ -56,7 +68,7 @@ export function LeftNav({
           <div className={"flex flex-col gap-3 " + (expanded ? "mx-auto w-full max-w-3xl" : "")}>
           <Curtain title="Projects">
             {recentFolders.length === 0 ? (
-              <p className="text-mx-dim italic">No recent projects yet.</p>
+              <p className="text-mx-muted italic">No recent projects yet.</p>
             ) : (
               <ul className="space-y-0.5">
                 {recentFolders.map(f => {
@@ -109,6 +121,12 @@ export function LeftNav({
               source={source}
               onChange={onChange}
               onManageAccounts={onManageAccounts}
+              upgrade={upgrade}
+              decision={decision}
+              localModels={localModels}
+              onDecision={onDecision}
+              pulls={pulls}
+              onUpgrade={onUpgrade}
             />
           </Curtain>
           </div>

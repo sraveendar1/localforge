@@ -255,10 +255,29 @@ def _tidy_goal(text: str) -> str:
     return one_line if len(one_line) <= MAX_GOAL_CHARS else one_line[: MAX_GOAL_CHARS - 1].rstrip() + "…"
 
 
+# Reported with a screenshot: a project's goal was "Can you summarize what is left" -- the first message
+# typed there was a question, and any message over a dozen characters used to be recorded. A question, a
+# status check or a one-off chore ("what is the next step", "explain this", "fix the bug") says nothing
+# about what the project is for; the goal waits for a message that does.
+_QUESTION_START = re.compile(
+    r"^(?:(?:hi|hello|hey|hiya)\b[\s,!.:-]*)?(?:(?:please|so|ok(?:ay)?|and|also)\b[\s,:-]*)?"
+    r"(?:(?:can|could|would|will|did|do|does) (?:you|we|i) (?:please )?(?:summari[sz]e|explain|tell|show|list|check|review|describe|look|find|help|continue|resume|"
+    r"proceed|clarify|read|run|test|fix|update|retry|try)"
+    r"|what|what's|whats|how|why|where|when|which|who|is |are |was |were |tell me|show me|summari[sz]e|explain|describe|continue|proceed|resume|"
+    r"status|next step|any update|fix |check |run |retry |try again|thanks|thank you|ok\b|yes\b|no\b)",
+    re.I,
+)
+_GOAL_WORDS = re.compile(r"\b(?:build|create|make|develop|design|implement|set up|setup|i want|we want|i need|we need|goal|objective|aim|purpose)\b", re.I)
+
+
 def worth_recording_as_goal(text: str) -> bool:
-    """A greeting or a one-word reply isn't a goal; wait for a real request."""
+    """A greeting, a one-word reply, a question or a status check isn't a goal; wait for a real request."""
     tidy = _tidy_goal(text)
-    return not tidy.startswith("/") and len(tidy) >= MIN_GOAL_CHARS and len(tidy.split()) >= 3
+    if tidy.startswith("/") or len(tidy) < MIN_GOAL_CHARS or len(tidy.split()) < 3:
+        return False
+    if (_QUESTION_START.match(tidy) or tidy.rstrip().endswith("?")) and not _GOAL_WORDS.search(tidy):
+        return False
+    return True
 
 
 # Reported: "the overall goal is just like how I wrote the prompt" -- the panel showed the
@@ -322,10 +341,15 @@ def record_goal(root: Path, text: str) -> bool:
     the cleaned-up statement of it."""
     from localforge import memory
 
-    if recorded_goal(root) or not worth_recording_as_goal(text):
+    if not worth_recording_as_goal(text):
         return False
+    existing = request_text(root) or recorded_goal(root)
+    if existing and (worth_recording_as_goal(existing) or goal_was_evolved(root)):
+        return False  # a real goal is already there (or the user/keeper moved it on): keep it
     try:
         folder = memory.ensure_dir(root)
+        for marker in (REFINED_FILE, EVOLVED_FILE):  # a stale rewrite of a non-goal must not survive
+            (folder / marker).unlink(missing_ok=True)
         (folder / REQUEST_FILE).write_text(_tidy_goal(text) + "\n")
         goal_path(root).write_text((clean_goal(text) or _tidy_goal(text)) + "\n")
     except OSError:
@@ -488,7 +512,12 @@ def shown_goal(root: Path) -> str:
     """The recorded goal as displayed: refined text as written, otherwise the raw request cleaned up
     (so a project recorded before this existed reads properly too)."""
     goal = recorded_goal(root)
-    return goal if goal_is_refined(root) else (clean_goal(request_text(root) or goal) or goal)
+    if goal_was_evolved(root):
+        return goal
+    request = request_text(root) or goal
+    if request and not worth_recording_as_goal(request):
+        return ""  # what was recorded was a question, not a goal
+    return goal if goal_is_refined(root) else (clean_goal(request) or goal)
 
 
 SESSION_GOAL_CHARS = 500
@@ -507,12 +536,51 @@ def _session_goal(root: Path) -> str:
     return body if len(body) <= SESSION_GOAL_CHARS else body[: SESSION_GOAL_CHARS - 1].rstrip() + "…"
 
 
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _derived_from_request(summary: str, root: Path) -> bool:
+    """AGENTS.md's summary is just the user's first message copied in (typos and greeting included),
+    not something written to describe the project."""
+    request = request_text(root)
+    if not request:
+        return False
+    head = _words(summary)[:6]
+    return len(head) >= 3 and head in (_words(request)[:6], _words(clean_goal(request))[:6])
+
+
+def _readme_goal(root: Path) -> str:
+    """The first plain paragraph of the README, for a project with no stated goal yet."""
+    for name in ("README.md", "README.rst", "README.txt", "README"):
+        try:
+            text = (Path(root) / name).read_text(errors="replace")
+        except OSError:
+            continue
+        for block in re.split(r"\n\s*\n", text):
+            para = re.sub(r"\s+", " ", block).strip()
+            if len(para) >= 40 and not para.startswith(("#", "!", "[", "<", "```", "|", "-", "*", "=")):
+                return para if len(para) <= SHOWN_GOAL_CHARS else para[: SHOWN_GOAL_CHARS - 1].rstrip() + "…"
+    return ""
+
+
 def project_goal(root: Path) -> str:
-    """What to show as the project's goal: AGENTS.md's own summary when it has one, else
-    what the user first asked for, else (an older project) the goal from the last session's note."""
+    """What to show as the project's goal: the goal as the user or the keeper restated it, else
+    AGENTS.md's own summary when it was written to describe the project (not just the first message
+    copied in), else what the user first asked for if that was a real request, else the last
+    session's note, else the README's opening."""
+    shown = shown_goal(root)
     if goal_was_evolved(root):
-        return shown_goal(root)
-    return section(existing_brief(root), (GOAL_SECTION.lower(),)) or shown_goal(root) or _session_goal(root)
+        return shown
+    agents = section(existing_brief(root), (GOAL_SECTION.lower(),))
+    if agents and not _derived_from_request(agents, root):
+        return agents
+    return shown or _session_goal(root) or _readme_goal(root)
+
+
+def set_goal_by_user(root: Path, text: str) -> bool:
+    """The user's own wording of the goal: it wins over everything else from now on."""
+    return _set_goal(root, text)
 
 
 def _split_sections(text: str) -> list[tuple[str | None, list[str]]]:

@@ -4,6 +4,7 @@ each tool call to the best-fitting local model via the matching backend.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -11,7 +12,7 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 
-from localforge import brief, delegate_target, provider_check, spend, verify, web
+from localforge import brief, config, delegate_target, provider_check, spend, verify, web
 from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
@@ -489,6 +490,7 @@ the specific thing that's missing or wrong"}}"""
 # _delegate_to_file) instead of adding its own latency on top. This caps how
 # long the caller waits for it before giving up and treating it as "no
 # verdict" -- an eval hiccup should never stall or fail an otherwise-fine task.
+JUDGE_ENV_VAR = "LOCALFORGE_JUDGE"  # "off" skips the judge check entirely
 JUDGE_TIMEOUT_SECONDS = 20.0
 # Kept small: the judge only needs enough of each to make the call, and a
 # huge instructions/output pair would otherwise blow its (small) context.
@@ -538,6 +540,7 @@ class Dispatcher:
         self._preferences: str | None = None
         self._judge_entry: ModelEntry | None | object = _UNSET  # resolved once per run, like grounding()
         self._last_delegate_model: str | None = None  # set by _run(); see its docstring
+        self._last_delegate_cloud = False  # the most recent writer was a paid cloud model (see _judge_check)
         # The last failing check (run_command matching a test/lint/build
         # pattern) not yet passed on to a delegation, so a re-delegation
         # after a test failure carries the exact error instead of the
@@ -640,6 +643,12 @@ class Dispatcher:
             self._preferences = memory.facts_for_local(self.workspace.root) if self.workspace is not None else ""
         return self._preferences
 
+    @staticmethod
+    def _decision_pin() -> str | None:
+        """The Decision model the user chose (an Ollama tag), or None for automatic."""
+        value = os.environ.get(config.DECISION_MODEL_ENV_VAR, "").strip()
+        return None if value.lower() in ("", "auto") else value
+
     def judge(self, exclude: str | None = None) -> ModelEntry | None:
         """The dedicated judge model (modality="judge" in the catalog,
         e.g. atla/selene-mini -- specifically benchmarked as a judge, so
@@ -658,6 +667,11 @@ class Dispatcher:
         fall back to, so the check is skipped rather than run at a known
         disadvantage on every single task. None whenever there's no other
         installed model to judge with."""
+        pinned = self._decision_pin()
+        if pinned and pinned != exclude and (self.installed is None or pinned in self.installed):
+            return next((e for e in self.catalog if e.name == pinned), None) or ModelEntry(
+                name=pinned, modality="judge", runtime="ollama", min_vram_gb=0, min_ram_gb=0, disk_gb=1.0, quality_tier=0,
+            )
         if self._judge_entry is _UNSET:
             fitting = candidates("judge", self.hardware, self.catalog, self.installed)
             if self.installed is not None:
@@ -684,6 +698,16 @@ class Dispatcher:
         JSON -- never raises, since an eval hiccup must never fail a task
         that was otherwise fine. A short, specific reason string when it
         flagged something."""
+        # Two cases where a judge only adds noise (reported: a local gemma3:12b stand-in kept
+        # "rejecting" a paid Haiku's HTML for fine details like column order, and the task summary
+        # showed red Problems each time): the writer is a stronger paid model than any local
+        # judge, or the user switched the check off (LOCALFORGE_JUDGE=off).
+        # (A Decision model the user picked on purpose is used even for a paid writer: that is the cheap
+        # check such a model is for.)
+        if os.environ.get(JUDGE_ENV_VAR, "").strip().lower() in ("off", "0", "false", "no"):
+            return None
+        if self._last_delegate_cloud and not self._decision_pin():
+            return None
         entry = self.judge(exclude)
         if entry is None:
             return None
@@ -772,6 +796,7 @@ class Dispatcher:
         # pick, which can differ after a crash-retry switches to another
         # installed model (see _recover()).
         self._last_delegate_model = entry.name
+        self._last_delegate_cloud = entry.runtime in ("api", "cli")
         backend = BACKENDS[entry.runtime]
         on_pull = (lambda event: hooks.on_pull(entry.name, event)) if hooks.on_pull else None
         if self.installed is not None and entry.name not in self.installed and entry.runtime == "ollama":

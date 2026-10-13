@@ -35,7 +35,7 @@ export function GettingStarted({
     <div className="mx-auto flex h-full max-w-xl flex-col justify-center gap-5 px-6 py-6" data-testid="getting-started">
       <div className="text-center">
         <h1 className="text-sm font-semibold uppercase tracking-widest text-mx-bright glow">{ready ? "Ready when you are" : "Let's get you building"}</h1>
-        <p className="mt-1 text-xs text-mx-dim">
+        <p className="mt-1 text-xs text-mx-muted">
           In <span className="font-mono text-mx-mid">{folderName}</span>: a paid model plans the work, free local models write it, and you approve every plan before anything is built.
         </p>
       </div>
@@ -44,7 +44,7 @@ export function GettingStarted({
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-[11px] uppercase tracking-wide text-mx-mid">Setup</h2>
           <div className="flex gap-1.5">
-            <button type="button" onClick={onRequestChecks} className="text-[11px] text-mx-dim underline hover:text-mx-bright">Re-check</button>
+            <button type="button" onClick={onRequestChecks} className="text-[11px] text-mx-muted underline hover:text-mx-bright">Re-check</button>
             <button type="button" onClick={onOpenWizard} className="text-[11px] text-mx-green underline hover:text-mx-bright" data-testid="gs-models">Change models…</button>
           </div>
         </div>
@@ -66,7 +66,7 @@ export function GettingStarted({
             </button>
           ))}
         </div>
-        <p className="mt-2 text-center text-[11px] text-mx-dim">Or describe what you want in your own words below. Type <span className="font-mono text-mx-mid">/</span> for commands.</p>
+        <p className="mt-2 text-center text-[11px] text-mx-muted">Or describe what you want in your own words below. Type <span className="font-mono text-mx-mid">/</span> for commands.</p>
       </section>
     </div>
   );

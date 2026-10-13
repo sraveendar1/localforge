@@ -53,7 +53,7 @@ export function BackendStatus({
         <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-sm border border-mx-red bg-mx-panel2 p-2 font-mono text-[11px] text-mx-red" data-testid="backend-log">
           {tail || "(it printed nothing)"}
         </pre>
-        <p className="text-xs text-mx-dim">
+        <p className="text-xs text-mx-muted">
           Try again first. If it keeps happening after a fresh download, please send the details above: they say what stopped it.
         </p>
         <div className="flex gap-2">
@@ -73,9 +73,9 @@ export function BackendStatus({
   return (
     <div className="mx-auto flex h-full max-w-lg flex-col items-center justify-center gap-2 px-6 text-center" role="status" data-testid="backend-starting">
       <p className="animate-pulse text-sm text-mx-green">Starting localforge…</p>
-      <p className="max-w-full truncate text-xs text-mx-dim" title={folder ?? ""}>{folder}</p>
+      <p className="max-w-full truncate text-xs text-mx-muted" title={folder ?? ""}>{folder}</p>
       {waited > SLOW_MS && waited <= STUCK_MS && (
-        <p className="text-xs text-mx-dim" data-testid="backend-slow">Still starting. The first launch can take a few seconds while the app unpacks.</p>
+        <p className="text-xs text-mx-muted" data-testid="backend-slow">Still starting. The first launch can take a few seconds while the app unpacks.</p>
       )}
       {waited > STUCK_MS && (
         <div className="mt-2 space-y-2" data-testid="backend-stuck">

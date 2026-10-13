@@ -107,7 +107,7 @@ def test_a_bad_advanced_model_choice_is_an_error_not_silence(tmp_path):
     assert errors and "isn't installed" in errors[0]
 
 
-@pytest.mark.parametrize("command", ["/goals", "/tasks", "/upgrade", "/setup", "/theme", "/delete", "/exit"])
+@pytest.mark.parametrize("command", ["/goals", "/tasks", "/setup", "/theme", "/delete", "/exit"])
 def test_terminal_only_commands_say_where_to_go_instead_of_unknown(tmp_path, command):
     server, out = _server(tmp_path)
     _, errors, _ = _say(server, out, command)

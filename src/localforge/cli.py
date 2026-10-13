@@ -45,8 +45,19 @@ app = typer.Typer(
 console = Console()
 
 
+def _show_version(value: bool) -> None:
+    if value:
+        from localforge import __version__
+
+        typer.echo(f"localforge {__version__}")
+        raise typer.Exit()
+
+
 @app.callback(invoke_without_command=True)
-def _main(ctx: typer.Context) -> None:
+def _main(
+    ctx: typer.Context,
+    version: bool = typer.Option(False, "--version", "-V", callback=_show_version, is_eager=True, help="Show the version (yyyymmdd.N) and exit."),
+) -> None:
     config.load()
     # This folder's saved models (.localforge/models.json) apply over the
     # defaults -- but only once the folder is trusted: a cloned repo could

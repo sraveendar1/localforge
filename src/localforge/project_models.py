@@ -67,6 +67,9 @@ def _env_updates(data: dict) -> dict[str, str]:
             provider = orch.get("provider")
             if isinstance(provider, str) and provider:
                 updates[config.FRONTIER_PROVIDER_ENV_VAR] = provider
+    decision = data.get("decision")
+    if isinstance(decision, str) and decision.strip():
+        updates[config.DECISION_MODEL_ENV_VAR] = decision.strip()
     delegates = data.get("delegates")
     if isinstance(delegates, dict):
         for modality, value in delegates.items():
@@ -113,6 +116,7 @@ def snapshot() -> dict:
             orch[key] = os.environ[env]
     return {
         "orchestrator": orch,
+        "decision": os.environ.get(config.DECISION_MODEL_ENV_VAR, "").strip() or "auto",
         "delegates": {m: delegate_target.render(delegate_target.get(m)) for m in delegate_target.ALL_MODALITIES},
     }
 
