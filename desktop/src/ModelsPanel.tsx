@@ -1,6 +1,6 @@
 import { splitDescription } from "./describe";
-import { useEffect, useState } from "react";
-import type { LocalModelTarget, PullState, Suggestion, UpgradeState } from "./state";
+import { Fragment, useEffect, useState } from "react";
+import type { DecisionState, LocalModelTarget, PullState, Suggestion, UpgradeState } from "./state";
 
 const MODALITIES: [string, string][] = [
   ["coding", "Coding"],
@@ -26,6 +26,9 @@ export function ModelsPanel({
   onChange,
   onManageAccounts,
   upgrade,
+  decision,
+  localModels,
+  onDecision,
   pulls,
   onUpgrade,
 }: {
@@ -36,6 +39,9 @@ export function ModelsPanel({
   onChange: (which: "frontier" | string | null) => void;  // opens the model screen in the centre, at that model
   onManageAccounts: () => void;
   upgrade?: UpgradeState;
+  decision?: DecisionState;
+  localModels?: string[];
+  onDecision?: (action: "set" | "download", model: string) => void;
   pulls?: { [model: string]: PullState };
   onUpgrade?: (action: "check" | "apply" | "research" | "adopt", extra?: { [key: string]: unknown }) => void;
 }) {
@@ -74,7 +80,8 @@ export function ModelsPanel({
             ? { name: t.autoModel, note: `auto, ${t.installed ? "installed" : "not installed yet"}` }
             : splitDescription(t.description);
           return (
-            <div key={modality} className={CARD} title={t.description}>
+            <Fragment key={modality}>
+            <div className={CARD} title={t.description}>
               <div className="flex items-center justify-between gap-2">
                 <span className={LABEL}>{label}</span>
                 {modality !== "video" && changeButton(modality, `Change the ${label.toLowerCase()} model`)}
@@ -83,6 +90,10 @@ export function ModelsPanel({
               {!off && note && <div className="text-[11px] text-mx-dim">{note.replace(/via your CLI login/, "via your login")}</div>}
               {off && modality === "image" && <div className="text-[11px] text-mx-dim">pick a paid image model with Change</div>}
             </div>
+            {modality === "general" && onDecision && decision && (
+              <DecisionRow decision={decision} localModels={localModels ?? []} pulls={pulls} connected={connected} onDecision={onDecision} />
+            )}
+            </Fragment>
           );
         })
       )}
@@ -255,6 +266,81 @@ function ResearchRow({ s, outcome, pull, onAdopt }: { s: Suggestion; outcome?: {
       )}
       {!outcome && pull?.done && !pull.ok && <div className="mt-0.5 text-[11px] text-mx-red">{pull.message}</div>}
       {outcome && <div className={"mt-0.5 text-[11px] " + (outcome.ok ? "text-mx-green" : "text-mx-red")} data-testid="research-outcome">{outcome.message}</div>}
+    </div>
+  );
+}
+
+// The Decision model: the small local model that makes the pass/fail call on delegated work (a Jev-style
+// decision model, or any judge). Pick one that is installed, or type a name to download it (the download is
+// checked against this machine first, like any other).
+export function DecisionRow({ decision, localModels, pulls, connected, onDecision }: {
+  decision: DecisionState;
+  localModels: string[];
+  pulls?: { [model: string]: PullState };
+  connected: boolean;
+  onDecision: (action: "set" | "download", model: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [typed, setTyped] = useState("");
+  const pulling = Object.entries(pulls ?? {}).filter(([, p]) => p.ctx === "decision");
+  const auto = decision.model === "auto";
+  return (
+    <div className={CARD} data-testid="decision-row">
+      <div className="flex items-center justify-between gap-2">
+        <span className={LABEL}>Decision (System 1)</span>
+        <button
+          type="button"
+          disabled={!connected}
+          onClick={() => setEditing(e => !e)}
+          data-testid="decision-change"
+          className="shrink-0 rounded-sm border border-mx-dim px-1.5 py-0 text-[10px] text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
+        >
+          {editing ? "Close" : "Change"}
+        </button>
+      </div>
+      <div className={"break-words " + (auto ? "italic text-mx-dim" : "font-medium text-mx-bright")} data-testid="decision-current">
+        {auto ? "automatic" : decision.model}
+      </div>
+      <div className="text-[11px] text-mx-dim">
+        {auto ? "a dedicated judge if installed, else another local model" : decision.installed ? "installed" : "not installed"}
+      </div>
+      {editing && (
+        <div className="mt-1.5 space-y-1.5">
+          <select
+            value={auto ? "auto" : decision.model}
+            onChange={e => onDecision("set", e.target.value)}
+            data-testid="decision-select"
+            className="w-full rounded-sm border border-mx-dim bg-mx-panel px-1 py-0.5 text-[11px] text-mx-bright"
+          >
+            <option value="auto">automatic</option>
+            {localModels.map(m => <option key={m} value={m}>{m}</option>)}
+          </select>
+          <div className="flex gap-1">
+            <input
+              value={typed}
+              onChange={e => setTyped(e.target.value)}
+              placeholder="a model to download, e.g. atla/selene-mini"
+              data-testid="decision-typed"
+              className="min-w-0 flex-1 rounded-sm border border-mx-dim bg-mx-panel px-1 py-0.5 text-[11px] text-mx-bright placeholder:text-mx-dim"
+            />
+            <button
+              type="button"
+              disabled={!typed.trim()}
+              onClick={() => { onDecision("download", typed.trim()); setTyped(""); }}
+              data-testid="decision-download"
+              className="shrink-0 rounded-sm border border-mx-mid px-1.5 py-0.5 text-[11px] text-mx-green hover:border-mx-bright disabled:opacity-50"
+            >
+              Download &amp; use
+            </button>
+          </div>
+        </div>
+      )}
+      {pulling.map(([name, p]) => (
+        <div key={name} className={"mt-1 text-[11px] " + (p.done ? (p.ok ? "text-mx-green" : "text-mx-red") : "text-mx-mid")} data-testid="decision-pull">
+          {p.done ? p.message : `Downloading ${name}${p.total && p.completed != null ? " " + Math.round((p.completed / p.total) * 100) + "%" : "…"}`}
+        </div>
+      ))}
+      {decision.result && <div className={"mt-1 text-[11px] " + (decision.result.ok ? "text-mx-green" : "text-mx-red")} data-testid="decision-result">{decision.result.message}</div>}
     </div>
   );
 }

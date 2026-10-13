@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
 
-from localforge import brief, delegate_target, provider_check, spend, verify, web
+from localforge import brief, config, delegate_target, provider_check, spend, verify, web
 from localforge.cli_transport import _extract_json
 from localforge.workspace import Workspace, WorkspaceError
 from localforge.backends import BACKENDS
@@ -643,6 +643,12 @@ class Dispatcher:
             self._preferences = memory.facts_for_local(self.workspace.root) if self.workspace is not None else ""
         return self._preferences
 
+    @staticmethod
+    def _decision_pin() -> str | None:
+        """The Decision model the user chose (an Ollama tag), or None for automatic."""
+        value = os.environ.get(config.DECISION_MODEL_ENV_VAR, "").strip()
+        return None if value.lower() in ("", "auto") else value
+
     def judge(self, exclude: str | None = None) -> ModelEntry | None:
         """The dedicated judge model (modality="judge" in the catalog,
         e.g. atla/selene-mini -- specifically benchmarked as a judge, so
@@ -661,6 +667,11 @@ class Dispatcher:
         fall back to, so the check is skipped rather than run at a known
         disadvantage on every single task. None whenever there's no other
         installed model to judge with."""
+        pinned = self._decision_pin()
+        if pinned and pinned != exclude and (self.installed is None or pinned in self.installed):
+            return next((e for e in self.catalog if e.name == pinned), None) or ModelEntry(
+                name=pinned, modality="judge", runtime="ollama", min_vram_gb=0, min_ram_gb=0, disk_gb=1.0, quality_tier=0,
+            )
         if self._judge_entry is _UNSET:
             fitting = candidates("judge", self.hardware, self.catalog, self.installed)
             if self.installed is not None:
@@ -691,7 +702,11 @@ class Dispatcher:
         # "rejecting" a paid Haiku's HTML for fine details like column order, and the task summary
         # showed red Problems each time): the writer is a stronger paid model than any local
         # judge, or the user switched the check off (LOCALFORGE_JUDGE=off).
-        if self._last_delegate_cloud or os.environ.get(JUDGE_ENV_VAR, "").strip().lower() in ("off", "0", "false", "no"):
+        # (A Decision model the user picked on purpose is used even for a paid writer: that is the cheap
+        # check such a model is for.)
+        if os.environ.get(JUDGE_ENV_VAR, "").strip().lower() in ("off", "0", "false", "no"):
+            return None
+        if self._last_delegate_cloud and not self._decision_pin():
             return None
         entry = self.judge(exclude)
         if entry is None:

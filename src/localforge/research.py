@@ -18,7 +18,10 @@ from dataclasses import dataclass, field
 from localforge import cli_transport
 from localforge.hardware import HardwareProfile
 
-MODALITIES = ("coding", "docs", "general")
+TEXT_ROLES = ("coding", "docs", "general")
+# "decision" is the small model that makes the pass/fail call on delegated work (a Jev-style decision
+# model, or any judge model).
+MODALITIES = TEXT_ROLES + ("decision",)
 MAX_SUGGESTIONS = 4
 # Reasoning models put their thinking in the text, and it would end up inside generated files (the
 # catalog leaves them out for the same reason).
@@ -34,13 +37,16 @@ Currently used (installed): {current}.
 Already installed: {installed}.
 
 Use web_search and fetch_url (start from https://ollama.com/library?sort=newest and the model pages) to find \
-models released more recently than the ones above, in these roles: coding, docs (writing), general. Only \
+models released more recently than the ones above, in these roles: coding, docs (writing), general, and decision (below). Only \
 suggest a model whose exact Ollama tag you actually saw on ollama.com (for example `qwen3-coder:30b`), whose \
 download plausibly fits this machine's memory and free disk, and that is NOT a reasoning/"thinking" model. \
+Also look for a small *decision / judge* model (role "decision"): one that picks an answer from options or \
+gives a pass/fail verdict quickly, like TypeSafe AI's Jev (closed, hosted) and its open-weight look-alikes, or a \
+judge model such as Atla's Selene. Only suggest one whose exact Ollama tag you saw. \
 At most {limit} suggestions, best first. Give a short reason for each (what is newer or better, in one sentence).
 
 Reply with ONLY this JSON, nothing else:
-{{"candidates": [{{"name": "<ollama tag>", "modality": "coding|docs|general", "why": "<one sentence>"}}]}}
+{{"candidates": [{{"name": "<ollama tag>", "modality": "coding|docs|general|decision", "why": "<one sentence>"}}]}}
 """
 
 

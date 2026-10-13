@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { BudgetLine } from "./BudgetLine";
 import { Link, ProviderCard } from "./SetupScreen";
+import { DecisionRow } from "./ModelsPanel";
 import { ChecksList, Primary, ProviderTiles, StepStrip } from "./SetupWidgets";
 import type { Tile } from "./SetupWidgets";
 import type { BudgetRow, ChatState, DelegateOptions, PullState } from "./state";
@@ -437,7 +438,8 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           const t = targets[modality];
           const autoPull = t.autoModel ? pullOf(chat.pulls, t.autoModel, "auto") : undefined;
           return (
-            <div key={modality} className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid={`task-${modality}`}>
+            <Fragment key={modality}>
+            <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid={`task-${modality}`}>
               <div className="flex items-center justify-between gap-2">
                 <div>
                   <div className="font-semibold text-mx-bright">{label}</div>
@@ -480,6 +482,19 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
                 />
               )}
             </div>
+            {modality === "general" && (
+              <div className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="task-decision">
+                <div className="mb-1 text-[11px] text-mx-dim">A small, fast model (“System 1”, like TypeSafe's Jev) that makes the pass/fail call on delegated work. Not for writing.</div>
+                <DecisionRow
+                  decision={chat.decision}
+                  localModels={(setup?.ollama.models ?? []).map(m => m.name)}
+                  pulls={chat.pulls}
+                  connected={connected}
+                  onDecision={(action, model) => send(action === "set" ? { type: "set_decision_model", model } : { type: "pull_model", model, ctx: "decision", use_as: { decision: true } })}
+                />
+              </div>
+            )}
+            </Fragment>
           );
         })}
       </div>
@@ -497,10 +512,18 @@ export function ModelWizard({ chat, send, mode, startStep = 0, startRow = null, 
           <dd className="text-mx-bright">{needsOrchestrator ? "nothing chosen yet" : chat.model}</dd>
         </div>
         {TASKS.filter(([m]) => targets[m]).map(([m, label]) => (
-          <div key={m}>
-            <dt className="text-mx-mid">{label}</dt>
-            <dd className="break-words">{rowDescription(m)}</dd>
-          </div>
+          <Fragment key={m}>
+            <div>
+              <dt className="text-mx-mid">{label}</dt>
+              <dd className="break-words">{rowDescription(m)}</dd>
+            </div>
+            {m === "general" && (
+              <div>
+                <dt className="text-mx-mid">Decision (System 1)</dt>
+                <dd className="break-words">{chat.decision.model === "auto" ? "automatic (a dedicated judge if installed, else another local model)" : chat.decision.model}</dd>
+              </div>
+            )}
+          </Fragment>
         ))}
       </dl>
       <section aria-label="Setup check" className="rounded-sm border border-mx-dim bg-mx-panel2 p-3" data-testid="wizard-checks">

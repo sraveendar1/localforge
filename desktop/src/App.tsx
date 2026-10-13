@@ -354,6 +354,9 @@ function App() {
           onChange={which => (which && which !== "frontier" ? openWizard(1, which) : openWizard(0))}
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
           upgrade={chat.upgrade}
+          decision={chat.decision}
+          localModels={(chat.setup?.ollama.models ?? []).map(m => m.name)}
+          onDecision={(action, model) => send(action === "set" ? { type: "set_decision_model", model } : { type: "pull_model", model, ctx: "decision", use_as: { decision: true } })}
           pulls={chat.pulls}
           onUpgrade={(action, extra) => send(action === "check" ? { type: "upgrade_check" } : action === "apply" ? { type: "upgrade_apply" } : action === "research" ? { type: "research_models" } : { type: "research_adopt", ...extra })}
         />}

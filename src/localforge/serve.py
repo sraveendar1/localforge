@@ -1090,6 +1090,8 @@ class StdioServer:
             threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
         elif message_type == "upgrade_check":
             threading.Thread(target=self._upgrade_check, daemon=True).start()
+        elif message_type == "set_decision_model":
+            self._set_decision_model(str(message.get("model", "")))
         elif message_type == "research_models":
             threading.Thread(target=self._research_models, daemon=True).start()
         elif message_type == "research_adopt":
@@ -1532,6 +1534,10 @@ class StdioServer:
         if use_as and use_as.get("orchestrator"):
             self._choose_orchestrator(f"ollama/{name}")
             used = " and set as the orchestrator"
+        elif use_as and use_as.get("decision"):
+            project_models.save({config.DECISION_MODEL_ENV_VAR: name})
+            self._emit_decision()
+            used = " and set as the Decision model"
         elif use_as and use_as.get("modality"):
             modality = str(use_as["modality"])
             try:
@@ -1658,7 +1664,9 @@ class StdioServer:
                 return self.emit("research_result", ok=False, message="Ollama isn't running. Open the Ollama app, then research again.", suggestions=[], rejected=[])
             hardware = detect_hardware()
             on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
-            current = {m: e.name for m, e in catalog.recommendations(hardware, installed=set(on_disk)).items() if e is not None and m in research.MODALITIES}
+            current = {m: e.name for m, e in catalog.recommendations(hardware, installed=set(on_disk)).items() if e is not None and m in research.TEXT_ROLES}
+            if pin := Dispatcher._decision_pin():
+                current["decision"] = pin
             hooks = ActivityHooks(
                 on_tool=lambda name, summary: self.emit("research_progress", text=f"{name}: {summary}"),
                 on_answer_text=lambda text: None,
@@ -1683,11 +1691,12 @@ class StdioServer:
         from localforge import catalog, upgrades
 
         name = self._normalize_model_name(model)
-        if modality not in delegate_target.MODALITIES:
+        if modality not in delegate_target.MODALITIES + ("decision",):
             return self.emit("research_adopted", model=name, ok=False, message=f"{modality!r} isn't a role LocalForge can set.")
-        if not self._pull_model(name, {"modality": modality}, ctx="research"):
+        use_as = {"decision": True} if modality == "decision" else {"modality": modality}
+        if not self._pull_model(name, use_as, ctx="research"):
             return self.emit("research_adopted", model=name, ok=False, message=f"{name} wasn't adopted; see the message under it. Nothing was removed.")
-        message = f"{name} is now the {modality} model, from the next task."
+        message = f"{name} is now the {'Decision' if modality == 'decision' else modality} model, from the next task."
         old = self._normalize_model_name(replace) if replace else None
         if old and old != name:
             message += " " + self._remove_replaced(old, modality, delete_old)
@@ -1760,6 +1769,28 @@ class StdioServer:
 
     def _emit_advanced_model(self) -> None:
         self.emit("advanced_model", targets=_advanced_model_snapshot(), source=project_models.source())
+        self._emit_decision()
+
+    def _emit_decision(self) -> None:
+        """The Decision model (the small local model that makes the pass/fail call on delegated work)."""
+        pinned = Dispatcher._decision_pin()
+        installed = bool(pinned and pinned in (model_fit.installed_sizes() or {}))
+        self.emit("decision_model", model=pinned or "auto", installed=installed)
+
+    def _set_decision_model(self, raw: str) -> None:
+        """Pick the Decision model from what is installed (or "auto"). A model that isn't on disk is
+        downloaded through the usual refusal-checked path instead (`pull_model` with use_as decision)."""
+        value = (raw or "").strip()
+        if value.lower() in ("", "auto"):
+            project_models.save({config.DECISION_MODEL_ENV_VAR: "auto"})
+            self._emit_decision()
+            return self.emit("decision_result", ok=True, message="The Decision model is automatic: a dedicated judge if one is installed, otherwise another installed local model.")
+        name = self._normalize_model_name(value)
+        if name not in (model_fit.installed_sizes() or {}):
+            return self.emit("decision_result", ok=False, message=f"{name} isn't downloaded. Use “Download & use” to fetch it (it is checked against your machine first).")
+        project_models.save({config.DECISION_MODEL_ENV_VAR: name})
+        self._emit_decision()
+        self.emit("decision_result", ok=True, message=f"{name} now makes the pass/fail call on delegated work, from the next task.")
 
     def _switch_orchestrator(self, model: str) -> str | None:
         """Make `model` this project's orchestrator, the way `/model` does in

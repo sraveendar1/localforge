@@ -87,6 +87,8 @@ export type SetupChecks = { checks: SetupCheck[]; ok: boolean };
 // A model download in progress, or its outcome. `blocked` = refused before any download
 // because the model isn't recommended for this machine.
 // `ctx` says where the download was asked for ("orchestrator", a task type, "auto"), so its progress or refusal shows only there.
+// The Decision model: the small local model that makes the pass/fail call on delegated work.
+export type DecisionState = { model: string; installed: boolean; result: { ok: boolean; message: string } | null };
 // Whether a better open-weight model fits this machine (the `/upgrade` check), and how an upgrade ended.
 export type UpgradePlan = {
   ok: boolean; message?: string;
@@ -150,6 +152,7 @@ export type ChatState = {
   planPending: boolean;  // a proposed plan is on screen waiting to be approved
   streamOutput: boolean;  // New ChatState field
   upgrade: UpgradeState;
+  decision: DecisionState;
   version: string;  // the backend's version (yyyymmdd.N), from the ready event
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
   // What the running task is doing right now, for the live "Forging with X…"
@@ -214,6 +217,7 @@ export const initialState: ChatState = {
   queue: [],  // Initialize queue to an empty array
   planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
+  decision: { model: "auto", installed: false, result: null },
   upgrade: { plan: null, result: null, research: { running: false, progress: "", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } },
   version: "",
   trustRequired: null,
@@ -481,11 +485,15 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, version: state.version, upgrade: state.upgrade, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, version: state.version, upgrade: state.upgrade, decision: state.decision, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "upgrade_plan":
       return { ...state, upgrade: { ...state.upgrade, plan: { upgrades: [], remove: [], unused_own: [], download_gb: 0, freed_gb: 0, blocked: null, empty: true, ...ev, ok: !!ev.ok } } };
     case "upgrade_result":
       return { ...state, upgrade: { ...state.upgrade, result: { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.upgrade.result?.n ?? 0) + 1 } } };
+    case "decision_model":
+      return { ...state, decision: { ...state.decision, model: String(ev.model ?? "auto"), installed: !!ev.installed } };
+    case "decision_result":
+      return { ...state, decision: { ...state.decision, result: { ok: !!ev.ok, message: String(ev.message ?? "") } } };
     case "research_started":
       return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, running: true, progress: "Starting…", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } } };
     case "research_progress":

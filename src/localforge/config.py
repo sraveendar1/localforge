@@ -31,6 +31,10 @@ FRONTIER_MODEL_ENV_VAR = "LOCALFORGE_FRONTIER_MODEL"
 # Persists the chosen CLI color theme (see theme.py) so it only has to be
 # picked once, via `localforge theme`.
 THEME_ENV_VAR = "LOCALFORGE_THEME"
+# The "Decision" model: the small local model that makes the pass/fail call on delegated work (a
+# Jev-style decision model or any judge). "auto" / unset = a dedicated judge if installed, else another
+# installed model. Saved per project beside the other models (project_models.py).
+DECISION_MODEL_ENV_VAR = "LOCALFORGE_DECISION_MODEL"
 
 # Curated model choices per provider, offered during setup so a user can
 # pick e.g. Sonnet or Fable instead of always getting the first entry. The
