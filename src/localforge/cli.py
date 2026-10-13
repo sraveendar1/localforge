@@ -1146,6 +1146,39 @@ def _print_task_summary(stats, outcome: str, error: str | None = None) -> None:
     )
 
 
+def _enter_project_dir() -> None:
+    """Move into the project folder the desktop app asked for (LOCALFORGE_PROJECT_DIR).
+
+    The app starts the backend in the home folder because on macOS a process started inside a
+    protected folder (Desktop, Documents, Downloads, iCloud, external drives) the app hasn't
+    been granted can't ask for its own directory, and importing rich/httpx then crashed with
+    "PermissionError: [Errno 1] Operation not permitted" before anything could be shown. By
+    now everything is imported, so entering the folder is safe. If the system still refuses to
+    *report* the directory, os.getcwd is answered from the path we entered (relative paths
+    keep working, since the chdir itself succeeded); if it refuses to enter at all, the app
+    gets a readable error."""
+    target = os.environ.get("LOCALFORGE_PROJECT_DIR", "").strip()
+    if not target:
+        return
+    try:
+        os.chdir(target)
+    except OSError as exc:
+        import json
+
+        sys.stdout.write(json.dumps({
+            "type": "error", "fatal": True,
+            "message": f"localforge can't open “{target}”: {exc.strerror or exc}. On macOS, allow LocalForge to access this folder "
+                       "(System Settings → Privacy & Security → Files and Folders, or Full Disk Access), then try again.",
+        }) + "\n")
+        sys.stdout.flush()
+        raise typer.Exit(code=1)
+    try:
+        os.getcwd()
+    except OSError:
+        path = os.path.abspath(target)
+        os.getcwd = lambda: path  # type: ignore[assignment]
+
+
 def _augment_path_for_gui_launch() -> None:
     """A double-clicked .app (or Tauri's sidecar spawn of it) gets macOS's
     minimal default PATH -- launchd's, not the user's shell's -- so anything
@@ -1201,6 +1234,7 @@ def serve(
     from localforge.serve import serve_stdio
 
     _augment_path_for_gui_launch()
+    _enter_project_dir()
 
     if not stdio:
         console.print("[error]Only --stdio is supported for now.[/error] Run `localforge serve --stdio`.")

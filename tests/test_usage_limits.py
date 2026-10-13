@@ -72,7 +72,11 @@ def test_the_real_session_limit_message_is_recognized_as_a_usage_limit():
     exc = cli_transport.CLINotAvailableError(SESSION_LIMIT)  # what the CLI transport actually raises on exit 1
     limit = orch._as_usage_limit(exc, {"provider": "anthropic", "model": "claude-opus-5"})
     assert isinstance(limit, UsageLimitError)
-    assert limit.reset_at is not None and limit.reset_at.hour == 11 and limit.reset_at.minute == 40
+    from zoneinfo import ZoneInfo  # the message names the provider's zone; the machine's own zone may differ
+
+    assert limit.reset_at is not None
+    there = limit.reset_at.astimezone(ZoneInfo("America/Chicago"))
+    assert (there.hour, there.minute) == (11, 40)
 
 
 def test_the_real_session_limit_message_is_actually_waited_out(activity):
