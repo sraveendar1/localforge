@@ -2,7 +2,7 @@ import { Curtain } from "./Curtain";
 import { ModelsPanel } from "./ModelsPanel";
 import { ExpandButton, ResizeHandle } from "./PanelResize";
 import type { PanelLayout } from "./PanelResize";
-import type { LocalModelTarget } from "./state";
+import type { LocalModelTarget, PullState, UpgradeState } from "./state";
 
 // A collapsible left rail (chevron-toggled): recently-opened project folders
 // (so switching projects doesn't mean the native file dialog every time) and
@@ -24,6 +24,9 @@ export function LeftNav({
   source,
   onChange,
   onManageAccounts,
+  upgrade,
+  pulls,
+  onUpgrade,
   layout,
 }: {
   open: boolean;
@@ -40,6 +43,9 @@ export function LeftNav({
   source: "project" | "defaults" | null;
   onChange: (which: "frontier" | string | null) => void;
   onManageAccounts: () => void;
+  upgrade?: UpgradeState;
+  pulls?: { [model: string]: PullState };
+  onUpgrade?: (action: "check" | "apply") => void;
   layout: PanelLayout;
 }) {
   const { expanded } = layout;
@@ -109,6 +115,9 @@ export function LeftNav({
               source={source}
               onChange={onChange}
               onManageAccounts={onManageAccounts}
+              upgrade={upgrade}
+              pulls={pulls}
+              onUpgrade={onUpgrade}
             />
           </Curtain>
           </div>

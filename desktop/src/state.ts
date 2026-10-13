@@ -87,6 +87,13 @@ export type SetupChecks = { checks: SetupCheck[]; ok: boolean };
 // A model download in progress, or its outcome. `blocked` = refused before any download
 // because the model isn't recommended for this machine.
 // `ctx` says where the download was asked for ("orchestrator", a task type, "auto"), so its progress or refusal shows only there.
+// Whether a better open-weight model fits this machine (the `/upgrade` check), and how an upgrade ended.
+export type UpgradePlan = {
+  ok: boolean; message?: string;
+  upgrades: { old: string; new: string; modalities: string[]; disk_gb: number }[];
+  remove: string[]; unused_own: string[]; download_gb: number; freed_gb: number; blocked: string | null; empty: boolean;
+};
+export type UpgradeState = { plan: UpgradePlan | null; result: { ok: boolean; message: string; n: number } | null };
 export type PullState = { ctx: string; status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
 // The guided model setup in the centre of the window: "unknown" until the project's models
 // are known, "active" while it is on screen, "done" once finished or closed.
@@ -139,6 +146,7 @@ export type ChatState = {
   queue: string[];  // New queue field
   planPending: boolean;  // a proposed plan is on screen waiting to be approved
   streamOutput: boolean;  // New ChatState field
+  upgrade: UpgradeState;
   version: string;  // the backend's version (yyyymmdd.N), from the ready event
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
   // What the running task is doing right now, for the live "Forging with X…"
@@ -203,6 +211,7 @@ export const initialState: ChatState = {
   queue: [],  // Initialize queue to an empty array
   planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
+  upgrade: { plan: null, result: null },
   version: "",
   trustRequired: null,
   activity: null
@@ -469,7 +478,11 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, version: state.version, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, version: state.version, upgrade: state.upgrade, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+    case "upgrade_plan":
+      return { ...state, upgrade: { ...state.upgrade, plan: { upgrades: [], remove: [], unused_own: [], download_gb: 0, freed_gb: 0, blocked: null, empty: true, ...ev, ok: !!ev.ok } } };
+    case "upgrade_result":
+      return { ...state, upgrade: { ...state.upgrade, result: { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.upgrade.result?.n ?? 0) + 1 } } };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":

@@ -1,5 +1,6 @@
 import { splitDescription } from "./describe";
-import type { LocalModelTarget } from "./state";
+import { useEffect, useState } from "react";
+import type { LocalModelTarget, PullState, UpgradeState } from "./state";
 
 const MODALITIES: [string, string][] = [
   ["coding", "Coding"],
@@ -24,6 +25,9 @@ export function ModelsPanel({
   source,
   onChange,
   onManageAccounts,
+  upgrade,
+  pulls,
+  onUpgrade,
 }: {
   frontier: string;
   targets: { [modality: string]: LocalModelTarget };
@@ -31,7 +35,13 @@ export function ModelsPanel({
   source: "project" | "defaults" | null;
   onChange: (which: "frontier" | string | null) => void;  // opens the model screen in the centre, at that model
   onManageAccounts: () => void;
+  upgrade?: UpgradeState;
+  pulls?: { [model: string]: PullState };
+  onUpgrade?: (action: "check" | "apply") => void;
 }) {
+  // Disabled between a click and its answer; the answer arrives as a new plan/result.
+  const [busy, setBusy] = useState<"" | "check" | "apply">("");
+  useEffect(() => setBusy(""), [upgrade?.plan, upgrade?.result]);
   const rows = MODALITIES.filter(([m]) => targets[m]);
   const changeButton = (which: string, label: string) => (
     <button
@@ -77,6 +87,17 @@ export function ModelsPanel({
         })
       )}
 
+      {onUpgrade && (
+        <UpgradeCard
+          upgrade={upgrade}
+          pulls={pulls}
+          busy={busy}
+          connected={connected}
+          onCheck={() => { setBusy("check"); onUpgrade("check"); }}
+          onApply={() => { setBusy("apply"); onUpgrade("apply"); }}
+        />
+      )}
+
       {source && (
         <p className="px-0.5 text-[11px] text-mx-dim" data-testid="models-source">
           {source === "project" ? "Saved for this project (.localforge/models.json)." : "Using your defaults; not saved for this project yet."}
@@ -103,6 +124,75 @@ export function ModelsPanel({
           <span className="block text-[10px] text-mx-dim">Add an API key or sign in</span>
         </button>
       </div>
+    </div>
+  );
+}
+
+// "Is there a better open-weight model for this machine?" Compares what is installed with the catalog's
+// balanced pick for this hardware (it doesn't search the internet), shows what would be downloaded and
+// removed, and does it on a click. Only models LocalForge itself installed are ever removed.
+function UpgradeCard({
+  upgrade, pulls, busy, connected, onCheck, onApply,
+}: {
+  upgrade?: UpgradeState;
+  pulls?: { [model: string]: PullState };
+  busy: "" | "check" | "apply";
+  connected: boolean;
+  onCheck: () => void;
+  onApply: () => void;
+}) {
+  const plan = upgrade?.plan ?? null;
+  const result = upgrade?.result ?? null;
+  const downloading = Object.entries(pulls ?? {}).filter(([, p]) => p.ctx === "upgrade" && !p.done);
+  const pct = (p: PullState) => (p.total && p.completed != null ? Math.round((p.completed / p.total) * 100) : null);
+  const canApply = !!plan?.ok && !plan.empty && !plan.blocked;
+  return (
+    <div className={CARD} data-testid="upgrade-card">
+      <div className="flex items-center justify-between gap-2">
+        <span className={LABEL}>Local model upgrades</span>
+        <button
+          type="button"
+          disabled={!connected || busy !== ""}
+          onClick={onCheck}
+          data-testid="upgrade-check"
+          className="shrink-0 rounded-sm border border-mx-dim px-1.5 py-0 text-[10px] text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
+        >
+          {busy === "check" ? "Checking…" : "Check for better"}
+        </button>
+      </div>
+      {!plan && !result && downloading.length === 0 && (
+        <div className="text-[11px] text-mx-dim">Checks whether a better open-weight model fits this machine.</div>
+      )}
+      {plan && !plan.ok && <div className="text-[11px] text-mx-amber" data-testid="upgrade-problem">{plan.message}</div>}
+      {plan?.ok && plan.empty && !plan.blocked && <div className="text-[11px] text-mx-green">Your local models are already the best fit for this machine.</div>}
+      {plan?.ok && plan.blocked && <div className="text-[11px] text-mx-amber">A better model fits, but the upgrade {plan.blocked}.</div>}
+      {plan?.ok && !plan.empty && (
+        <ul className="mt-1 space-y-0.5 text-[11px] text-mx-mid" data-testid="upgrade-plan">
+          {plan.upgrades.map(u => (
+            <li key={u.new}>{u.modalities.join(", ")}: {u.old} → <span className="text-mx-bright">{u.new}</span> (~{u.disk_gb} GB)</li>
+          ))}
+          {plan.remove.map(n => <li key={n} className="text-mx-dim">then remove {n}</li>)}
+          {plan.freed_gb > 0 && <li className="text-mx-dim">frees ~{plan.freed_gb} GB afterwards</li>}
+        </ul>
+      )}
+      {plan?.ok && plan.unused_own.length > 0 && (
+        <div className="mt-1 text-[11px] text-mx-dim">Not installed by LocalForge, so left alone: {plan.unused_own.join(", ")}</div>
+      )}
+      {downloading.map(([name, p]) => (
+        <div key={name} className="mt-1 text-[11px] text-mx-mid">Downloading {name}{pct(p) !== null ? ` ${pct(p)}%` : "…"}</div>
+      ))}
+      {canApply && (
+        <button
+          type="button"
+          disabled={!connected || busy !== ""}
+          onClick={onApply}
+          data-testid="upgrade-apply"
+          className="mt-1.5 w-full rounded-sm border border-mx-mid px-2 py-1 text-center text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:opacity-50"
+        >
+          {busy === "apply" ? "Upgrading…" : "Upgrade now"}
+        </button>
+      )}
+      {result && <div className={"mt-1 text-[11px] " + (result.ok ? "text-mx-green" : "text-mx-red")} data-testid="upgrade-result">{result.message}</div>}
     </div>
   );
 }

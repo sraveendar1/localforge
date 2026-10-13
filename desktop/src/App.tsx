@@ -353,6 +353,9 @@ function App() {
           source={chat.modelsSource}
           onChange={which => (which && which !== "frontier" ? openWizard(1, which) : openWizard(0))}
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
+          upgrade={chat.upgrade}
+          pulls={chat.pulls}
+          onUpgrade={action => send({ type: action === "check" ? "upgrade_check" : "upgrade_apply" })}
         />}
         <main className={"min-w-0 flex-1 flex-col " + (expanded ? "hidden" : "flex")}>
           <div className="flex-1 overflow-y-auto px-4 py-3">

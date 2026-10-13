@@ -505,7 +505,6 @@ _TERMINAL_ONLY = {
     "/goals": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log. (`/goals` drafting is a terminal command.)",
     "/init": "The project goal is taken from the first thing you ask for and shown under Overall goal; AGENTS.md keeps a progress log.",
     "/tasks": "Unfinished tasks from earlier sessions are a terminal feature (`/tasks`). Here, what you send while a task runs waits in the Queue section.",
-    "/upgrade": "Model upgrades are done in the terminal (`localforge upgrade`). To change a model here use Models → Change models…",
     "/setup": "Open Models → Accounts & keys… to add a key or sign in, and Change models… to choose models.",
     "/theme": "Colour themes are a terminal feature (`localforge theme`); the app has one look.",
     "/delete": "Deleting downloaded models is a terminal command (`localforge delete`). `/installed` lists what is on disk.",
@@ -980,6 +979,8 @@ class StdioServer:
                     self.handle_model_command(arg)
                 elif cmd == "/budget":
                     self.handle_budget_command(arg)
+                elif cmd == "/upgrade":
+                    self.handle_upgrade_command(arg)
                 elif cmd == "/advanced-model":
                     self.handle_advanced_model_command(arg)
                 elif cmd == "/auto":
@@ -1087,6 +1088,10 @@ class StdioServer:
         elif message_type == "pull_model":
             use_as = message.get("use_as") if isinstance(message.get("use_as"), dict) else None
             threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
+        elif message_type == "upgrade_check":
+            threading.Thread(target=self._upgrade_check, daemon=True).start()
+        elif message_type == "upgrade_apply":
+            threading.Thread(target=self._upgrade_apply, daemon=True).start()
         elif message_type == "finish_project_setup":
             self._finish_project_setup()
         elif message_type == "orchestrator_options_request":
@@ -1455,7 +1460,7 @@ class StdioServer:
                 name = name[len(prefix):]
         return name if ":" in name else f"{name}:latest"
 
-    def _pull_model(self, raw_name: str, use_as: dict | None, ctx: str = "") -> None:
+    def _pull_model(self, raw_name: str, use_as: dict | None, ctx: str = "") -> bool:
         """Download an Ollama model (progress as `pull_progress` events, the end
         as `pull_result`) and, if asked, make it the orchestrator or a task
         type's model. A model that isn't recommended for this machine -- too big
@@ -1468,12 +1473,13 @@ class StdioServer:
 
         name = self._normalize_model_name(raw_name)
 
-        def result(ok: bool, message: str, **extra) -> None:
+        def result(ok: bool, message: str, **extra) -> bool:
             self.emit("pull_result", model=name, ok=ok, message=message, ctx=ctx, **extra)
             self._emit_setup_status()
             self._emit_orchestrator_options()
             if use_as and use_as.get("modality"):
                 self.emit("delegate_options", modality=str(use_as["modality"]), **_delegate_options(str(use_as["modality"])))
+            return ok
 
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._\-/]*:[A-Za-z0-9._\-]+", name):
             return result(False, f"{raw_name.strip()!r} isn't a model name Ollama understands (like llama3.1:8b).", blocked=True)
@@ -1526,7 +1532,113 @@ class StdioServer:
                 return result(False, f"Downloaded {name}, but it can't be used for {modality}: {exc}")
             self._emit_advanced_model()
             used = f" and set for {modality}"
-        result(True, f"Downloaded {name}{used}.")
+        return result(True, f"Downloaded {name}{used}.")
+
+    # --- upgrading the installed open-weight models (the terminal's `localforge upgrade`) -------------
+
+    def _compute_upgrade_plan(self):
+        """(plan, ollama) for this machine, or (None, why) when Ollama can't be asked."""
+        from localforge import upgrades
+
+        ollama = OllamaBackend()
+        if not ollama.is_running():
+            return None, "Ollama isn't running. Open the Ollama app (or run `ollama serve`), then check again."
+        try:
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+        except Exception as exc:  # noqa: BLE001
+            return None, f"Couldn't ask Ollama what is installed ({exc})."
+        return upgrades.plan(detect_hardware(), on_disk, keep=upgrades.local_orchestrator()), ollama
+
+    def _upgrade_check(self, say: bool = False) -> None:
+        """Is there a better open-weight model that fits this machine? Compares what is installed
+        with the catalog's balanced pick for this hardware (memory, speed, disk); it doesn't search
+        the internet, so a model that isn't in the catalog is never suggested."""
+        plan, ollama = self._compute_upgrade_plan()
+        if plan is None:
+            self.emit("upgrade_plan", ok=False, message=ollama)
+            if say:
+                self.emit("system_text", text=ollama)
+            return
+        payload = {
+            "upgrades": [{"old": u.old, "new": u.new.name, "modalities": u.modalities, "disk_gb": u.new.disk_gb} for u in plan.upgrades],
+            "remove": plan.remove, "unused_own": plan.unused_own,
+            "download_gb": plan.download_gb, "freed_gb": plan.freed_gb, "blocked": plan.blocked, "empty": plan.empty,
+        }
+        self.emit("upgrade_plan", ok=True, **payload)
+        if not say:
+            return
+        if plan.blocked:
+            self.emit("system_text", text=f"A better model fits, but the upgrade {plan.blocked}. Free some disk space and check again.")
+        if plan.empty and not plan.unused_own:
+            self.emit("system_text", text="Your local models are already the best fit for this machine.")
+            return
+        lines = ["Upgrade plan:"] + [f"• {line}" for line in plan.summary()]
+        if plan.download_gb or plan.freed_gb:
+            lines.append(f"Download ~{plan.download_gb:g} GB; frees ~{plan.freed_gb:g} GB afterwards.")
+        if plan.unused_own:
+            lines.append(f"Not installed by LocalForge and no longer used (left alone): {', '.join(plan.unused_own)}")
+        if not plan.empty:
+            lines.append("Type `/upgrade now`, or press “Upgrade now” under Models, to do it.")
+        self.emit("system_text", text="\n".join(lines))
+
+    def _upgrade_apply(self) -> None:
+        """Download every better model first (each goes through the same memory/disk check as any
+        download), and only then remove the ones LocalForge installed that nothing uses any more.
+        If a download fails, nothing is removed. Removal waits for a quiet moment: a running task may
+        still be using an old model."""
+        from localforge import upgrades
+
+        if getattr(self, "_upgrade_running", False):
+            return self.emit("upgrade_result", ok=False, message="An upgrade is already running.")
+        self._upgrade_running = True
+        try:
+            plan, ollama = self._compute_upgrade_plan()
+            if plan is None:
+                return self.emit("upgrade_result", ok=False, message=ollama)
+            if plan.blocked:
+                return self.emit("upgrade_result", ok=False, message=f"The upgrade {plan.blocked}. Nothing was changed.")
+            if plan.empty:
+                return self.emit("upgrade_result", ok=True, message="Your local models are already the best fit for this machine.")
+            done = []
+            for upgrade in plan.upgrades:
+                if not self._pull_model(upgrade.new.name, None, ctx="upgrade"):
+                    return self.emit("upgrade_result", ok=False, message=f"Upgrade stopped: {upgrade.new.name} couldn't be downloaded. Nothing was removed; your current models still work.")
+                done.append(f"{', '.join(upgrade.modalities)} now uses {upgrade.new.name} (was {upgrade.old}) from the next task")
+            removed, kept = [], []
+            keep = upgrades.local_orchestrator()  # checked now: /model may have changed it during a long download
+            for name in plan.remove:
+                if name in keep:
+                    continue
+                if self.busy:
+                    kept.append(name)
+                    continue
+                try:
+                    ollama.delete(name)
+                except Exception:  # noqa: BLE001 - one failed delete doesn't stop the rest
+                    kept.append(name)
+                    continue
+                upgrades.unmark(name)
+                removed.append(name)
+            parts = done + ([f"removed {', '.join(removed)} (~{plan.freed_gb:g} GB freed)"] if removed else [])
+            if kept:
+                parts.append(f"left {', '.join(kept)} in place for now (a task is running); run /upgrade again when it's idle to remove them")
+            self.emit("upgrade_result", ok=True, message="; ".join(parts).capitalize() + ".")
+            self._emit_setup_status()
+            self._emit_orchestrator_options()
+            self._emit_advanced_model()
+            self._upgrade_check()
+        except Exception as exc:  # noqa: BLE001 - reported, never crashes the reader
+            self.emit("upgrade_result", ok=False, message=f"Upgrade failed: {exc}")
+        finally:
+            self._upgrade_running = False
+
+    def handle_upgrade_command(self, arg: str = "") -> None:
+        if arg.strip().lower() in ("now", "apply", "go"):
+            self.emit("system_text", text="Upgrading local models… downloads show under Models.")
+            threading.Thread(target=self._upgrade_apply, daemon=True).start()
+        else:
+            self.emit("system_text", text="Checking whether a better open-weight model fits this machine…")
+            threading.Thread(target=self._upgrade_check, args=(True,), daemon=True).start()
 
     def _finish_project_setup(self) -> None:
         """Save the models chosen on the setup screen to this project's own file
@@ -1654,6 +1766,7 @@ class StdioServer:
             {"name": "/scan", "description": "Show detected hardware"},
             {"name": "/model <id>", "description": "Show or switch the orchestrator model"},
             {"name": "/advanced-model <type> <model|auto>", "description": "Show or set the model for coding, docs, general or image"},
+            {"name": "/upgrade [now]", "description": "Check for better open-weight models that fit this machine; `/upgrade now` replaces them"},
             {"name": "/budget <provider> <$|off>", "description": "Show or set a monthly limit for paid image generation"},
             {"name": "/auto on|off", "description": "Approve file changes and commands without asking"},
             {"name": "/run <task>", "description": "Work on a task in this folder"},
