@@ -1,0 +1,17 @@
+name: Version check
+
+# Every push to main carries a higher version than main had (yyyymmdd.N, see scripts/set_version.py),
+# because the version is the release tag. A pull request that doesn't bump it fails here.
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Version is consistent and higher than main's
+        run: python3 scripts/set_version.py --newer-than "origin/${{ github.base_ref }}"

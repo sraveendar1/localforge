@@ -5,13 +5,14 @@ interface StatusBarProps {
   connected: boolean;
   running: boolean;
   model: string;
+  version?: string;
   autoApprove: boolean;
   todoCount: number;
   doneCount: number;
   onCancel: () => void;
 }
 
-const StatusBar: React.FC<StatusBarProps> = ({ folder, connected, running, model, autoApprove, todoCount, doneCount, onCancel }) => {
+const StatusBar: React.FC<StatusBarProps> = ({ folder, connected, running, model, version, autoApprove, todoCount, doneCount, onCancel }) => {
   const statusText = running ? 'working' : connected ? 'ready' : 'offline';
   const folderSegment = folder ? folder.split('/').pop() || 'no folder' : '';
   const progressText = todoCount > 0 ? `${doneCount}/${todoCount}` : '';
@@ -30,7 +31,8 @@ const StatusBar: React.FC<StatusBarProps> = ({ folder, connected, running, model
       <span className="text-mx-dim">|</span>
       <span className={autoApprove ? 'text-mx-green' : 'text-mx-amber'}>{autoApprove ? 'auto' : 'manual'}</span>
       {progressText && <><span className="text-mx-dim">|</span><span className="text-mx-dim">todos</span><span className="text-mx-mid">{progressText}</span></>}
-      {running && <button onClick={onCancel} className="ml-auto rounded-sm border border-mx-red bg-transparent px-2 text-mx-red hover:border-mx-bright hover:text-mx-bright">Cancel</button>}
+      {version && <span className="ml-auto text-mx-dim" title="LocalForge version (yyyymmdd.N)" data-testid="app-version">v{version}</span>}
+      {running && <button onClick={onCancel} className="ml-2 rounded-sm border border-mx-red bg-transparent px-2 text-mx-red hover:border-mx-bright hover:text-mx-bright">Cancel</button>}
     </div>
   );
 };

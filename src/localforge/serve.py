@@ -9,7 +9,7 @@ from __future__ import annotations
 import dataclasses, json, os, re, shutil, sys, threading, uuid
 from pathlib import Path
 from typing import Callable, IO, List, Optional
-from localforge import brief, cli_transport, locks, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
+from localforge import __version__, brief, cli_transport, locks, config, delegate_target, local_transport, memory, model_fit, project_models, provider_check, spend, task_summary, trust
 from localforge.orchestrator import Conversation, OrchestrationError
 from localforge.orchestrator import run as run_orchestrator
 from localforge.scratchpad import Scratchpad
@@ -1727,7 +1727,7 @@ class StdioServer:
         self.emit("system_text", text="Streaming is on: local model output is shown as it is written." if self.stream_output else "Streaming is off.")
 
     def serve_forever(self) -> None:
-        self.emit("ready", root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output, plan_first=self.plan_first)
+        self.emit("ready", version=__version__, root=str(self.root), model=self.frontier_model, auto_approve=self.auto_approve, scratchpad=str(self.scratch_root), stream_output=self.stream_output, plan_first=self.plan_first)
         if not self.trusted:
             self.emit("trust_required", folder=str(self.root))
         try:

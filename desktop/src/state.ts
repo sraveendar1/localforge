@@ -139,6 +139,7 @@ export type ChatState = {
   queue: string[];  // New queue field
   planPending: boolean;  // a proposed plan is on screen waiting to be approved
   streamOutput: boolean;  // New ChatState field
+  version: string;  // the backend's version (yyyymmdd.N), from the ready event
   trustRequired: string | null;  // folder path awaiting a trust decision, or null
   // What the running task is doing right now, for the live "Forging with X…"
   // strip (the desktop counterpart of the CLI's status line). null when idle.
@@ -202,6 +203,7 @@ export const initialState: ChatState = {
   queue: [],  // Initialize queue to an empty array
   planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
+  version: "",
   trustRequired: null,
   activity: null
 };
@@ -379,7 +381,7 @@ export function applyEvent(state: ChatState, ev: any): ChatState {
 function applyEventBase(state: ChatState, ev: any): ChatState {
   switch (ev.type) {
     case "ready":
-      return { ...state, connected: true, model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
+      return { ...state, connected: true, version: String(ev.version ?? state.version), model: ev.model ?? "", autoApprove: !!ev.auto_approve, streamOutput: ev.stream_output ?? state.streamOutput };
     case "trust_required":
       return { ...state, trustRequired: String(ev.folder ?? "") };
     case "trust_result":
@@ -467,7 +469,7 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
     case "session_reset":
       // usageHistory and configuredModels are project-level, not session-level
       // (they don't reset when the conversation does -- the folder is unchanged).
-      return { ...initialState, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
+      return { ...initialState, version: state.version, connected: state.connected, backendStartedAt: state.backendStartedAt, model: state.model, autoApprove: state.autoApprove, streamOutput: state.streamOutput, usageHistory: state.usageHistory, configuredModels: state.configuredModels, orchestratorOptions: state.orchestratorOptions, setup: state.setup, pulls: state.pulls, wizard: state.wizard, budgets: state.budgets, localModelTargets: state.localModelTargets, modelsSource: state.modelsSource };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":

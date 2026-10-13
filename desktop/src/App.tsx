@@ -534,7 +534,7 @@ function App() {
           </div>
         </div>
       )}
-      <StatusBar folder={folder} connected={chat.connected} running={chat.running} model={chat.model} autoApprove={chat.autoApprove} todoCount={chat.todos.length} doneCount={chat.todos.filter(t => t.status === "completed").length} onCancel={() => send({ type: "cancel" })} />
+      <StatusBar folder={folder} connected={chat.connected} running={chat.running} model={chat.model} version={chat.version} autoApprove={chat.autoApprove} todoCount={chat.todos.length} doneCount={chat.todos.filter(t => t.status === "completed").length} onCancel={() => send({ type: "cancel" })} />
     </div>
   );
 }
