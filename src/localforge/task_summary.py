@@ -126,6 +126,20 @@ def _modality_word(text: str) -> str:
     return {"docs": "writing", "doc": "writing"}.get(m.group(1), m.group(1)) if m else "local"
 
 
+_REJECTED_KEY = re.compile(r"invalid x-api-key|invalid[_ ]api[_ ]key|incorrect api key|api key not valid|authentication_error|401 unauthorized")
+
+
+def rejected_key_message(text: str = "") -> str:
+    """A key that is set but refused by the provider (a typo, a revoked or expired key)."""
+    low = (text or "").lower()
+    provider = "Anthropic" if "anthropic" in low else "OpenAI" if "openai" in low else "Google" if "gemini" in low or "google" in low else "The AI provider"
+    who = f"The saved {provider} API key" if provider != "The AI provider" else "The saved API key"
+    return (
+        f"{who} was rejected as invalid. Replace it under “Accounts & keys” (or sign in with your login instead), "
+        "then send your message again. An old ANTHROPIC_API_KEY set in your shell or config can also override a login."
+    )
+
+
 def explain_error(text: str, tool: str = "") -> str:
     """A person-readable version of an internal error or warning. Never longer than a couple of
     sentences; unknown text is cleaned, not hidden."""
@@ -164,6 +178,8 @@ def explain_error(text: str, tool: str = "") -> str:
         return "You declined this step, so it was not done."
     if "usage limit" in low or "session limit" in low or "rate limit" in low or "spend limit" in low:
         return f"The AI provider's usage limit was reached ({one[:160]}). Wait for it to reset, or switch models."
+    if _REJECTED_KEY.search(low):
+        return rejected_key_message(one)
     if "needs a" in low and "api key" in low:
         return one  # already written for people (see serve._friendly_failure)
     if "timed out" in low or "timeout" in low:
