@@ -448,3 +448,14 @@ def test_every_curated_gemini_image_model_is_one_litellm_knows():
 
     known = {k for k, v in litellm.model_cost.items() if v.get("mode") == "image_generation"}
     assert set(config.IMAGE_MODEL_CHOICES["gemini"]) <= known
+
+
+def test_a_key_that_is_set_but_rejected_says_so(monkeypatch):
+    from localforge import serve
+
+    class AuthenticationError(Exception):
+        pass
+
+    monkeypatch.setattr(serve, "_orchestrator_readiness", lambda model, cli: (True, ""))
+    msg, needs = serve._friendly_failure(AuthenticationError("AnthropicException - invalid x-api-key"), "claude-haiku-4-5", None)
+    assert not needs and "was rejected" in msg and "Accounts & keys" in msg

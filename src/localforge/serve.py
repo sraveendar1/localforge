@@ -272,6 +272,8 @@ def _friendly_failure(exc: Exception, model: str, cli_provider: str | None) -> t
     ready, reason = _orchestrator_readiness(model, cli_provider)
     if not ready and (type(exc).__name__ == "AuthenticationError" or "api key" in str(exc).lower()):
         return f"{reason}. Use “Set up” to add an API key or sign in, then send your message again.", True
+    if ready and (type(exc).__name__ == "AuthenticationError" or task_summary._REJECTED_KEY.search(str(exc).lower())):
+        return task_summary.rejected_key_message(str(exc)), False
     raw = f"{type(exc).__name__}: {exc}"
     text = re.sub(r"\s+", " ", str(exc) or type(exc).__name__).strip()
     plain = task_summary.explain_error(text)

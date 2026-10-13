@@ -344,3 +344,9 @@ def test_problems_in_the_summary_carry_a_plain_sentence_and_keep_the_raw_text():
     assert p["plain"].startswith("The coding model (dia.py):") and "[WARNING" not in p["plain"]
     assert "[WARNING" in p["error"]
     assert "[WARNING" not in "\n".join(ts.render_lines(s))
+
+
+def test_a_rejected_api_key_is_explained_in_plain_words():
+    raw = "AuthenticationError: litellm.AuthenticationError: AnthropicException - b'{\"type\":\"error\",\"error\":{\"type\":\"authentication_error\",\"message\":\"invalid x-api-key\"}}'"
+    text = ts.explain_error(raw)
+    assert "Anthropic API key was rejected" in text and "Accounts & keys" in text and "litellm" not in text
