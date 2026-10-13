@@ -128,10 +128,13 @@ FRONTIER_CLI_AUTH: dict[str, dict] = {
         # opus` -- so ordinary steps were sent on to Opus (75% of a step's
         # cost, invisible in `usage`). `--setting-sources project` in the
         # empty temp cwd loads no settings at all; the user's Claude Code
-        # setup is untouched. `--tools`/`--disallowed-tools` are variadic,
-        # so each must be followed by another option, never the prompt.
+        # setup is untouched. `--tools` is variadic, so it must be followed
+        # by another option, never the prompt. No `--disallowed-tools
+        # advisor`: `--tools ""` already removes every tool, and newer
+        # `claude` versions reject a deny rule naming an unknown tool
+        # ("matches no known tool") and refuse to answer at all.
         "isolation_args": [
-            "--tools", "", "--disallowed-tools", "advisor", "--setting-sources", "project", "--strict-mcp-config",
+            "--tools", "", "--setting-sources", "project", "--strict-mcp-config",
         ],
         "prompt_via_stdin": True,
         # Which Claude model to run. Without it `claude -p` uses Claude Code's

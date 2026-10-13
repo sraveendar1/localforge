@@ -49,10 +49,11 @@ def test_every_other_transport_still_gets_one_prompt():
 
 def test_claudes_advisor_tool_is_switched_off():
     args = config.FRONTIER_CLI_AUTH["anthropic"]["isolation_args"]
-    assert args[args.index("--disallowed-tools") + 1] == "advisor"
+    # every tool is removed; a deny rule naming "advisor" is rejected by newer claude versions
+    assert args[args.index("--tools") + 1] == "" and "--disallowed-tools" not in args
     # the user's own ~/.claude settings (advisorModel: opus, hooks...) never apply to localforge's calls
     assert args[args.index("--setting-sources") + 1] == "project"
-    for flag in ("--tools", "--disallowed-tools"):  # variadic: must be followed by another option
+    for flag in ("--tools",):  # variadic: must be followed by another option
         assert args[args.index(flag) + 2].startswith("--")
 
 
