@@ -1090,6 +1090,14 @@ class StdioServer:
             threading.Thread(target=self._pull_model, args=(str(message.get("model", "")), use_as, str(message.get("ctx", ""))), daemon=True).start()
         elif message_type == "upgrade_check":
             threading.Thread(target=self._upgrade_check, daemon=True).start()
+        elif message_type == "research_models":
+            threading.Thread(target=self._research_models, daemon=True).start()
+        elif message_type == "research_adopt":
+            threading.Thread(
+                target=self._adopt_researched,
+                args=(str(message.get("model", "")), str(message.get("modality", "")), message.get("replace") or None, bool(message.get("delete_old"))),
+                daemon=True,
+            ).start()
         elif message_type == "upgrade_apply":
             threading.Thread(target=self._upgrade_apply, daemon=True).start()
         elif message_type == "finish_project_setup":
@@ -1632,8 +1640,100 @@ class StdioServer:
         finally:
             self._upgrade_running = False
 
+    # --- live research for models beyond the catalog -----------------------------------------------
+
+    def _research_models(self) -> None:
+        """Ask the user's orchestrator to search the web for newer open-weight models, then keep only
+        what is real (Ollama registry) and fits this machine. A suggestion, never an automatic swap."""
+        from localforge import catalog, research, upgrades
+        from localforge.workspace import Workspace
+
+        if getattr(self, "_research_running", False):
+            return self.emit("research_result", ok=False, message="A research is already running.", suggestions=[], rejected=[])
+        self._research_running = True
+        try:
+            self.emit("research_started", model=self.frontier_model)
+            ollama = OllamaBackend()
+            if not ollama.is_running():
+                return self.emit("research_result", ok=False, message="Ollama isn't running. Open the Ollama app, then research again.", suggestions=[], rejected=[])
+            hardware = detect_hardware()
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+            current = {m: e.name for m, e in catalog.recommendations(hardware, installed=set(on_disk)).items() if e is not None and m in research.MODALITIES}
+            hooks = ActivityHooks(
+                on_tool=lambda name, summary: self.emit("research_progress", text=f"{name}: {summary}"),
+                on_answer_text=lambda text: None,
+            )
+            task = research.task_text(hardware, set(on_disk), current)
+            result = self.run_fn(task, self.frontier_model, cli_provider=self.cli_provider, hooks=hooks, conversation=Conversation(), workspace=Workspace(self.root))
+            outcome = research.verify(
+                research.parse(result.answer), hardware, set(on_disk), current, upgrades.managed(),
+                registry_size=model_fit.registry_size_gb, fit_problem=lambda n: model_fit.download_problem(n, hardware, {k: v / 1e9 for k, v in on_disk.items()}),
+            )
+            self._record_usage(result.stats)
+            self.emit("research_result", ok=True, message=outcome.note, suggestions=[s.as_dict() for s in outcome.suggestions], rejected=outcome.rejected)
+        except Exception as exc:  # noqa: BLE001 - reported in the card, never crashes the reader
+            message, _ = _friendly_failure(exc, self.frontier_model, self.cli_provider)
+            self.emit("research_result", ok=False, message=f"The research failed: {message}", suggestions=[], rejected=[])
+        finally:
+            self._research_running = False
+
+    def _adopt_researched(self, model: str, modality: str, replace: str | None, delete_old: bool) -> None:
+        """Download the researched model (same fit refusal as any download), make it the model for its
+        role, and then -- only then -- remove the one it replaces, to give the space back."""
+        from localforge import catalog, upgrades
+
+        name = self._normalize_model_name(model)
+        if modality not in delegate_target.MODALITIES:
+            return self.emit("research_adopted", model=name, ok=False, message=f"{modality!r} isn't a role LocalForge can set.")
+        if not self._pull_model(name, {"modality": modality}, ctx="research"):
+            return self.emit("research_adopted", model=name, ok=False, message=f"{name} wasn't adopted; see the message under it. Nothing was removed.")
+        message = f"{name} is now the {modality} model, from the next task."
+        old = self._normalize_model_name(replace) if replace else None
+        if old and old != name:
+            message += " " + self._remove_replaced(old, modality, delete_old)
+        self._emit_setup_status()
+        self._emit_advanced_model()
+        self.emit("research_adopted", model=name, ok=True, message=message)
+
+    def _remove_replaced(self, old: str, modality: str, allowed: bool) -> str:
+        """Delete the model that was replaced, unless it is still needed. Returns what happened."""
+        from localforge import catalog, upgrades
+
+        if not allowed:
+            return f"{old} was left installed (you didn't ask to remove it)."
+        if old in upgrades.local_orchestrator():
+            return f"{old} is your local orchestrator, so it stays."
+        if self.busy:
+            return f"{old} stays for now because a task is running; remove it later under /installed."
+        ollama = OllamaBackend()
+        try:
+            on_disk = {m["name"]: int(m.get("size") or 0) for m in ollama.list_installed()}
+        except Exception:  # noqa: BLE001
+            return f"{old} stays (couldn't ask Ollama what is installed)."
+        if old not in on_disk:
+            return ""
+        # Still needed if another role uses it: pinned there, or it is what 'auto' picks there.
+        others = [m for m in delegate_target.MODALITIES if m != modality]
+        recs = catalog.recommendations(detect_hardware(), installed=set(on_disk) - {old})
+        for other in others:
+            target = delegate_target.get(other)
+            uses = target.model if target.kind == "ollama" else (recs.get(other).name if recs.get(other) else None)
+            if target.kind == "auto":
+                uses = None  # with `old` gone, auto picks something else; only a pin keeps it
+            if uses == old:
+                return f"{old} stays because the {other} role still uses it."
+        try:
+            ollama.delete(old)
+        except Exception as exc:  # noqa: BLE001
+            return f"Couldn't remove {old}: {exc}"
+        upgrades.unmark(old)
+        return f"Removed {old}, freeing ~{on_disk[old] / 1e9:.1f} GB."
+
     def handle_upgrade_command(self, arg: str = "") -> None:
-        if arg.strip().lower() in ("now", "apply", "go"):
+        if arg.strip().lower() in ("research", "online", "web"):
+            self.emit("system_text", text="Researching newer open-weight models on the web with your orchestrator (this uses it for a few steps)…")
+            threading.Thread(target=self._research_models, daemon=True).start()
+        elif arg.strip().lower() in ("now", "apply", "go"):
             self.emit("system_text", text="Upgrading local models… downloads show under Models.")
             threading.Thread(target=self._upgrade_apply, daemon=True).start()
         else:
@@ -1766,7 +1866,7 @@ class StdioServer:
             {"name": "/scan", "description": "Show detected hardware"},
             {"name": "/model <id>", "description": "Show or switch the orchestrator model"},
             {"name": "/advanced-model <type> <model|auto>", "description": "Show or set the model for coding, docs, general or image"},
-            {"name": "/upgrade [now]", "description": "Check for better open-weight models that fit this machine; `/upgrade now` replaces them"},
+            {"name": "/upgrade [now|research]", "description": "Check for better open-weight models that fit this machine; `/upgrade now` replaces them, `/upgrade research` searches the web for newer ones"},
             {"name": "/budget <provider> <$|off>", "description": "Show or set a monthly limit for paid image generation"},
             {"name": "/auto on|off", "description": "Approve file changes and commands without asking"},
             {"name": "/run <task>", "description": "Work on a task in this folder"},

@@ -15,7 +15,7 @@ export type TaskSummary = {
   reads: number;
   web: number;
   declined: { what: string; tool: string }[];
-  problems: { what: string; error: string; recovered: boolean; plain?: string }[];
+  problems: { what: string; error: string; recovered: boolean; plain?: string; advisory?: boolean }[];
   plainError?: string | null;
 };
 export type Message = { role: "user" | "assistant" | "error" | "system" | "summary"; text: string; items: Item[]; round?: number; imageDataUrl?: string; summary?: TaskSummary; detail?: string; plan?: boolean };
@@ -93,7 +93,10 @@ export type UpgradePlan = {
   upgrades: { old: string; new: string; modalities: string[]; disk_gb: number }[];
   remove: string[]; unused_own: string[]; download_gb: number; freed_gb: number; blocked: string | null; empty: boolean;
 };
-export type UpgradeState = { plan: UpgradePlan | null; result: { ok: boolean; message: string; n: number } | null };
+export type Suggestion = { name: string; modality: string; why: string; size_gb: number; replaces: string | null; replaces_managed: boolean };
+// Live research for models beyond the catalog: the orchestrator searches the web, LocalForge verifies every name.
+export type ResearchState = { running: boolean; progress: string; message: string; ok: boolean | null; suggestions: Suggestion[]; rejected: { name: string; reason: string }[]; adopted: { [model: string]: { ok: boolean; message: string } } };
+export type UpgradeState = { plan: UpgradePlan | null; result: { ok: boolean; message: string; n: number } | null; research: ResearchState };
 export type PullState = { ctx: string; status: string; completed: number | null; total: number | null; done: boolean; ok?: boolean; message?: string; blocked?: boolean };
 // The guided model setup in the centre of the window: "unknown" until the project's models
 // are known, "active" while it is on screen, "done" once finished or closed.
@@ -211,7 +214,7 @@ export const initialState: ChatState = {
   queue: [],  // Initialize queue to an empty array
   planPending: false,
   streamOutput: false,  // Initialize streamOutput to false
-  upgrade: { plan: null, result: null },
+  upgrade: { plan: null, result: null, research: { running: false, progress: "", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } },
   version: "",
   trustRequired: null,
   activity: null
@@ -483,6 +486,14 @@ function applyEventBase(state: ChatState, ev: any): ChatState {
       return { ...state, upgrade: { ...state.upgrade, plan: { upgrades: [], remove: [], unused_own: [], download_gb: 0, freed_gb: 0, blocked: null, empty: true, ...ev, ok: !!ev.ok } } };
     case "upgrade_result":
       return { ...state, upgrade: { ...state.upgrade, result: { ok: !!ev.ok, message: String(ev.message ?? ""), n: (state.upgrade.result?.n ?? 0) + 1 } } };
+    case "research_started":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, running: true, progress: "Starting…", message: "", ok: null, suggestions: [], rejected: [], adopted: {} } } };
+    case "research_progress":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, progress: String(ev.text ?? "") } } };
+    case "research_result":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, running: false, progress: "", ok: !!ev.ok, message: String(ev.message ?? ""), suggestions: Array.isArray(ev.suggestions) ? ev.suggestions : [], rejected: Array.isArray(ev.rejected) ? ev.rejected : [] } } };
+    case "research_adopted":
+      return { ...state, upgrade: { ...state.upgrade, research: { ...state.upgrade.research, adopted: { ...state.upgrade.research.adopted, [String(ev.model)]: { ok: !!ev.ok, message: String(ev.message ?? "") } } } } };
     case "queue":  // Handle the queue event
       return { ...state, queue: ev.items ?? [] };
     case "compacted":

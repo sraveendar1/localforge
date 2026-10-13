@@ -4,6 +4,7 @@ each tool call to the best-fitting local model via the matching backend.
 
 from __future__ import annotations
 
+import os
 import re
 import threading
 import time
@@ -489,6 +490,7 @@ the specific thing that's missing or wrong"}}"""
 # _delegate_to_file) instead of adding its own latency on top. This caps how
 # long the caller waits for it before giving up and treating it as "no
 # verdict" -- an eval hiccup should never stall or fail an otherwise-fine task.
+JUDGE_ENV_VAR = "LOCALFORGE_JUDGE"  # "off" skips the judge check entirely
 JUDGE_TIMEOUT_SECONDS = 20.0
 # Kept small: the judge only needs enough of each to make the call, and a
 # huge instructions/output pair would otherwise blow its (small) context.
@@ -538,6 +540,7 @@ class Dispatcher:
         self._preferences: str | None = None
         self._judge_entry: ModelEntry | None | object = _UNSET  # resolved once per run, like grounding()
         self._last_delegate_model: str | None = None  # set by _run(); see its docstring
+        self._last_delegate_cloud = False  # the most recent writer was a paid cloud model (see _judge_check)
         # The last failing check (run_command matching a test/lint/build
         # pattern) not yet passed on to a delegation, so a re-delegation
         # after a test failure carries the exact error instead of the
@@ -684,6 +687,12 @@ class Dispatcher:
         JSON -- never raises, since an eval hiccup must never fail a task
         that was otherwise fine. A short, specific reason string when it
         flagged something."""
+        # Two cases where a judge only adds noise (reported: a local gemma3:12b stand-in kept
+        # "rejecting" a paid Haiku's HTML for fine details like column order, and the task summary
+        # showed red Problems each time): the writer is a stronger paid model than any local
+        # judge, or the user switched the check off (LOCALFORGE_JUDGE=off).
+        if self._last_delegate_cloud or os.environ.get(JUDGE_ENV_VAR, "").strip().lower() in ("off", "0", "false", "no"):
+            return None
         entry = self.judge(exclude)
         if entry is None:
             return None
@@ -772,6 +781,7 @@ class Dispatcher:
         # pick, which can differ after a crash-retry switches to another
         # installed model (see _recover()).
         self._last_delegate_model = entry.name
+        self._last_delegate_cloud = entry.runtime in ("api", "cli")
         backend = BACKENDS[entry.runtime]
         on_pull = (lambda event: hooks.on_pull(entry.name, event)) if hooks.on_pull else None
         if self.installed is not None and entry.name not in self.installed and entry.runtime == "ollama":

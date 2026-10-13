@@ -355,7 +355,7 @@ function App() {
           onManageAccounts={() => { setManageOpen(true); send({ type: "setup_status_request" }); }}
           upgrade={chat.upgrade}
           pulls={chat.pulls}
-          onUpgrade={action => send({ type: action === "check" ? "upgrade_check" : "upgrade_apply" })}
+          onUpgrade={(action, extra) => send(action === "check" ? { type: "upgrade_check" } : action === "apply" ? { type: "upgrade_apply" } : action === "research" ? { type: "research_models" } : { type: "research_adopt", ...extra })}
         />}
         <main className={"min-w-0 flex-1 flex-col " + (expanded ? "hidden" : "flex")}>
           <div className="flex-1 overflow-y-auto px-4 py-3">

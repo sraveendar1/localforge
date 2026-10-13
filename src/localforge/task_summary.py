@@ -152,8 +152,8 @@ def explain_error(text: str, tool: str = "") -> str:
 
     if m := re.search(r"the judge model flagged this (?:result|file) \((.*?)\)\s*-- verify", one):
         return (
-            f"The model that double-checks the work did not accept the {who} model's reply: {m.group(1).rstrip('.')}. "
-            "The orchestrator has been told, and will ask again with clearer instructions."
+            f"The model that double-checks the work questioned the {who} model's reply: {m.group(1).rstrip('.')}. "
+            "The orchestrator has been told and checks it; look at the file if it matters to you."
         )
     if m := re.search(r"this (\w+) result may be unreliable \((.*?)\)", one):
         why = m.group(2).split(";")[0]
@@ -212,6 +212,8 @@ def build(log: TaskLog | None, outcome: str = "completed", error: str | None = N
             later_ok = any(s.tool == step.tool and s.target == step.target and s.outcome == "ok" and not _command_failed(s) for s in steps[i + 1 :])
             problems.append({
                 "what": f"{step.tool} {step.target}".strip(), "error": step.detail or "failed", "recovered": later_ok,
+                # The judge model's opinion, not a failure: shown as a review note, not a red problem.
+                "advisory": "the judge model flagged" in (step.detail or ""),
                 "plain": f"{friendly_step(step.tool, step.target)}: {explain_error(step.detail or 'failed', step.tool)}",
             })
             if step.kind == "command":
@@ -291,11 +293,16 @@ def render_lines(summary: dict) -> list[str]:
     if not (summary["files"] or summary["commands"] or summary["delegations"]) and summary["steps"] and not looked:
         lines.append("No files were changed and no commands were run.")
 
-    if summary["problems"]:
+    real = [p for p in summary["problems"] if not p.get("advisory")]
+    notes = [p for p in summary["problems"] if p.get("advisory")]
+    if real:
         lines.append("Problems:")
         lines += _clip(
-            [f"  ✗ {p.get('plain') or p['what'] + ': ' + p['error'][:200]}" + (" (recovered)" if p["recovered"] else "") for p in summary["problems"]]
+            [f"  ✗ {p.get('plain') or p['what'] + ': ' + p['error'][:200]}" + (" (recovered)" if p["recovered"] else "") for p in real]
         )
+    if notes:
+        lines.append("Review notes (the checking model's opinion; the files were still written):")
+        lines += _clip([f"  ! {p.get('plain') or p['what'] + ': ' + p['error'][:200]}" for p in notes])
     if summary["error"]:
         lines.append(f"Error: {summary.get('plain_error') or summary['error']}")
     return lines

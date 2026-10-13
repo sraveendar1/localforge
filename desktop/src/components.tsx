@@ -173,11 +173,11 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
         {s.steps > 0 && s.files.length === 0 && s.commands.length === 0 && s.delegations.length === 0 && looked.length === 0 && (
           <div className="text-mx-dim">No files were changed and no commands were run.</div>
         )}
-        {s.problems.length > 0 && (
+        {s.problems.some(p => !p.advisory) && (
           <div data-testid="summary-problems">
             <div className="text-mx-red">Problems</div>
             <ul className="ml-3 space-y-1 text-mx-red">
-              {s.problems.map((p, i) => (
+              {s.problems.filter(p => !p.advisory).map((p, i) => (
                 <li key={i} className="whitespace-pre-wrap">
                   ✗ {p.plain ?? `${p.what}: ${p.error}`}{p.recovered && <span className="text-mx-dim"> (recovered)</span>}
                   {p.plain && (
@@ -186,6 +186,22 @@ export function TaskSummaryCard({ summary: s }: { summary: TaskSummary }) {
                       <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{p.what}: {p.error}</pre>
                     </details>
                   )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {s.problems.some(p => p.advisory) && (
+          <div data-testid="summary-notes">
+            <div className="text-mx-amber">Review notes <span className="text-mx-dim">(the checking model's opinion; the files were still written)</span></div>
+            <ul className="ml-3 space-y-1 text-mx-amber">
+              {s.problems.filter(p => p.advisory).map((p, i) => (
+                <li key={i} className="whitespace-pre-wrap">
+                  ! {p.plain ?? `${p.what}: ${p.error}`}
+                  <details className="text-mx-dim">
+                    <summary className="cursor-pointer text-[11px]">Details</summary>
+                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{p.what}: {p.error}</pre>
+                  </details>
                 </li>
               ))}
             </ul>

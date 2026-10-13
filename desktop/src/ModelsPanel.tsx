@@ -1,6 +1,6 @@
 import { splitDescription } from "./describe";
 import { useEffect, useState } from "react";
-import type { LocalModelTarget, PullState, UpgradeState } from "./state";
+import type { LocalModelTarget, PullState, Suggestion, UpgradeState } from "./state";
 
 const MODALITIES: [string, string][] = [
   ["coding", "Coding"],
@@ -37,7 +37,7 @@ export function ModelsPanel({
   onManageAccounts: () => void;
   upgrade?: UpgradeState;
   pulls?: { [model: string]: PullState };
-  onUpgrade?: (action: "check" | "apply") => void;
+  onUpgrade?: (action: "check" | "apply" | "research" | "adopt", extra?: { [key: string]: unknown }) => void;
 }) {
   // Disabled between a click and its answer; the answer arrives as a new plan/result.
   const [busy, setBusy] = useState<"" | "check" | "apply">("");
@@ -95,6 +95,8 @@ export function ModelsPanel({
           connected={connected}
           onCheck={() => { setBusy("check"); onUpgrade("check"); }}
           onApply={() => { setBusy("apply"); onUpgrade("apply"); }}
+          onResearch={() => onUpgrade("research")}
+          onAdopt={(s, deleteOld) => onUpgrade("adopt", { model: s.name, modality: s.modality, replace: s.replaces, delete_old: deleteOld })}
         />
       )}
 
@@ -132,7 +134,7 @@ export function ModelsPanel({
 // balanced pick for this hardware (it doesn't search the internet), shows what would be downloaded and
 // removed, and does it on a click. Only models LocalForge itself installed are ever removed.
 function UpgradeCard({
-  upgrade, pulls, busy, connected, onCheck, onApply,
+  upgrade, pulls, busy, connected, onCheck, onApply, onResearch, onAdopt,
 }: {
   upgrade?: UpgradeState;
   pulls?: { [model: string]: PullState };
@@ -140,7 +142,10 @@ function UpgradeCard({
   connected: boolean;
   onCheck: () => void;
   onApply: () => void;
+  onResearch: () => void;
+  onAdopt: (s: Suggestion, deleteOld: boolean) => void;
 }) {
+  const research = upgrade?.research;
   const plan = upgrade?.plan ?? null;
   const result = upgrade?.result ?? null;
   const downloading = Object.entries(pulls ?? {}).filter(([, p]) => p.ctx === "upgrade" && !p.done);
@@ -193,6 +198,63 @@ function UpgradeCard({
         </button>
       )}
       {result && <div className={"mt-1 text-[11px] " + (result.ok ? "text-mx-green" : "text-mx-red")} data-testid="upgrade-result">{result.message}</div>}
+
+      <div className="mt-2 border-t border-mx-dim pt-1.5" data-testid="research">
+        <button
+          type="button"
+          disabled={!connected || !!research?.running}
+          onClick={onResearch}
+          data-testid="research-start"
+          title="Your orchestrator searches the web for newer open-weight models; LocalForge then checks every name against Ollama's registry and your machine's memory and disk. It uses the orchestrator for a few steps."
+          className="w-full rounded-sm border border-mx-dim px-2 py-1 text-center text-mx-mid hover:border-mx-mid hover:text-mx-bright disabled:opacity-50"
+        >
+          {research?.running ? "Researching…" : "Research newer models online"}
+        </button>
+        {research?.running && <div className="mt-1 break-words text-[11px] text-mx-dim" data-testid="research-progress">{research.progress}</div>}
+        {research && !research.running && research.ok === false && <div className="mt-1 text-[11px] text-mx-red" data-testid="research-problem">{research.message}</div>}
+        {research && !research.running && research.ok && research.suggestions.length === 0 && <div className="mt-1 text-[11px] text-mx-dim">{research.message}</div>}
+        {research?.suggestions.map(s => (
+          <ResearchRow key={s.name} s={s} outcome={research.adopted[s.name]} pull={pulls?.[s.name]} onAdopt={onAdopt} />
+        ))}
+        {research && research.rejected.length > 0 && (
+          <details className="mt-1 text-[11px] text-mx-dim">
+            <summary className="cursor-pointer">Dropped by the checks ({research.rejected.length})</summary>
+            <ul className="mt-0.5 space-y-0.5">{research.rejected.map(r => <li key={r.name}>{r.name}: {r.reason}</li>)}</ul>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One verified suggestion: what it is, why, how big, what it would replace, and a tick to remove that one
+// afterwards (on by default for a model LocalForge installed; off, and labelled, for one the user installed).
+function ResearchRow({ s, outcome, pull, onAdopt }: { s: Suggestion; outcome?: { ok: boolean; message: string }; pull?: PullState; onAdopt: (s: Suggestion, deleteOld: boolean) => void }) {
+  const [deleteOld, setDeleteOld] = useState(s.replaces_managed);
+  const downloading = !!pull && !pull.done && pull.ctx === "research";
+  return (
+    <div className="mt-1.5 rounded-sm border border-mx-dim px-1.5 py-1" data-testid="research-row">
+      <div className="break-words text-mx-bright">{s.name} <span className="text-[10px] text-mx-dim">· {s.modality} · ~{s.size_gb} GB</span></div>
+      {s.why && <div className="text-[11px] text-mx-mid">{s.why}</div>}
+      {s.replaces && (
+        <label className="mt-0.5 flex items-start gap-1 text-[11px] text-mx-dim">
+          <input type="checkbox" checked={deleteOld} onChange={e => setDeleteOld(e.target.checked)} data-testid="research-delete-old" />
+          <span>Remove {s.replaces} afterwards to free space{s.replaces_managed ? "" : " (you installed it yourself)"}</span>
+        </label>
+      )}
+      {!outcome && (
+        <button
+          type="button"
+          disabled={downloading}
+          onClick={() => onAdopt(s, deleteOld)}
+          data-testid="research-adopt"
+          className="mt-1 w-full rounded-sm border border-mx-mid px-2 py-0.5 text-center text-mx-green hover:border-mx-bright hover:text-mx-bright disabled:opacity-50"
+        >
+          {downloading ? `Downloading ${pull?.total && pull.completed != null ? Math.round((pull.completed / pull.total) * 100) + "%" : "…"}` : `Use for ${s.modality}`}
+        </button>
+      )}
+      {!outcome && pull?.done && !pull.ok && <div className="mt-0.5 text-[11px] text-mx-red">{pull.message}</div>}
+      {outcome && <div className={"mt-0.5 text-[11px] " + (outcome.ok ? "text-mx-green" : "text-mx-red")} data-testid="research-outcome">{outcome.message}</div>}
     </div>
   );
 }

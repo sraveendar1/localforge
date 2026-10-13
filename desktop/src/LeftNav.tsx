@@ -45,7 +45,7 @@ export function LeftNav({
   onManageAccounts: () => void;
   upgrade?: UpgradeState;
   pulls?: { [model: string]: PullState };
-  onUpgrade?: (action: "check" | "apply") => void;
+  onUpgrade?: (action: "check" | "apply" | "research" | "adopt", extra?: { [key: string]: unknown }) => void;
   layout: PanelLayout;
 }) {
   const { expanded } = layout;
